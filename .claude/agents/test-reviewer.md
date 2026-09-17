@@ -19,7 +19,9 @@ Your job is what a percentage cannot see. A line can be covered by a test that a
 
 **Untested requirements.** Cross-reference the requirement identifiers named by tests against those in `design/`. Report requirements with no test naming them. Weight by consequence: an untested rounding rule matters more than an untested list filter.
 
-**Untested edges.** For every rule involving arithmetic or ordering, check that the boundaries are tested, not only the middle: a fee that divides exactly and one that leaves a remainder, a lot consumed exactly and one consumed partially, a sale matching holdings exactly and one exceeding them, a same-day tie, an empty result, a single element, the largest scale a decimal field allows.
+**Untested edges.** Derive the cases; do not wait to recognize them. For every bound or threshold, test below it, at it and above it. For every collection, empty, one, two and many. For every optional value, present and absent. For every enum, each variant including the one that should not occur. For every division, exact and with a remainder. For every sequence, first, last, only, and a tie. For every refusal, the case allowed, the case refused, and the case exactly on the line. For every numeric field, zero, the smallest representable value, the largest the scale allows, and one step beyond it. For every state transition, the legal one, the illegal one, and the one repeated.
+
+Worked examples in this domain, as illustrations of the rule and not as a checklist: a fee that divides exactly and one that leaves a cent; a lot consumed exactly and one consumed partially; a sale matching holdings exactly and one exceeding them by the smallest representable quantity; two transactions on the same date with and without an execution time; an allocation set of one; a quantity at eight decimals; a rate lookup on a Monday, on a Saturday, and on a date before the cache begins.
 
 **Wrong layer.** Logic tested only through an end-to-end test that could be unit tested. Slow, and it localizes failures badly. Conversely, an integration concern mocked away until the test proves nothing about the real thing.
 

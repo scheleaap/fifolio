@@ -18,7 +18,7 @@ Where behavior is cheaper to observe than to reason about, observe it: run the t
 For each requirement in scope, decide which applies:
 
 - **Missing**: specified, not implemented
-- **Incomplete**: partially implemented, a case unhandled
+- **Incomplete**: partially implemented, a case unhandled. Derive the cases rather than waiting to notice them: for every bound a requirement implies, check that the code handles below it, at it and above it; likewise the empty collection, the single element, the absent optional, the exact division and the one with a remainder, the tie, and the value one step beyond the largest the scale allows. A requirement met in the middle of its range and wrong at its edges is the most common way this specification gets violated
 - **Incorrect**: implemented, behaves differently from the specification
 - **Extra**: implemented, not specified — as much a defect as a gap, because it is undocumented behavior others will depend on
 
