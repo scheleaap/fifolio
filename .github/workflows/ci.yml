@@ -24,28 +24,60 @@ jobs:
       - run: cargo test --workspace
 
   coverage:
-    name: coverage thresholds
+    name: patch coverage
     runs-on: ubuntu-latest
     steps:
+      # Full history, because patch coverage diffs against the base commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install diff-cover
 
-      # Per crate, not workspace-wide, so a well-covered core cannot mask an
-      # untested client. Thresholds from design/testing.md [TST-008].
-      - name: fifolio-core (95%)
-        run: cargo llvm-cov --package fifolio-core --fail-under-lines 95
+      - name: measure
+        run: cargo llvm-cov --workspace --lcov --output-path target/lcov.info
 
-      - name: fifolio-server (90%)
-        run: cargo llvm-cov --package fifolio-server --fail-under-lines 90
+      # Thresholds apply to the lines this change touched, not the whole
+      # codebase: a crate that is still a stub would otherwise block every
+      # commit at 0%. See design/testing.md [TST-025].
+      - name: base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
 
-      # The TUI render layer is excluded because it draws; what it draws is
-      # decided in the UI-agnostic client layer, which is not excluded [TST-009].
-      - name: fifolio-cli (75%, render layer excluded)
+      - name: fifolio-core (95% of changed lines)
         run: >
-          cargo llvm-cov --package fifolio-cli
-          --ignore-filename-regex 'crates/fifolio-cli/src/tui/render/'
-          --fail-under-lines 75
+          diff-cover target/lcov.info
+          --compare-branch=${{ steps.base.outputs.ref }} --include-untracked
+          --include 'crates/fifolio-core/**' --fail-under=95
+
+      - name: fifolio-server (90% of changed lines)
+        run: >
+          diff-cover target/lcov.info
+          --compare-branch=${{ steps.base.outputs.ref }} --include-untracked
+          --include 'crates/fifolio-server/**' --fail-under=90
+
+      # The render layer draws; what it draws is decided in the UI-agnostic
+      # client layer, which is not excluded [TST-009].
+      - name: fifolio-cli (75% of changed lines, render layer excluded)
+        run: >
+          diff-cover target/lcov.info
+          --compare-branch=${{ steps.base.outputs.ref }} --include-untracked
+          --include 'crates/fifolio-cli/**'
+          --exclude 'crates/fifolio-cli/src/tui/render/**' --fail-under=75
+
+      # Reported, not gated, until build-out completes [TST-027].
+      - name: absolute coverage (reported only)
+        run: cargo llvm-cov report --summary-only
+        continue-on-error: true

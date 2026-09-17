@@ -226,17 +226,30 @@ complying silently. Run the suite before reporting.`,
     `Commit work item ${plan.nextItemId} (${plan.nextItemTitle}).
 
 Before committing, verify green yourself. Do not trust earlier reports:
-  cargo test
-  cargo clippy -- -D warnings
-  cargo fmt --check
-  cargo llvm-cov  (per-crate thresholds in design/testing.md)
+  cargo test --workspace
+  cargo clippy --workspace --all-targets -- -D warnings
+  cargo fmt --all --check
+  cargo llvm-cov --workspace --lcov --output-path target/lcov.info
+
+Then patch coverage on the lines this item touched, per crate, against HEAD. Thresholds and
+rationale are in design/testing.md; the whole codebase is NOT gated, only this item's diff:
+  diff-cover target/lcov.info --compare-branch=HEAD --include-untracked \
+    --include 'crates/fifolio-core/**' --fail-under=95
+  diff-cover target/lcov.info --compare-branch=HEAD --include-untracked \
+    --include 'crates/fifolio-server/**' --fail-under=90
+  diff-cover target/lcov.info --compare-branch=HEAD --include-untracked \
+    --include 'crates/fifolio-cli/**' \
+    --exclude 'crates/fifolio-cli/src/tui/render/**' --fail-under=75
+
+A crate this item did not touch has no changed lines and passes trivially; that is expected, not a
+reason to widen the check.
 
 If anything fails, commit nothing and set committed to false with the failing output in "summary".
 
 Commit on the current branch. Do not create a branch, do not switch branches, and do not
 push. Report the branch you committed on.
 
-Commit only files belonging to this item, plus PLAN.md. The subject line names the item id and
+Do not commit target/lcov.info. Commit only files belonging to this item, plus PLAN.md. The subject line names the item id and
 what it does; the body lists the requirement identifiers covered.`,
     { label: `commit ${plan.nextItemId}`, phase: 'Commit', schema: COMMIT },
   )
