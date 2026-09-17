@@ -10,6 +10,7 @@ CLI:
 * `fifolio-cli` starts the interactive application [CLI-001]
 * `fifolio-cli report <report name>` prints the corresponding report (see domain description). [CLI-002] Optional `--format` to produce human-readable, CSV or JSON output. [CLI-003] Optional `--account` and `--year` filters [CLI-004]
 * `fifolio-cli export-manual-information` writes every `manual` source record to a file [CLI-005]
+* `fifolio-cli import-manual-information <file>` replays such a file into an empty or partial database [CLI-037]
 * `--server-url` selects the server, defaulting to `http://127.0.0.1:8000` [CLI-006]
 * `--lang` selects the interface language, `en` or `nl` [CLI-007]
 
@@ -21,7 +22,9 @@ Everything else in the database can be rebuilt by importing the broker files aga
 
 `export-manual-information` writes them all to a file, so they can be kept alongside the broker exports. The file records, per entry, the account, the security, what was supplied, and which imported source records it was attached to. [CLI-009]
 
-Open: whether a matching import exists, which would make the file a restore path rather than only a record.
+The format is JSON, a single document carrying a schema version. [CLI-038] Manual records have heterogeneous shapes — a share count, a stock-or-cash election, a target security with a ratio, an acquisition date — which flatten badly into a table, and the file is read by a program rather than by a person.
+
+`import-manual-information` replays it: re-import the broker exports, replay this file, and the database is rebuilt without redoing the research. An entry whose imported source records are not present is reported and skipped rather than guessed at, [CLI-039] since a manual record attached to nothing has nowhere to belong. Replay is idempotent: an entry already present is recognized and not duplicated. [CLI-040]
 
 # Interactive application
 

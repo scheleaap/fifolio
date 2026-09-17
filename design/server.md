@@ -33,6 +33,7 @@ CLI:
 * Import is idempotent, on the identity rules in `domain.md` [SRV-015]
 * Rows that carry no position effect are recognized and not stored [SRV-016]
 * The response summarizes: derived automatically, pending, recognized as non-position, failed to parse, and securities auto-created [SRV-017]
+* The summary names every unrecognized row type it met and how many rows carried it, so a new broker type becomes visible on its first appearance [SRV-049]
 * A sell that exceeds the holdings does not block import. It surfaces later, at attribution [SRV-018]
 
 Every import creates a batch, and a batch is the unit of undo: [SRV-019]
@@ -47,6 +48,7 @@ Every import creates a batch, and a batch is the unit of undo: [SRV-019]
 * The pending list is the completion queue, and is the main thing the interactive client works through [SRV-024]
 * Create a `manual` source record. This is the only way information that no export contains enters the system [SRV-025]
 * List all `manual` records for export (see `cli.md`) [SRV-026]
+* Creating a `manual` record is idempotent on its content and the source records it cites, so replaying an exported file cannot duplicate one [SRV-048]
 
 Source records are never edited. [SRV-027] A mistake is corrected by deleting the derived transaction and the manual record, then supplying a new one.
 

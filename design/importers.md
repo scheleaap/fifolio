@@ -115,7 +115,7 @@ In the sample it isolates 6 rows out of 74 dividend-type rows. The 19 `Herbelegg
 
 ## File format
 
-CSV, quoted, comma-delimited, dot decimals, ASCII, single header row, 23 columns. [IMP-TR-001]
+CSV, quoted, comma-delimited, dot decimals, ASCII, single header row, 23 columns. [IMP-TR-001] The header is byte-identical across the 2022 to 2025 exports.
 
 * `datetime` is full ISO-8601 UTC with sub-second precision; `date` is the effective date and can differ from it [IMP-TR-002]
 * `transaction_id` is a UUID: a stable broker reference, used directly as the identity [IMP-TR-003]
@@ -132,13 +132,54 @@ Native columns are `price`, `amount`, `fee`, `tax`, `currency`. [IMP-TR-005] Whe
 | `category` / `type` | Handling |
 | --- | --- |
 | `TRADING` / `BUY`, `SELL` | derived automatically |
-| `CORPORATE_ACTION` / `TAX_EXCHANGE` and similar | lot transfer; quantities are stated, so nothing is missing |
-| `CASH` / `DIVIDEND`, `INTEREST_PAYMENT`, `CUSTOMER_INBOUND` | recognized as non-position, not stored |
+| `CORPORATE_ACTION` / `TAX_EXCHANGE` | lot transfer; quantities are stated, so nothing is missing |
+| `CORPORATE_ACTION` / anything else | the import is rejected [IMP-TR-010] |
+| `CASH` / `DIVIDEND`, `INTEREST_PAYMENT`, `CUSTOMER_INBOUND`, `TRANSFER_INBOUND`, `STOCKPERK` | recognized as non-position, not stored |
+| anything else naming a security | the import is rejected [IMP-TR-013] |
+| anything else naming no security | not stored, but counted and named in the import summary [IMP-TR-014] |
 
 Trade Republic states share quantities on corporate actions, so the Saxo dividend heuristic is neither needed nor applicable here. [IMP-TR-009] The sample's `TAX_EXCHANGE` pair moves −60.00 of one ISIN and +60.00 of another with both quantities present.
+
+`TAX_EXCHANGE` is the only `CORPORATE_ACTION` type observed, so it is the only one mapped. An
+unrecognized type **rejects the whole file**, naming the type, the row and the transaction id, and
+nothing is imported. Nothing is inferred from quantity signs: an event whose shape resembles a lot
+transfer is not thereby one, and a silently miscategorized corporate action corrupts a cost basis
+permanently.
+
+The remedy is to specify the new type here and import again. That is deliberate — the file is the
+evidence of what the type means, and the specification is where it gets decided.
+
+The same rule extends past `CORPORATE_ACTION`: **a populated `symbol` is what makes a row
+dangerous, not its category.** An unrecognized type that names a security rejects the file
+(`IMP-TR-013`), because it may create or remove units and guessing corrupts a cost basis
+permanently. An unrecognized type that names no security is almost certainly cash, so it is not
+stored, but the import summary names it and counts it (`IMP-TR-014`) — a new type then becomes
+visible the first time it appears rather than years later.
+
+### `STOCKPERK`
+
+A promotional free share. Trade Republic books it as two rows on the same date: a `CASH` /
+`STOCKPERK` credit, and a `TRADING` / `BUY` of the same ISIN for the same amount, carrying the
+quantity and the price. Net cash is zero and the buy row is the acquisition, at the share's value.
+
+The `STOCKPERK` row is therefore treated as cash and not stored [IMP-TR-011], with no check that
+the paired buy exists. The pairing is observed once, so if Trade Republic ever books one without a
+buy the acquisition is lost — but that surfaces as a blocked attribution with a named shortfall the
+first time those units are sold, never as a wrong figure in a report.
+
+### `TRANSFER_INBOUND`
+
+Cash arriving from another account, carrying no security and no quantity. Indistinguishable in
+effect from `CUSTOMER_INBOUND`, and treated the same [IMP-TR-012].
 
 # Open items
 
 * **Trade Republic bonds.** None in the sample. The quotation convention is unverified, so the Saxo default must not be assumed to carry over
-* **Trade Republic sells.** None in the sample; the sell mapping is inferred from the buy rows
+* **Trade Republic sells.** None in four years of exports; the sell mapping is inferred from the buy rows
+* **Trade Republic trade costs.** `tax` is populated only on `DIVIDEND` and `INTEREST_PAYMENT`
+  rows, never on a trade, so `IMP-TR-007`'s summing of `fee` and `tax` has no observed trade case
+* **Trade Republic unused columns.** `payment_reference` and `mcc_code` are empty in all 65 sample
+  rows, and `account_type` is always `DEFAULT`
+* **Trade Republic corporate action types.** Only `TAX_EXCHANGE` is known. Each new type met in
+  practice needs specifying here before its file will import
 * **Saxo language.** Only Dutch exports are supported, and no other language has been seen
