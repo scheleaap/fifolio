@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/fifolio-core", "crates/fifolio-server", "crates/fifolio-cli"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Money and quantities are decimals; a float here is a defect, not a style choice.
+# See design/architecture.md [ARC-006].
+float_arithmetic = "deny"
+cast_possible_truncation = "deny"
+cast_precision_loss = "deny"
+
+[workspace.dependencies]
+fifolio-core = { path = "crates/fifolio-core" }

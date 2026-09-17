@@ -1,0 +1,33 @@
+[package]
+name = "fifolio-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+csv = "1.4.0"
+fluent-bundle = "0.16.0"
+ratatui = "0.30.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+rust_decimal = "1.43.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sys-locale = "0.3.2"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+unic-langid = "0.9.6"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+insta = "1.48.0"
+predicates = "3.1.4"
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
