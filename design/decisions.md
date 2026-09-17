@@ -121,3 +121,14 @@ An unrecognized type naming a security therefore rejects the file, extending DEC
 `CORPORATE_ACTION`. An unrecognized type naming no security is almost certainly cash: it is not
 stored, but the import summary names it and counts it, so a new broker type becomes visible on its
 first appearance rather than years later.
+
+**DEC-023 — Coverage thresholds gate changed lines, not the codebase.** Absolute per-crate gating
+blocks a greenfield build-out by construction: `fifolio-server`'s only content is a six-line stub
+that no test executes, so it sits at 0% against a 90% threshold and nothing could ever land. The
+alternatives were worse — a ratchet needs a baseline file and machinery, and lowering thresholds to
+fit the code means they are not thresholds. Patch coverage judges a change on the code it actually
+wrote, keeps the figures fixed at 95 / 90 / 75, and keeps CI green from the first commit.
+Implemented as `cargo llvm-cov --lcov` into `diff-cover`, scoped per crate with `--include` and
+counting new files with `--include-untracked`; verified end to end against this repository before
+being written down. The absolute figures remain the target for the finished project, reported but
+not gated until build-out completes.

@@ -26,7 +26,7 @@ Keep it to the paths that matter. End-to-end tests are the slowest and the most 
 
 # Coverage
 
-Per crate, enforced in CI, measured with `cargo llvm-cov`: [TST-008]
+Thresholds, per crate: [TST-008]
 
 | Crate | Threshold |
 | --- | --- |
@@ -38,7 +38,23 @@ Per crate rather than workspace-wide, so a well-covered core cannot mask an unte
 
 The render layer is excluded because it draws; everything it draws is decided in the UI-agnostic client layer, which is not excluded. [TST-009] If logic starts appearing inside the render layer, the exclusion is wrong and the code should move, not the threshold.
 
-**Coverage is a floor, not evidence.** It proves lines ran, not that anything was checked. It is there to catch code nobody tested at all. Confidence in the FIFO engine comes from the property tests below.
+## What is gated: changed lines
+
+The thresholds are enforced as **patch coverage** — they apply to the lines a change adds or modifies, not to the whole codebase. [TST-025] Measured with `cargo llvm-cov --lcov` feeding `diff-cover`, scoped per crate with `--include`, and counting new files via `--include-untracked`.
+
+    cargo llvm-cov --workspace --lcov --output-path target/lcov.info
+    diff-cover target/lcov.info --compare-branch=<base> --include-untracked \
+      --include 'crates/fifolio-core/**' --fail-under=95
+
+Gating the whole codebase would block the build-out by construction: a crate whose only content is a stub sits at 0% against a 90% threshold, so nothing could ever land. Judging a change on the code it actually wrote is the honest question anyway, and it keeps the thresholds fixed rather than moving them to fit the code.
+
+The base of the comparison is whatever the change is being judged against: the previous commit when an item is committed, the target branch in a pull request. [TST-026]
+
+## The absolute figures
+
+The same per-crate thresholds apply to the codebase as a whole once build-out is complete. Until then they are reported, not gated. [TST-027] A project that reaches its last work item without meeting them has a gap patch coverage did not catch — untested code that predates the rule.
+
+**Coverage is a floor, not evidence.** It proves lines ran, not that anything was checked. It is there to catch code nobody tested at all. Confidence in the FIFO engine comes from the property tests below, and from `test-reviewer`, which judges whether an assertion verifies anything — a question no percentage can answer.
 
 # Properties
 
