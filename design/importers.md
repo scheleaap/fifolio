@@ -57,7 +57,7 @@ still produce one identity, the file is rejected rather than deduplicated [IMP-S
 | `Boekingsbedrag` | cash movement in the native currency (`_Valuta`), **including** costs |
 | `Aantal` | the same amount in EUR |
 | `Totale kosten` | costs, **in EUR**, always negative |
-| `Omrekeningskoers` | native to EUR multiplier; the stored rate is its reciprocal at full precision [IMP-SAXO-029] |
+| `Omrekeningskoers` | native to EUR multiplier. The stored rate is its reciprocal, rounded to the FX scale [IMP-SAXO-029] |
 
 Despite its name, `Aantal` is never a quantity. [IMP-SAXO-009]
 
@@ -72,9 +72,10 @@ every disposal's proceeds by twice the fee.
     EUR fees   = |Totale kosten|
     EUR price  = EUR gross / (quantity × factor)
 
-The native-side figures follow the same shape, with the costs converted back from EUR at the same
-rate: `native fees = EUR fees / rate`, and `native gross = |Boekingsbedrag| − native fees` for a buy,
-`+` for a disposal. [IMP-SAXO-030]
+The native-side figures follow the same shape, with the costs converted back from EUR using the
+file's own `Omrekeningskoers` — not the stored rate, which is its reciprocal:
+`native fees = EUR fees / Omrekeningskoers`, and `native gross = |Boekingsbedrag| − native fees` for
+a buy, `+` for a disposal. [IMP-SAXO-030]
 
 `factor` is the security's quotation factor: 1 per unit, 0.01 percent of par. Dividing by it here is
 what makes `EUR price` the quoted price the statement shows, so that the domain's

@@ -102,7 +102,7 @@ Every transaction stores both its native figures and its EUR figures, together w
 
 Rate source, in order of preference: [DOM-030]
 
-* `broker`: the source file states the EUR figures actually booked. They are used verbatim, because they are what was actually paid, and the stored rate is the implied quotient [DOM-031]
+* `broker`: the source file states the EUR figures actually booked. They are used verbatim, because they are what was actually paid. The stored rate is derived as each format specifies and is **informational only** — nothing computes with it, since every calculation reads the booked EUR total [DOM-031]
 * `ecb`: the ECB daily euro reference rate for the trade date. Used whenever the file carries no EUR figure [DOM-032]
 * `native`: the transaction is already denominated in EUR. Rate is 1 [DOM-033]
 
