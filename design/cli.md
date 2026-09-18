@@ -8,7 +8,7 @@ See `architecture.md` for the workspace layout and `domain.md` for the attributi
 
 CLI:
 * `fifolio-cli` starts the interactive application [CLI-001]
-* `fifolio-cli report <income-tax|acquisitions>` prints the corresponding report. [CLI-002] Optional `--format` for human-readable, CSV or JSON output, defaulting to JSON. [CLI-003] Optional `--account` and `--year` filters [CLI-004]
+* `fifolio-cli report <income-tax|acquisitions>` prints the corresponding report. [CLI-002] Optional `--format` with values `human`, `csv` or `json`, defaulting to `json`. [CLI-003] Optional `--account` and `--year` filters [CLI-004]
 * `fifolio-cli export-manual-information <file>` writes every manual entry to the named file [CLI-005]
 * `fifolio-cli import-manual-information <file>` replays such a file into an empty or partial database [CLI-037]
 * `--server-url` selects the server, defaulting to `http://127.0.0.1:8000` [CLI-006]

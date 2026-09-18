@@ -268,3 +268,60 @@ rows.** A year at a time keeps a corporate action's rows inside one file and mak
 unambiguous. The remaining overlap is the ordinary year-to-date workflow — re-downloading the
 current year as it fills — and there the newest import claims the rows it covers, so undoing it
 removes that year while the superseded batches own nothing. A partial year is accepted.
+
+**DEC-045 — Canonical order is (trade date, order, batch age).** `order` is scoped to the file it
+was computed from, so it cannot be compared across files on its own. Trade date sorts first and one
+year is one file, so records sharing a date almost always share a file; batch age settles the rest.
+The residue, recorded as a limitation rather than engineered around: a broker re-issuing a year with
+a backdated row can compute a position equal to a stored one, because records are never edited.
+
+**DEC-046 — Each record a transfer emits carries its own parcel's cost.** Supersedes DEC-043's
+wording. "Basis divided in proportion to the quantity consumed" reads as pooling the total and
+splitting by quantity, which gives every emitted parcel the same unit cost — two equal parcels
+bought at 100 and 200 both emerging at 150. That destroys the per-parcel basis one record per parcel
+exists to preserve, and does it silently: the total stays right and each individual figure is wrong,
+surfacing only when the parcels are disposed of in different years. Fees divide in proportion to the
+basis each record carries, and emitted quantity is consumed quantity times the ratio, the last
+record absorbing both remainders.
+
+**DEC-047 — Split ratios are integer pairs, computed as exact rationals.** A one-for-three reverse
+split has no finite decimal expansion, so rounding at each application leaves a residue that grows
+across successive splits and can stop a parcel exhausting exactly. Effective quantity is an exact
+rational and is rounded only for display.
+
+**DEC-048 — Every closing variant carries `eur_gross` and `eur_fees`; `split` is excluded by name.**
+One allocation formula reads them all. A `transfer_out`'s gross is the basis it carries onward and
+is derived from its own allocations rather than stored, so the opening side is computed first.
+
+**DEC-049 — A `TAX_EXCHANGE` derives only its `transfer_out`.** The importer took both sides, the
+domain emits the inbound side at approval; the domain is right. The positive-quantity row supplies
+the target security and ratio and is cited rather than turned into a transaction. Deriving both at
+import would collapse a position built from several purchases into one parcel with one acquisition
+date, losing what the design exists to preserve.
+
+**DEC-050 — An expiration of a position with nothing remaining stays pending.** A redemption of
+nothing is a data problem, not a transaction, so it never enters the model and the division by a
+zero quantity cannot arise.
+
+**DEC-051 — A part-cash, part-exchange event puts the cash and all the costs on the sell leg.** The
+fee was charged on the payout, so attaching it to the sale deducts it in the year it was incurred
+rather than deferring it to a disposal that may be years away. The transfer leg carries only the
+basis it inherits.
+
+**DEC-052 — The import checks the file's account id against the target account.** An account records
+its broker id at creation; a mismatch, or a file carrying rows from more than one account, refuses
+the import. This is the guard against the mis-aimed import that batch deletion exists to undo.
+
+**DEC-053 — Smaller determinations.** The multi-year check uses the **trade date**, which the domain
+already treats as authoritative, so a file named for one year can still be refused. A transaction's
+`order` is that of the record it consumes, which is unique by construction. The acquisition report
+states effective quantity **as of today**, so its two quantity columns share one scale. Saxo's
+stored FX rate is the reciprocal of `Omrekeningskoers` at full precision rather than the implied
+quotient of the booked amounts; the two differ in the fifth decimal, and since only the booked EUR
+total is ever computed with, the stored rate serves the audit trail alone. Deleting a batch is
+refused when a record it owns is cited by a transaction it did not derive. Rounding is **half away
+from zero**, since "half-up" is ambiguous for the negative amounts a realized loss produces. The
+ECB fallback is bounded: nothing before the series begins in 1999, and a substitution more than
+seven days stale is an error. Report formats are named `human`, `csv` and `json`. Only attributed
+disposals contribute to the income tax overview; an unattributed one is reported as outstanding
+rather than counted as zero.

@@ -29,7 +29,8 @@ CLI:
 
 * Caller supplies the target account explicitly, the file format, and the file [SRV-012]. Source files rarely identify the account reliably
 * Supported formats: Saxo NL XLSX, Trade Republic DE CSV [SRV-013]
-* A file covering more than one calendar year is refused [SRV-051]
+* A file whose rows carry trade dates in more than one calendar year is refused [SRV-051]
+* The file's account id is checked against the target account; a mismatch, or a file carrying rows from more than one account, refuses the import [SRV-056]
 * Unknown ISINs are created automatically and flagged as auto-created for later review [SRV-014]
 * Import is idempotent, on the identity rules in `domain.md` [SRV-015]
 * Rows that carry no position effect are recognized and not stored [SRV-016]
@@ -42,7 +43,7 @@ Every import creates a batch, and a batch is the unit of undo: [SRV-019]
 * Read and list import batches, with their account, filename, format, timestamp and counts [SRV-020]
 * A source record belongs to every batch that supplied it, and the **newest** of those owns it. Re-importing a year transfers ownership to the new batch; the superseded batches then own nothing [SRV-052]
 * Delete a batch, which removes exactly the source records it owns and anything derived from them. Manual entries are never removed [SRV-021]
-* Deletion is refused, naming the offenders, if any derived transaction participates in an attribution [SRV-022]. Delete those attributions first
+* Deletion is refused, naming the offenders, if any derived transaction participates in an attribution, or if a record the batch owns is cited by a transaction the batch did not derive [SRV-022]. Delete those attributions first
 
 ## Source records and manual entries
 

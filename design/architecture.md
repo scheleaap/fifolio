@@ -23,7 +23,7 @@ Scales: [ARC-007]
 
 Trade value is `quantity × unit_price × factor`, where the factor comes from the security's quotation: 1 per unit, 0.01 for percent of par. [ARC-008] See `domain.md`.
 
-Intermediate arithmetic keeps full precision. [ARC-009] Rounding to the scales above happens at storage and presentation boundaries, half-up. [ARC-010] The one place rounding is load-bearing is allocation shares, which follow the drift rule in `domain.md`.
+Intermediate arithmetic keeps full precision. [ARC-009] Rounding to the scales above happens at storage and presentation boundaries, half away from zero. [ARC-010] "Half-up" is ambiguous for negative amounts, and a realized loss is negative. The one place rounding is load-bearing is allocation shares, which follow the drift rule in `domain.md`.
 
 # Storage
 
@@ -38,6 +38,8 @@ ECB daily euro reference rates are cached in a local table, keyed by currency an
 The ECB publishes the current rates and a rolling 90-day window, which is not enough for a first import of several years of history. The cache is therefore seeded once from the ECB's complete historical series (all currencies back to 1999, a few megabytes) [ARC-017] and topped up from the 90-day feed afterwards. [ARC-018]
 
 An import that needs a rate which is neither cached nor fetchable fails with a clear error naming the currency and date, rather than guessing. [ARC-019]
+
+The fallback to an earlier rate is bounded: no rate exists before the series begins in 1999, and a substitution more than seven days stale is an error rather than a silent approximation. [ARC-027]
 
 # Errors
 

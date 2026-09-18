@@ -1,9 +1,13 @@
 # Importers
 
-A file covering more than one calendar year is refused. [IMP-001] Broker exports are taken a year at
+A file whose rows carry **trade dates** in more than one calendar year is refused. [IMP-001] The trade date decides, not a booking timestamp and not the filename: the trade date is what the domain already treats as authoritative, so a file named for 2024 can still be refused if it carries a 2023 trade date. [IMP-002] Broker exports are taken a year at
 a time, which keeps a corporate action's rows inside one file and makes the ownership of a
 re-imported row unambiguous. A partial year is fine — the first Saxo export runs 2021-11-29 to
 2021-12-31.
+
+An account records its broker account id when it is created. An import whose file names a different
+account is refused, naming both, and a file carrying rows from more than one account is refused
+outright. [IMP-003] This is the guard against the mis-aimed import that batch deletion exists to undo.
 
 Format-specific detail. The domain model is in `domain.md`; nothing here belongs in it.
 
@@ -53,7 +57,7 @@ still produce one identity, the file is rejected rather than deduplicated [IMP-S
 | `Boekingsbedrag` | cash movement in the native currency (`_Valuta`), **including** costs |
 | `Aantal` | the same amount in EUR |
 | `Totale kosten` | costs, **in EUR**, always negative |
-| `Omrekeningskoers` | native to EUR multiplier |
+| `Omrekeningskoers` | native to EUR multiplier; the stored rate is its reciprocal at full precision [IMP-SAXO-029] |
 
 Despite its name, `Aantal` is never a quantity. [IMP-SAXO-009]
 
@@ -67,6 +71,10 @@ every disposal's proceeds by twice the fee.
     EUR gross  = |Aantal| + |Totale kosten|      for a disposal (cash in is net of costs)
     EUR fees   = |Totale kosten|
     EUR price  = EUR gross / (quantity × factor)
+
+The native-side figures follow the same shape, with the costs converted back from EUR at the same
+rate: `native fees = EUR fees / rate`, and `native gross = |Boekingsbedrag| − native fees` for a buy,
+`+` for a disposal. [IMP-SAXO-030]
 
 `factor` is the security's quotation factor: 1 per unit, 0.01 percent of par. Dividing by it here is
 what makes `EUR price` the quoted price the statement shows, so that the domain's
@@ -110,9 +118,9 @@ Quantity and direction are only present inside the free-text `Acties` string: `K
 | --- | --- | --- |
 | `Koop` | `buy` | derived automatically |
 | `Verkoop` | `sell` | derived automatically |
-| `Deponering` | `transfer_in` | derived automatically, source `broker`, date provenance `stated` (see below) |
-| `Expiratie` | `expiration` | derived automatically; quantity is the remaining position, proceeds from the row |
-| `Fusie`, `Terugkoopaanbod` (+ `Terugboeking`) | `sell` and/or `transfer_out` | pending: the quantity disposed, and any target security |
+| `Deponering` | `transfer_in` | derived automatically, source `broker`, date provenance `transfer_date` (see below) |
+| `Expiratie` | `expiration` | derived automatically; quantity is the remaining position, proceeds from the row. Pending if nothing remains |
+| `Fusie`, `Terugkoopaanbod` (+ `Terugboeking`) | `sell` and/or `transfer_out` | pending: the quantity disposed, and any target security. Cash and costs go to the sell leg [IMP-SAXO-031] |
 | `Stock split` | `split` | pending: the ratio |
 | `Omwisseling` | `transfer_out` | pending: the target security and the ratio |
 | `Dividend`, `Keuzedividend`, `Herbeleggingsdividend` | `buy` or none | see Dividends |
@@ -207,7 +215,7 @@ No foreign-currency **trade** appears in four years of exports, so it is not spe
 | `category` / `type` | Handling |
 | --- | --- |
 | `TRADING` / `BUY`, `SELL` | derived automatically |
-| `CORPORATE_ACTION` / `TAX_EXCHANGE` | a `transfer_out` and its `transfer_in`; quantities are stated |
+| `CORPORATE_ACTION` / `TAX_EXCHANGE` | a `transfer_out` only; the inbound row supplies the target security and the ratio |
 | `CORPORATE_ACTION` / anything else | the import is rejected [IMP-TR-010] |
 | `CASH` / `DIVIDEND`, `INTEREST_PAYMENT`, `CUSTOMER_INBOUND`, `TRANSFER_INBOUND`, `STOCKPERK` | recognized as non-position, not stored |
 | anything else naming a security | the import is rejected [IMP-TR-013] |
@@ -221,8 +229,11 @@ A fund merger. The sample's pair, effective 2024-01-18, moves −60.00 of `LU186
 +60.00 of `IE000Y77LGG9` in: an Amundi MSCI World SRI ETF redomiciled from Luxembourg to Ireland,
 substituted one for one with no price, no amount and no tax.
 
-Treated as tax-neutral: a `transfer_out` of the negative side and a `transfer_in` of the positive,
-basis and acquisition dates carrying across. [IMP-TR-018] The evidence supports it — a German broker
+Treated as tax-neutral. The importer derives **only the `transfer_out`**, from the negative-quantity
+row; the positive row supplies the target security and the ratio and is cited, not turned into a
+transaction. [IMP-TR-018] The matching `transfer_in` records are emitted on approval, one per parcel
+consumed, which is the only way a position built from several purchases keeps its separate
+acquisition dates. The evidence supports it — a German broker
 must withhold on a realized gain, and the rows carry no monetary figure of any kind — but the label
 is TR's and the reading is inference from absence. The user's Trade Republic tax report for the year
 settles it, and a different answer there means revisiting this.
@@ -250,8 +261,9 @@ Nothing in v1 turns on that distinction — Teilfreistellung is a non-goal — a
 securities are flagged for review, so it is visible and correctable.
 
 No Trade Republic bond has been observed, so the percent-of-par convention confirmed for Saxo is
-**not** assumed here: a security that would map to `bond` from this format is created pending review
-rather than given a quotation, and the import summary says so. [IMP-TR-021]
+**not** assumed here: a row whose instrument would map to `bond` from this format **rejects the
+import**, naming the ISIN, because its quotation cannot be established and guessing is a
+hundredfold error either way. [IMP-TR-021]
 
 `TAX_EXCHANGE` is the only `CORPORATE_ACTION` type observed, so it is the only one mapped. An
 unrecognized type **rejects the whole file**, naming the type, the row and the transaction id, and

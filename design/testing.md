@@ -65,6 +65,8 @@ Some rules are better stated as invariants over generated input than as examples
 * Allocation shares sum exactly to the parent figure once a parcel is fully consumed, for every division and every rounding remainder
 * A buy's fees are fully distributed once its last unit is sold, and not before
 * A split leaves an opening's total cost unchanged while scaling its effective quantity, and an opening's effective quantity as of a position before any split equals its stated quantity
+* Successive splits compose exactly: applying 1-for-3 then 3-for-1 returns the original quantity, with no accumulated residue
+* Each record emitted by a transfer carries its own parcel's cost, never a pooled average: two equal parcels acquired at different prices emerge at different unit costs
 * A transfer out preserves total cost basis and parcel count across the transfer_in records it emits
 * An opening's effective quantity equals its stated quantity under no splits, and is stable under a split applied twice with inverse ratios
 * Attributing a sequence of closings in canonical order never leaves an opening over-consumed
