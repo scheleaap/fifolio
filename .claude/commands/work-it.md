@@ -38,6 +38,10 @@ If the outcome is `stopped`, lead with why. A stop for `needs your decision` mea
 specification does not determine an answer: present the options and what each implies, so the
 user can decide without reading the code. Do not resolve it yourself.
 
+The audit's open decisions no longer stop the run on their own — they block only the items whose
+requirements they touch. Report how many are open and which requirements they hold up, so the user
+can see what is waiting and decide when to clear it.
+
 If it stopped after three review rounds, show the surviving findings. Two agents failing to
 converge usually means the specification is ambiguous rather than the code being wrong.
 

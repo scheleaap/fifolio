@@ -34,6 +34,21 @@ const VERDICT = {
   required: ['verdict', 'blockers', 'majors', 'minors', 'decisions', 'summary', 'findings'],
 }
 
+const AUDIT = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['pass', 'fail'] },
+    blockers: { type: 'integer' },
+    majors: { type: 'integer' },
+    minors: { type: 'integer' },
+    decisions: { type: 'integer' },
+    blockedRequirements: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string' },
+    findings: { type: 'string' },
+  },
+  required: ['verdict', 'blockers', 'majors', 'minors', 'decisions', 'blockedRequirements', 'summary', 'findings'],
+}
+
 const PLAN = {
   type: 'object',
   properties: {
@@ -91,16 +106,27 @@ const audit = await agent(
   `Audit the specification in design/ against the code in this repository.
 
 An unimplemented requirement is the normal state before implementation; report it, but it is not
-a reason to stop. What must stop the cycle is anything a human has to decide: a contradiction
-between documents, or a requirement that does not determine behavior. Classify those as
-decision-required.${RETURN_RULE}`,
-  { agentType: 'spec-auditor', label: 'audit spec', phase: 'Audit', schema: VERDICT },
+a reason to stop. Classify as decision-required anything a human has to decide: a contradiction
+between documents, or a requirement that does not determine behavior.
+
+In "blockedRequirements", list every requirement identifier named by a decision-required finding,
+for example ["DOM-106", "IMP-TR-018"]. That list is what stops work on the items depending on it,
+so it must be complete and must contain nothing else.${RETURN_RULE}`,
+  { agentType: 'spec-auditor', label: 'audit spec', phase: 'Audit', schema: AUDIT },
 )
 
 if (!audit) return stop('spec-auditor did not return')
-if (audit.decisions > 0) return stop('specification needs your decision', audit.findings)
 
+// A blocker is a wrong result or a violated invariant: nothing may be built over it.
+if (audit.blockers > 0) return stop('the specification has a blocking defect', audit.findings)
+
+// Decisions no longer halt the run. They block only the items that depend on them, so the
+// specified majority of the system can be built while the undecided remainder waits.
+const blocked = new Set(audit.blockedRequirements || [])
 log(`Specification audit: ${audit.summary}`)
+if (blocked.size) {
+  log(`${audit.decisions} open decision(s) block ${blocked.size} requirement(s): ${[...blocked].join(', ')}`)
+}
 
 // ---------------------------------------------------------- item loop
 
@@ -108,7 +134,11 @@ for (let i = 0; i < MAX_ITEMS; i++) {
   phase('Plan')
   const plan = await agent(
     `Update PLAN.md against design/ and the current code, then name the next work item to build:
-the first item whose status is todo and whose dependencies are all done.
+the first item whose status is todo, whose dependencies are all done, and none of whose
+requirements appear in the blocked list below.
+
+Blocked requirements (undecided in the specification; any item covering one of these must be set
+to blocked and must not be selected): ${blocked.size ? [...blocked].join(', ') : 'none'}
 
 Set nextItemId to "" if no item is ready. Set decisions above zero only if the specification
 leaves something open that prevents planning. Put a short account of what changed in "summary".`,
@@ -120,6 +150,15 @@ leaves something open that prevents planning. Put a short account of what change
   if (!plan.nextItemId) {
     log(plan.remaining > 0 ? 'No item is ready; remaining items are blocked.' : 'Plan exhausted.')
     break
+  }
+
+  const itemReqs = String(plan.requirements || '').split(/[^A-Z0-9-]+/).filter(Boolean)
+  const clash = itemReqs.filter((r) => blocked.has(r))
+  if (clash.length) {
+    return stop(
+      `item ${plan.nextItemId} depends on requirements that are still undecided`,
+      `${clash.join(', ')}\n\n${audit.findings}`,
+    )
   }
 
   if (attempted.has(plan.nextItemId)) {
