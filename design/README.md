@@ -9,6 +9,7 @@ Design documents:
 * `cli.md`: `fifolio-cli`, the terminal application and the report commands
 * `testing.md`: test layers, coverage thresholds, fixtures and properties
 * `decisions.md`: resolved ambiguities — what was open, what was chosen, and why
+* `open-questions.md`: what is still undecided, and which requirements each question blocks
 
 `example_exports/` holds the real broker exports the importer mappings were derived from.
 
