@@ -209,3 +209,62 @@ fee. Separately, the importer derived an EUR unit price by dividing gross by qua
 quotation factor while the domain then multiplied by 0.01 again, understating a bond's cost basis a
 hundredfold. The factor is now applied exactly once, and the importer divides by it so the stored
 price remains the price the statement shows.
+
+**DEC-036 — Effective quantity is measured at the closing's position, not today's.** Supersedes the
+formula in DEC-024's model. A disposal states its quantity in the units current when it happened, so
+dividing its cost basis by an effective quantity that includes later splits halves the basis of
+anything sold before a split — invisible in every scenario without one, which is most of them. The
+invariant capping allocations against an opening compares quantities scaled to a common position,
+since quantities stated at different positions are in different unit scales.
+
+**DEC-037 — The booked EUR total governs every calculation.** Supersedes DEC-028's two-path rule,
+which promised that full allocations use the booked total and partial ones the unit price but never
+gave the second formula, so two implementers would produce different cents. Shares are taken
+pro-rata from the booked total and never rebuilt from the unit price; the drift rule already
+guarantees they sum back to it. The unit price is kept for display and reconciliation and nothing
+computes with it.
+
+**DEC-038 — Manual entries are a separate entity from source records.** They shared one entity with
+a `kind` field, and an awkward split underneath: an imported record belongs to a batch, a manual one
+to the account. That difference is exactly what made an undo dangerous, and it was expressed as
+prose rather than as shape. Splitting them makes it structural: an undo removes source records and
+cannot touch manual entries. A manual entry references the records it answers by their **broker
+identity** rather than an internal key, so it survives their deletion and reconnects automatically
+when the same rows return — an undo followed by a re-import restores the account exactly. An entry
+with nothing to attach to is listed as waiting, so a vanished completion has an explanation.
+
+**DEC-039 — Order is computed from file content at read time and stored.** Supersedes the undefined
+"import sequence". Rows are sorted on the trade date, then on whatever further ordering columns the
+format provides in a stated precedence, then on file position normalized to the file's own
+direction. Saxo emits newest-first and its `Bk Record Id` / `Booking Id` / `Transactie-ID` are
+monotonic counters that ascend with date; its `Corporate action-Id` is not monotonic and is never an
+ordering column. Because the third key is always available the order is total, nothing is ever
+refused for ambiguity, and the result depends on the file rather than on import history — which
+removes the reproducibility limitation DEC-029 accepted. Stored because the file may be gone when
+the figure is next needed.
+
+**DEC-040 — A transferred parcel's acquisition date is never corrected.** Supersedes DEC-011's
+editable date. The transfer date stands permanently, so there is no edit endpoint and no re-rating
+rule. The accepted cost is that pre-2009 grandfathered status is not represented on any transferred
+parcel, and several Saxo positions price to the mid-2000s.
+
+**DEC-041 — Quotation has no unknown state; an undeterminable one rejects the import.** Rather than
+a third enum variant with a pending rule. Consistent with how unmapped instrument types are already
+treated, and it keeps the trade-value calculation total.
+
+**DEC-042 — `Deponering` is the one place the `Acties` label's price is authoritative.** The general
+rule forbids using that label for money because its price is rounded to two decimals, but
+`Boekingsbedrag` and `Aantal` are zero on transfer rows so no column carries the figure. The
+rounding is carried into the cost basis: 0.15 EUR on the sample bond.
+
+**DEC-043 — An exchange splits basis pro-rata with the last parcel absorbing the remainder, and its
+fees join the carried basis.** The same drift rule allocation shares follow, so there is one
+rounding behaviour. Fees are an incidental cost of acquiring the replacement holding and reduce the
+gain when it is eventually disposed of, rather than vanishing or being booked as a loss on an event
+treated as tax-neutral everywhere else.
+
+**DEC-044 — Imports are refused above one calendar year; within a year the newest import owns its
+rows.** A year at a time keeps a corporate action's rows inside one file and makes ownership
+unambiguous. The remaining overlap is the ordinary year-to-date workflow — re-downloading the
+current year as it fills — and there the newest import claims the rows it covers, so undoing it
+removes that year while the superseded batches own nothing. A partial year is accepted.

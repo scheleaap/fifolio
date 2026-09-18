@@ -37,16 +37,22 @@ Security
 * Securities may be created automatically during import; such records are flagged so the user can review and correct them [DOM-006]
 
 Source record
-* One parsed row of source data, stored verbatim alongside its parsed fields. [DOM-007] Never edited after creation [DOM-008]
-* Kind is a fixed enum: [DOM-009]
-    * `imported`: produced by reading a broker export
-    * `manual`: information the user supplied because no export contains it
-* Fields: kind, raw content, parsed fields, identity (see Identity), consumed or not
-* Relations: belongs to: import batch (imported) or account (manual); consumed by: 0 or 1 transaction
+* One parsed row of a broker export, stored verbatim alongside its parsed fields. [DOM-007] Never edited after creation [DOM-008]
+* Fields: raw content, parsed fields, identity (see Identity), order (see Ordering), consumed or not
+* Relations: belongs to: >= 1 import batches; consumed by: 0 or 1 transaction; cited by: >= 0 transactions
+
+Manual entry
+* Information the user supplied because no export contains it: a share count, a stock-or-cash election, a target security and ratio [DOM-097]
+* Fields: account, security, what was supplied, and **the identities of the source records it answers** [DOM-098]
+* It references those records by their broker identity rather than by an internal key, so it survives their deletion and reconnects when the same rows are imported again [DOM-099]
+* Relations: belongs to: account; cited by: 0 or 1 transaction
+
+The two are separate entities because their lifecycles differ and that difference must be structural rather than remembered. A source record is reproducible — import the file again. A manual entry is not: it is the only thing in the system that cannot be recovered from a broker file, which is why undoing an import can never destroy one [DOM-100]
 
 Transaction
 * Everything that happens to a holding. A sum type: each variant carries only the fields it has, so a variant can never be read as another [DOM-010]
-* Common to every variant: trade date, optional execution time, import sequence [DOM-011], and a relation to account, security and >= 1 source records [DOM-013]
+* Common to every variant: trade date, order [DOM-011], and a relation to account, security and >= 1 source records [DOM-013]
+* A transaction **consumes** the source records that are answered by its existence, and may **cite** further records without consuming them. Consumption is what clears a record from the completion queue; citation is what preserves the audit trail. A decomposition names which of its transactions consumes [DOM-101]
 * Variants, grouped by what they do to holdings:
 
 | Variant | Effect | Realizes a gain | Own fields |
@@ -60,7 +66,7 @@ Transaction
 
 * **Opening** variants are `buy` and `transfer_in`; **closing** variants are `sell`, `expiration` and `transfer_out`. `split` is neither [DOM-081]
 * A `buy`'s origin records how it arose: an ordinary purchase, or shares issued as a stock dividend, whose cost basis is their taxable value at issue [DOM-082]
-* A `transfer_in` covers both a transfer from another broker and units arriving from a corporate action. Its `source` says which, and its date provenance says what its acquisition date is worth: `stated` when it came from the broker's own figure and may be edited, `inherited` when it was carried from the parcel it replaced and may not [DOM-083]
+* A `transfer_in` covers both a transfer from another broker and units arriving from a corporate action. Its `source` says which, and its date provenance records what its acquisition date is worth: `transfer_date` when the export gave no real acquisition date, `inherited` when it was carried from the parcel it replaced. **Neither is editable** [DOM-083]
 * `fees` is the sum of all incidental costs: commission, exchange fees, and transaction taxes such as the French FTT or stamp duty. [DOM-012] They receive identical treatment in the gain calculation, so they are not modeled separately
 * A transaction cites the source records it was derived from, so a multi-row event keeps its audit trail [DOM-016]
 
@@ -92,7 +98,7 @@ The relevant date is the trade date (the obligating transaction), not the settle
 
 Every transaction stores both its native figures and its EUR figures, together with the rate used, so the EUR figures are reproducible and auditable rather than opaque. [DOM-028] The EUR figures mirror the native ones: an EUR unit price and EUR fees, at the same scales. [DOM-029] Allocation shares derive from that pair the same way they derive from the native pair, and are never stored independently. [DOM-084]
 
-**The EUR gross total is stored as well as the unit price.** [DOM-085] Dividing a booked total by a quantity and multiplying back does not round-trip at fractional quantities, so a full allocation takes its figures from the booked total and a partial allocation from the unit price, with the drift rule absorbing the difference. This is what makes a reported figure reconcile against a broker document.
+**The EUR gross total is stored as well as the unit price, and it is the figure every calculation uses.** [DOM-085] Dividing a booked total by a quantity and multiplying back does not round-trip at fractional quantities, so allocation shares are taken pro-rata from the booked total and never rebuilt from the unit price; the drift rule already guarantees they sum back to it exactly. The unit price is kept for display and for reconciliation against the statement, and nothing computes with it. [DOM-104]
 
 Rate source, in order of preference: [DOM-030]
 
@@ -120,13 +126,17 @@ Prices are stored exactly as the statement shows them, so a figure in the applic
 
 # Ordering
 
-FIFO requires a total order over a security's transactions within an account. The canonical order is: [DOM-040]
+FIFO requires a total order over a security's transactions within an account.
 
-1. trade date
-2. execution time, where the source provides one; transactions without a time sort before those with one on the same date [DOM-041]
-3. import sequence
+Order is established **when a file is read**, from the file's own content, and stored on each source record as an integer `order`. [DOM-040] It is computed by sorting the file's rows on, in turn:
 
-Every variant takes part in this order, `split` included, so a split and a trade on the same date are ordered by whichever came first in the import. [DOM-088] That makes a same-day result depend on import history: see Known limitations.
+1. the trade date
+2. every further ordering column the format provides, in a stated precedence — a monotonic booking counter, an execution or booking timestamp. A column that is not monotonic with time is never an ordering column
+3. the row's position in the file, normalized to the file's own direction, so a newest-first export does not order backwards
+
+The third key is always available, so the order is total and no import is ever refused for ambiguity. [DOM-102] Because it is derived from file content alone, re-importing the same file reproduces it exactly, and the order no longer depends on which files were imported first.
+
+Every variant takes part in this order, `split` included. [DOM-088]
 
 # Processes
 
@@ -140,7 +150,9 @@ At import each source record is classified: [DOM-043]
 * **Pending.** The record affects holdings but the export does not contain everything needed. It waits for the user, who supplies the missing part. This is the completion queue [DOM-045]
 * **Recognized as non-position.** Dividends, interest, deposits, withdrawals and account fees. Not stored; the import summary reports how many were recognized as such [DOM-046]
 
-Nothing is invented. The user completes records that exist; there is no creation of a transaction from nothing. [DOM-047] Everything the user supplies becomes a `manual` source record, [DOM-048] so that hand-entered information is as traceable as imported information, and so that it can be exported and kept.
+Nothing is invented. The user completes records that exist; there is no creation of a transaction from nothing. [DOM-047] Everything the user supplies becomes a manual entry, [DOM-048] so that hand-entered information is as traceable as imported information, and so that it can be exported and kept.
+
+A manual entry outlives the import it answered. Undoing an import removes its source records and the transactions derived from them, and leaves every manual entry standing. When the same rows are imported again the entry reconnects by their identities and its transaction is restored automatically, so an undo followed by a re-import returns the account exactly where it was. [DOM-108] An entry whose records are absent is listed as waiting, naming what it expects, so a completion that vanished from the queue has an explanation. [DOM-109]
 
 A security with any pending source record is blocked from attribution **in the account that record belongs to**, because that account's holdings are known to be incomplete. Other accounts holding the same security are unaffected, since FIFO never crosses accounts. [DOM-049]
 
@@ -148,11 +160,17 @@ A security with any pending source record is blocked from attribution **in the a
 
 A `split` rescales every parcel of one security that is open at its position in the canonical order, by its ratio. Total cost per parcel is unchanged, so cost per unit moves inversely. Acquisition dates are untouched.
 
-An opening transaction's **effective quantity** is its stated quantity multiplied by the ratios of every split for that security that follows it in canonical order. [DOM-089] Its **effective unit price** is its total cost divided by its effective quantity. The stated figures are never rewritten, so the transaction still reconciles against the statement.
+An opening transaction's **effective quantity as of a position in the canonical order** is its stated quantity multiplied by the ratios of every split for that security that falls between the opening and that position. [DOM-089] Its effective unit price at that position is its total cost divided by that effective quantity. The stated figures are never rewritten, so the transaction still reconciles against the statement.
+
+The position matters. A disposal states its quantity in the units current when it happened, so a cost basis must be divided by the opening's effective quantity **as of that disposal**, not as of today. Buy 10 at 100, sell 5, then split 2:1: the basis of those 5 units is 500, and dividing by the post-split 20 would give 250 — halving the cost of everything sold before any split. [DOM-103]
 
 ## Transfers
 
 A `transfer_out` closes parcels without realizing a gain, because the basis carries onward. It runs through the same attribution process as any other closing transaction: the user approves which parcels it consumes, and the system then emits **one `transfer_in` per consumed parcel**, each carrying that parcel's acquisition date and its share of the cost basis, with date provenance `inherited`. [DOM-090]
+
+Each emitted record's quantity is the consumed quantity multiplied by the transfer's ratio. Basis is divided in proportion to the quantity consumed from each parcel, with the last emitted record absorbing the rounding remainder — the same drift rule allocation shares follow, so there is one rounding behaviour to understand. [DOM-106]
+
+Fees on the transfer are added to the carried basis rather than dropped or booked as a loss: they are an incidental cost of acquiring the replacement holding, and they reduce the gain when it is eventually disposed of. [DOM-107]
 
 One `transfer_in` per parcel rather than one per event is what preserves separate acquisition dates through an exchange, which German law requires of a qualifying reorganization.
 
@@ -176,12 +194,14 @@ If the available unattributed quantity is less than the closed quantity, no prop
 
 An allocation stores only an opening, a closing and a quantity. Everything monetary is computed from the parent transactions on demand, so that the figures can never drift away from their sources. [DOM-058]
 
+Every variant carries an `eur_gross` and an `eur_fees`, so one formula reads them all. A `transfer_out`'s `eur_gross` is the basis it carries onward rather than proceeds, and its gain is not computed. [DOM-105]
+
 For an allocation of quantity `q` against opening `o` and closing `c`, all in EUR: [DOM-059]
 
-* allocated cost = `o.eur_gross × q / o.effective_quantity`
-* allocated buy fee = `o.eur_fees × q / o.effective_quantity`
-* allocated proceeds = `c.eur_gross × q / c.effective_quantity`
-* allocated sell fee = `c.eur_fees × q / c.effective_quantity`
+* allocated cost = `o.eur_gross × q / o.effective_quantity_at(c)`
+* allocated buy fee = `o.eur_fees × q / o.effective_quantity_at(c)`
+* allocated proceeds = `c.eur_gross × q / c.quantity`
+* allocated sell fee = `c.eur_fees × q / c.quantity`
 * gain = allocated proceeds − allocated sell fee − allocated cost − allocated buy fee
 
 A `transfer_out` realizes no gain. Its allocations exist to record which parcels were consumed and to carry their basis into the emitted `transfer_in` records. [DOM-093]
@@ -195,14 +215,15 @@ Rounding: each share is rounded to 2 decimals independently, and the resulting d
 
 # Invariants
 
-* The sum of allocated quantities against an opening must never exceed its effective quantity [DOM-064]
+* The sum of allocated quantities against an opening, each scaled to a common position in the canonical order, must never exceed its effective quantity at that position. Comparing quantities stated at different positions compares different unit scales [DOM-064]
 * The allocations of a closing must sum exactly to that closing's quantity [DOM-065]
 * Closings are attributed in canonical order per account and security: a closing may only be attributed if every earlier closing of the same account and security is already attributed [DOM-066]
 * A security with any pending source record may not be attributed in that account [DOM-067]
 * An attribution may only be deleted if no later attribution exists for the same account and security [DOM-068]
 * A transaction that participates in an attribution is immutable: it cannot be edited, re-rated or deleted while that attribution exists. [DOM-069] Delete the attribution first. This is what keeps derived allocation figures faithful to what the user approved
 * A `transfer_in` emitted by a `transfer_out` may not be deleted independently of it [DOM-094]
-* A source record is consumed by at most one transaction [DOM-070]
+* A source record is consumed by at most one transaction, though it may be cited by several [DOM-070]
+* A manual entry is never deleted by an import undo [DOM-110]
 * A security's ISIN is unique [DOM-071]
 * An import batch may only be deleted if none of the transactions derived from its source records participates in an attribution [DOM-072]
 
@@ -226,8 +247,8 @@ Acquisition report
 
 * **Accrued interest.** A bond bought between coupon dates includes Stückzinsen paid to the seller, which under German law is not acquisition cost but negative investment income. This is not modeled
 * **Averaged transferred parcels.** A position transferred in from another broker usually arrives with a single weighted-average price, so several original purchases collapse into one parcel with one acquisition date
-* **Altbestand.** Securities acquired before 2009-01-01, and fund gains accrued to 2017-12-31 on units acquired before 2009, are grandfathered. Where a transferred parcel's acquisition date defaults to the transfer date, that status is lost. A `stated` date is editable for this reason [DOM-080]
-* **Same-day ordering depends on import history.** Import sequence breaks ties, so a split and a trade on one date are ordered by which was imported first. Re-importing the same files in the same order reproduces the result; deleting a batch and re-importing in a different order can change it
+* **Altbestand is lost on transferred parcels.** Securities acquired before 2009-01-01, and fund gains accrued to 2017-12-31 on units acquired before 2009, are grandfathered. A parcel transferred in from another broker takes the transfer date as its acquisition date, and that date is never corrected, so any grandfathered status it carried is not represented. [DOM-080] Several Saxo positions price to the mid-2000s and are likely affected
+* **A corporate action straddling a year boundary.** Imports are refused when a file covers more than one calendar year, so a group of rows belonging to one event is normally whole within a file. An event whose rows fall either side of 31 December is split across two imports, and the identity collision rule rejects the file if that produces a clash
 
 # Retired identifiers
 
@@ -235,3 +256,5 @@ Never reused. Listed so that an older finding or test naming one stays interpret
 
 * `DOM-014`, `DOM-015`, `DOM-050`, `DOM-051`, `DOM-052`, `DOM-053` — the separate corporate-action entity, replaced by transaction variants
 * `DOM-021` — duplicated the invariant now carried by DOM-065 alone
+* `DOM-009` — the imported/manual kind enum, replaced by two entities
+* `DOM-041` — the execution-time ordering key, replaced by the format's own ordering columns

@@ -62,12 +62,14 @@ Some rules are better stated as invariants over generated input than as examples
 
 * Allocated quantities against a buy never exceed its quantity
 * The allocations of a sale sum exactly to the sale's quantity
-* Allocation shares sum exactly to the parent figure, for every split and every rounding remainder
+* Allocation shares sum exactly to the parent figure once a parcel is fully consumed, for every division and every rounding remainder
 * A buy's fees are fully distributed once its last unit is sold, and not before
-* A split leaves an opening's total cost unchanged while scaling its effective quantity
+* A split leaves an opening's total cost unchanged while scaling its effective quantity, and an opening's effective quantity as of a position before any split equals its stated quantity
 * A transfer out preserves total cost basis and parcel count across the transfer_in records it emits
 * An opening's effective quantity equals its stated quantity under no splits, and is stable under a split applied twice with inverse ratios
-* Attributing a sequence of sells in canonical order never leaves a buy over-consumed
+* Attributing a sequence of closings in canonical order never leaves an opening over-consumed
+* Order computed from a file is identical however many times that file is imported, and independent of what was imported before it
+* An undo followed by a re-import restores exactly the transactions that existed before
 
 These catch the errors that matter: an off-by-one-cent drift that only appears at one particular split, or a rounding rule that fails on the seventh lot.
 

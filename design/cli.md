@@ -9,7 +9,7 @@ See `architecture.md` for the workspace layout and `domain.md` for the attributi
 CLI:
 * `fifolio-cli` starts the interactive application [CLI-001]
 * `fifolio-cli report <income-tax|acquisitions>` prints the corresponding report. [CLI-002] Optional `--format` for human-readable, CSV or JSON output, defaulting to JSON. [CLI-003] Optional `--account` and `--year` filters [CLI-004]
-* `fifolio-cli export-manual-information <file>` writes every `manual` source record to the named file [CLI-005]
+* `fifolio-cli export-manual-information <file>` writes every manual entry to the named file [CLI-005]
 * `fifolio-cli import-manual-information <file>` replays such a file into an empty or partial database [CLI-037]
 * `--server-url` selects the server, defaulting to `http://127.0.0.1:8000` [CLI-006]
 * `--lang` selects the interface language, `en` or `nl` [CLI-007]
@@ -18,9 +18,9 @@ Reports are deliberately not part of the interactive application [CLI-008]: as a
 
 ## Exporting manual information
 
-Everything else in the database can be rebuilt by importing the broker files again. Manual source records cannot: they are the acquisition dates, share counts, stock-or-cash elections and exchange details that no export contains, and reconstructing them means the research was done twice.
+Everything else in the database can be rebuilt by importing the broker files again. Manual entries cannot: they are the acquisition dates, share counts, stock-or-cash elections and exchange details that no export contains, and reconstructing them means the research was done twice.
 
-`export-manual-information` writes them all to a file, so they can be kept alongside the broker exports. The file records, per entry, the account, the security, what was supplied, and which imported source records it was attached to. [CLI-009]
+`export-manual-information` writes every manual entry to a file, so they can be kept alongside the broker exports. The file records, per entry, the account, the security, what was supplied, and which imported source records it was attached to. [CLI-009]
 
 The format is JSON, a single document carrying a schema version. [CLI-038] Manual records have heterogeneous shapes — a share count, a stock-or-cash election, a target security with a ratio, an acquisition date — which flatten badly into a table, and the file is read by a program rather than by a person.
 
@@ -69,6 +69,8 @@ Imports are browsable as batches, with their file, account, timestamp and counts
 
 ## Completion queue
 
+Manual entries whose source records are absent — because an import was undone — are listed separately, naming the account, security and the rows each is waiting for, so a completion that disappeared from the queue has an explanation and an obsolete one can be deleted. [CLI-042]
+
 Import leaves source records that affect holdings but lack something only the user knows. The queue is where they are resolved, and a security with anything outstanding is blocked from attribution, so the queue is the first thing to clear after an import.
 
 An entry shows the imported rows it covers, every figure the file does state, and the one part that is missing. [CLI-020] What is asked depends on the event:
@@ -81,7 +83,7 @@ An entry shows the imported rows it covers, every figure the file does state, an
 | Cash merger, tender, partial buyback | the quantity disposed, and any target security |
 | Transfer out | approved like any disposal; the system emits the matching transfer_in records |
 
-Nothing is typed twice: the money, dates, currency and rate always come from the file. [CLI-021] What the user supplies is stored as a `manual` source record and cited beside the imported rows, so a derived transaction always names every source it rests on.
+Nothing is typed twice: the money, dates, currency and rate always come from the file. [CLI-021] What the user supplies is stored as a manual entry and cited beside the imported records, so a derived transaction always names every source it rests on.
 
 Where a group contains a reversal, the entry shows it as a reversal rather than folding it into a total, [CLI-022] so a corrected booking is never read as an additional one.
 

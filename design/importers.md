@@ -1,5 +1,10 @@
 # Importers
 
+A file covering more than one calendar year is refused. [IMP-001] Broker exports are taken a year at
+a time, which keeps a corporate action's rows inside one file and makes the ownership of a
+re-imported row unambiguous. A partial year is fine — the first Saxo export runs 2021-11-29 to
+2021-12-31.
+
 Format-specific detail. The domain model is in `domain.md`; nothing here belongs in it.
 
 Both mappings were derived from real exports in `example_exports/`: five Saxo files covering 2021-11-29 to 2025-12-31 (188 rows), and one Trade Republic file covering 2024 (21 rows).
@@ -12,7 +17,19 @@ Both mappings were derived from real exports in `example_exports/`: five Saxo fi
 
 * Headers are Dutch, and several contain non-breaking spaces (`Bk\xa0Record\xa0Id`, `Booking\xa0Id`) or a leading space (` Positie-ID`). Normalize whitespace before matching [IMP-SAXO-002]
 * Dates are Excel serial numbers, not text [IMP-SAXO-003]
+* Rows are emitted **newest first**, so the file's direction must be normalized before its row positions are used for ordering [IMP-SAXO-025]
 * The export language follows the account's Saxo interface language, so header and label matching is language-dependent. Only Dutch is supported [IMP-SAXO-004]
+
+## Ordering
+
+Rows are sorted on `Transactiedatum`, then on the first populated of `Bk Record Id`, `Booking Id`
+and `Transactie-ID` — all three are monotonic counters that ascend with date — and finally on file
+position taken in reverse, since the export is newest-first. [IMP-SAXO-026]
+
+`Corporate action-Id` is **not** monotonic with date and is never an ordering column. [IMP-SAXO-027]
+Across the sample the id columns separate every row on 32 of the 33 dates carrying more than one;
+the two exceptions are corporate-action rows where only that id is populated, and file position
+settles them.
 
 ## Account
 
@@ -110,7 +127,9 @@ The price is a **historical acquisition price restated to the transfer date**, t
 * `quantity × price` is split-invariant, so it is the true acquisition cost and can be taken at face value
 * splits occurring *after* the transfer are still to be applied, and appear as their own rows. There is no double counting
 
-Import creates a complete `transfer_in` with source `broker`: quantity and price from the label, acquisition date defaulted to the transfer date, date provenance `stated`. [IMP-SAXO-015] The date stays editable, because it is the one figure that is not real [IMP-SAXO-016] (see Altbestand in `domain.md`).
+Import creates a complete `transfer_in` with source `broker`: quantity and price from the label, acquisition date set to the transfer date, date provenance `transfer_date`. [IMP-SAXO-015] The date is never corrected, so any grandfathered status the parcel carried is not represented [IMP-SAXO-016] (see Altbestand in `domain.md`).
+
+This is the **one place** the `Acties` label's price is authoritative, against the general rule that it must never be used for money. [IMP-SAXO-028] `Boekingsbedrag` and `Aantal` are zero on these rows, so no column carries the figure. The label's 2-decimal rounding is therefore carried into the cost basis: on the sample bond, `3000 @ 139.46` at percent of par, the half-cent tolerance is 0.15 EUR.
 
 `Omrekeningskoers` is 1 on these rows even for foreign-currency instruments, so a non-EUR transferred lot has **no** EUR cost basis in the file and needs an ECB rate lookup for the transfer date. [IMP-SAXO-017]
 
@@ -161,7 +180,9 @@ In the sample it isolates 6 rows out of 74 dividend-type rows. The 19 `Herbelegg
 
 CSV, quoted, comma-delimited, dot decimals, ASCII, single header row, 23 columns. [IMP-TR-001] The header is byte-identical across the 2022 to 2025 exports.
 
-* `date` is the effective date and becomes the **trade date**. `datetime` is a booking timestamp, used only as a deterministic tie-break within a day; it is not an execution time and should not be described as one [IMP-TR-002]
+* `date` is the effective date and becomes the **trade date**. `datetime` is a booking timestamp, used as an ordering column after the date; it is not an execution time and should not be described as one [IMP-TR-002]
+* `shares` carries the quantity; `price` the unit price [IMP-TR-022]
+* Rows are ordered on `date`, then `datetime`, then file position. The 2025 export is not sorted by either, so file position alone would order it wrongly [IMP-TR-023]
 * The two are independent fields, not derivable from each other. Across four years they agree on every trade, diverge by a day on three dividends (two of which cross midnight UTC) and by **six days** on the corporate action, which is booked after it takes effect [IMP-TR-015]
 * `transaction_id` is a UUID: a stable broker reference, used directly as the identity [IMP-TR-003]
 * Sign convention is cash flow, so buys and fees are negative [IMP-TR-004]
