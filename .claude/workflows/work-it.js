@@ -42,11 +42,10 @@ const AUDIT = {
     majors: { type: 'integer' },
     minors: { type: 'integer' },
     decisions: { type: 'integer' },
-    blockedRequirements: { type: 'array', items: { type: 'string' } },
     summary: { type: 'string' },
     findings: { type: 'string' },
   },
-  required: ['verdict', 'blockers', 'majors', 'minors', 'decisions', 'blockedRequirements', 'summary', 'findings'],
+  required: ['verdict', 'blockers', 'majors', 'minors', 'decisions', 'summary', 'findings'],
 }
 
 const PLAN = {
@@ -109,9 +108,10 @@ An unimplemented requirement is the normal state before implementation; report i
 a reason to stop. Classify as decision-required anything a human has to decide: a contradiction
 between documents, or a requirement that does not determine behavior.
 
-In "blockedRequirements", list every requirement identifier named by a decision-required finding,
-for example ["DOM-106", "IMP-TR-018"]. That list is what stops work on the items depending on it,
-so it must be complete and must contain nothing else.${RETURN_RULE}`,
+design/open-questions.md is the authoritative list of what is undecided. A finding already covered
+by an entry there is expected; report it briefly rather than at length. Report a decision-required
+finding in full only when it is NOT already covered, since that is a question for the user to add.
+Do not edit that file.${RETURN_RULE}`,
   { agentType: 'spec-auditor', label: 'audit spec', phase: 'Audit', schema: AUDIT },
 )
 
@@ -120,12 +120,11 @@ if (!audit) return stop('spec-auditor did not return')
 // A blocker is a wrong result or a violated invariant: nothing may be built over it.
 if (audit.blockers > 0) return stop('the specification has a blocking defect', audit.findings)
 
-// Decisions no longer halt the run. They block only the items that depend on them, so the
-// specified majority of the system can be built while the undecided remainder waits.
-const blocked = new Set(audit.blockedRequirements || [])
+// Decisions do not halt the run. What is undecided is recorded by hand in
+// design/open-questions.md, which the planner reads; an auditor finding is a report, not a gate.
 log(`Specification audit: ${audit.summary}`)
-if (blocked.size) {
-  log(`${audit.decisions} open decision(s) block ${blocked.size} requirement(s): ${[...blocked].join(', ')}`)
+if (audit.decisions > 0) {
+  log(`${audit.decisions} decision-required finding(s); design/open-questions.md governs what is blocked`)
 }
 
 // ---------------------------------------------------------- item loop
@@ -135,30 +134,29 @@ for (let i = 0; i < MAX_ITEMS; i++) {
   const plan = await agent(
     `Update PLAN.md against design/ and the current code, then name the next work item to build:
 the first item whose status is todo, whose dependencies are all done, and none of whose
-requirements appear in the blocked list below.
+requirements is blocked.
 
-Blocked requirements (undecided in the specification; any item covering one of these must be set
-to blocked and must not be selected): ${blocked.size ? [...blocked].join(', ') : 'none'}
+Read design/open-questions.md. It is the authoritative list of what the specification leaves
+undecided: every requirement identifier named on a "Blocks:" line is blocked. An item covering one
+must be set to blocked and must not be selected. Nothing else makes an item blocked, and an item
+blocked in an earlier revision whose requirements no longer appear there is unblocked.
 
-Set nextItemId to "" if no item is ready. Set decisions above zero only if the specification
-leaves something open that prevents planning. Put a short account of what changed in "summary".`,
+Set nextItemId to "" if no item is ready.
+
+Set decisions above zero ONLY if you cannot produce a plan at all — the specification leaves
+planning itself undetermined. The blocked requirements above are expected input and are NOT
+decisions to report: items covering them are simply marked blocked and passed over. If you named a
+ready item, planning succeeded and decisions is zero.
+
+Put a short account of what changed in "summary".`,
     { agentType: 'planner', label: `plan (item ${i + 1})`, phase: 'Plan', schema: PLAN },
   )
 
   if (!plan) return stop('planner did not return')
-  if (plan.decisions > 0) return stop('planning needs your decision', plan.summary)
+  if (plan.decisions > 0 && !plan.nextItemId) return stop('planning needs your decision', plan.summary)
   if (!plan.nextItemId) {
     log(plan.remaining > 0 ? 'No item is ready; remaining items are blocked.' : 'Plan exhausted.')
     break
-  }
-
-  const itemReqs = String(plan.requirements || '').split(/[^A-Z0-9-]+/).filter(Boolean)
-  const clash = itemReqs.filter((r) => blocked.has(r))
-  if (clash.length) {
-    return stop(
-      `item ${plan.nextItemId} depends on requirements that are still undecided`,
-      `${clash.join(', ')}\n\n${audit.findings}`,
-    )
   }
 
   if (attempted.has(plan.nextItemId)) {

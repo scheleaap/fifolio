@@ -5,7 +5,10 @@ argument-hint: "[max work items; default: until the plan is exhausted]"
 
 Run the `work-it` workflow.
 
-Call the Workflow tool with `{ name: "work-it", args: "$ARGUMENTS" }`. Passing `$ARGUMENTS` here is
+Call the Workflow tool with
+`{ scriptPath: ".claude/workflows/work-it.js", args: "$ARGUMENTS" }`.
+Use `scriptPath`, not `name`: a named workflow resolves from a cache, so edits to the script made in
+this session would not take effect. Passing `$ARGUMENTS` here is
 the explicit opt-in to multi-agent orchestration; do not ask for it again.
 
 If `$ARGUMENTS` is empty the workflow runs until the plan is exhausted, committing each item
@@ -38,9 +41,10 @@ If the outcome is `stopped`, lead with why. A stop for `needs your decision` mea
 specification does not determine an answer: present the options and what each implies, so the
 user can decide without reading the code. Do not resolve it yourself.
 
-The audit's open decisions no longer stop the run on their own — they block only the items whose
-requirements they touch. Report how many are open and which requirements they hold up, so the user
-can see what is waiting and decide when to clear it.
+The audit's decisions do not stop the run. `design/open-questions.md` governs what is blocked, and
+the planner reads it. Report how many items are blocked and by which open questions, so the user can
+see what is waiting. If the audit raised a decision-required finding **not** already covered there,
+say so plainly — that is a new question for the user to add to the file.
 
 If it stopped after three review rounds, show the surviving findings. Two agents failing to
 converge usually means the specification is ambiguous rather than the code being wrong.

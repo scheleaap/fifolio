@@ -18,7 +18,11 @@ Five agents. The user specifies; the rest runs unattended.
 
 **Anything needing a human decision stops the work that depends on it.** No bounded loop, no attempt to resolve it. A `decision-required` finding means the specification does not determine the answer, and guessing at it is how a wrong cost basis ends up in a tax return.
 
-The audit's decisions do not halt the whole run. `spec-auditor` lists the requirement identifiers its decisions touch, and only items covering one of those are blocked; everything else is built. A decision raised by a reviewer, or a blocking defect in the specification, still stops the cycle outright, because those concern the work in hand.
+The audit's decisions do not halt the run. **`design/open-questions.md` is the authoritative list of what is undecided**: the planner reads it and blocks every item covering a requirement named on a `Blocks:` line. Nothing else makes an item blocked.
+
+That file is maintained by hand on purpose. An earlier design had the auditor regenerate the list each run; on an unchanged specification two consecutive runs disagreed about most of it, so the plan churned and items were split on a boundary that moved. `spec-auditor` still reports ambiguities, but a finding becomes an open question only when a person puts it there.
+
+A decision raised by a reviewer, or a blocking defect in the specification, still stops the cycle outright, because those concern the work in hand.
 
 **Commits happen only on a clean pass from both reviewers.** Plus green CI: `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`, and the per-crate coverage thresholds in `design/testing.md`.
 
