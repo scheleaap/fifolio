@@ -19,7 +19,7 @@ Scales: [ARC-007]
 | Quantity | up to 8 | Fractional shares are supported (savings plans, fractional purchases) |
 | Unit price | up to 6 | |
 | Monetary amount (fees, totals, gains) | 2 | |
-| FX rate | 6 | |
+| FX rate | 6 | foreign units per EUR, the ECB convention; see `domain.md` |
 
 Trade value is `quantity × unit_price × factor`, where the factor comes from the security's quotation: 1 per unit, 0.01 for percent of par. [ARC-008] See `domain.md`.
 

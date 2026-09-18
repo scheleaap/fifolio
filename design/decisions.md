@@ -122,7 +122,7 @@ An unrecognized type naming a security therefore rejects the file, extending DEC
 stored, but the import summary names it and counts it, so a new broker type becomes visible on its
 first appearance rather than years later.
 
-**DEC-023 — Coverage thresholds gate changed lines, not the codebase.** Absolute per-crate gating
+**DEC-023 — Coverage thresholds gate changed lines, not the codebase.** Supersedes the enforcement half of DEC-016; its per-crate figures and reasoning stand. Absolute per-crate gating
 blocks a greenfield build-out by construction: `fifolio-server`'s only content is a six-line stub
 that no test executes, so it sits at 0% against a 90% threshold and nothing could ever land. The
 alternatives were worse — a ratchet needs a baseline file and machinery, and lowering thresholds to
@@ -132,3 +132,80 @@ Implemented as `cargo llvm-cov --lcov` into `diff-cover`, scoped per crate with 
 counting new files with `--include-untracked`; verified end to end against this repository before
 being written down. The absolute figures remain the target for the finished project, reported but
 not gated until build-out completes.
+
+**DEC-024 — No lot entity; the transaction type becomes a sum type.** Supersedes DEC-008. The first proposal was an
+explicit lot, opened by buys and transfers and rescaled by splits. The user observed that a lot and
+a buy transaction model the same thing, and proposed transaction variants instead. That is right and
+it removes an entity rather than adding one. `Transaction` becomes a sum type: `buy`, `transfer_in`,
+`sell`, `expiration`, `transfer_out`, `split`, each carrying only its own fields, so a split can
+never be read as a trade. The `corporate action` entity is retired. Transactions stay immutable and
+statement-matching, so DOM-039 and DOM-069 survive — which rewriting buys in place would have cost.
+
+**DEC-025 — Attribution generalizes to closing against opening transactions.** Opening variants are
+`buy` and `transfer_in`; closing variants are `sell`, `expiration` and `transfer_out`. A
+`transfer_out` runs through the same approve-the-proposal flow and emits one `transfer_in` per
+consumed parcel, each inheriting that parcel's acquisition date and its share of the basis. One
+transfer_in per parcel rather than per event is what preserves separate acquisition dates through an
+exchange, which is the whole reason a lot model looked necessary. It realizes no gain.
+
+**DEC-026 — `transfer_in` covers both a broker transfer and a corporate-action transfer.** Supersedes DEC-011's framing of a Deponering as a buy; its price and date findings stand. One type,
+with the origin on a `source` field. The distinction that mattered — a broker transfer's acquisition
+date is a defaulted guess and editable, a corporate-action transfer's is inherited fact and is not —
+is carried by a date-provenance field rather than by a second type. `expiration` stays separate from
+`sell` because its quantity rule differs: it closes the whole remaining position rather than a
+stated figure. Stock-dividend shares are a `buy` with an origin field, since nothing is transferred.
+
+**DEC-027 — The stored FX rate is foreign units per EUR.** The ECB convention, matching Trade
+Republic. Saxo quotes the inverse, so its importer inverts at full precision from the figures the
+file states, never from the 6-decimal stored rate — for a currency like JPY, inverting a rounded
+rate loses four significant figures.
+
+**DEC-028 — The EUR gross total is stored alongside the unit price.** Dividing a booked total by a
+quantity and multiplying back does not round-trip at fractional quantities, so the specification
+previously said both "the booked total is what was paid" and "the total is a product of a rounded
+unit price". A full allocation now takes its figures from the booked total, a partial one from the
+unit price, and the drift rule absorbs the difference.
+
+**DEC-029 — Splits are interleaved by import sequence.** No special rule puts a corporate action
+before or after trades on its date; every variant takes part in one canonical order. The accepted
+cost is that a same-day split and trade are ordered by which was imported first, so re-importing in
+a different order can change a same-day result. Recorded as a known limitation rather than removed.
+
+**DEC-030 — Pending records block attribution per account, not globally.** Consistent with every
+other rule in the model, and FIFO never crosses accounts, so an unresolved Saxo split cannot affect
+the same ISIN held at Trade Republic.
+
+**DEC-031 — Instrument types map by explicit table; `Cash` creates no security.** Saxo's
+`MutualFund` is `fund`; its `Cash` rows are non-position and create nothing. Trade Republic carries
+ETFs as `FUND`, so its ETFs are recorded as funds — wrong but inconsequential in v1, where nothing
+turns on the distinction, and visible because auto-created securities are flagged. An unmapped value
+rejects the import. The bond case is the exception: percent-of-par is confirmed only for Saxo, so a
+bond arriving from Trade Republic is created pending review rather than given a quotation.
+
+**DEC-032 — `TAX_EXCHANGE` is treated as tax-neutral, on evidence, pending a document.** Narrows DEC-019. A fund
+merger redomiciling an Amundi ETF from Luxembourg to Ireland, one for one. The rows carry no price,
+no amount and no tax, and a German broker must withhold on a realized gain, so nothing appears to
+have been realized. That is inference from absence and the label says "TAX"; the Trade Republic tax
+report for the year settles it. The quantity sign decides direction, which narrows DEC-019 to "an
+*unrecognized* type is never classified by shape" — for a recognized type the sign is stated data.
+
+**DEC-033 — Saxo's fallback identity gains a within-group ordinal.** The corporate action id plus
+`Acties` plus `Boekingsbedrag` can collide within one event, and the TransAlta merger pays over
+three rows under one id. A collision would be read as a re-import and silently drop a row, losing
+money from the event — the exact failure DEC-007 exists to prevent. The row's ordinal in file order
+within its group closes it; a residual collision rejects the file rather than deduplicating.
+
+**DEC-034 — Report tokens `income-tax` and `acquisitions`; `--format` defaults to JSON.** Output is
+usually piped, so the machine-readable form is the default. `export-manual-information` takes an
+explicit file argument, matching its import counterpart rather than writing to a surprise location.
+The buy report is renamed the acquisition report, because a `transfer_in` is an acquisition and not
+a buy.
+
+**DEC-035 — Two arithmetic errors in the specification, corrected.** Both were mine and both would
+have produced plausible, silently wrong tax figures. The Saxo EUR gross derivation was written as
+one rule for buys and disposals; `Aantal` is a cash movement, so a disposal's gross is
+`|Aantal| + |Totale kosten|`, and the single rule understated every disposal's proceeds by twice the
+fee. Separately, the importer derived an EUR unit price by dividing gross by quantity with no
+quotation factor while the domain then multiplied by 0.01 again, understating a bond's cost basis a
+hundredfold. The factor is now applied exactly once, and the importer divides by it so the stored
+price remains the price the statement shows.

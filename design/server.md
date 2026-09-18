@@ -52,13 +52,13 @@ Every import creates a batch, and a batch is the unit of undo: [SRV-019]
 
 Source records are never edited. [SRV-027] A mistake is corrected by deleting the derived transaction and the manual record, then supplying a new one.
 
-## Transactions and corporate actions
+## Transactions
 
 * Read and list transactions. List filters: account, security, type, date range [SRV-028]
-* List unattributed sell transactions, as a filter on the list endpoint [SRV-029]
-* Read and list corporate actions [SRV-030]
-* Derive a transaction or a corporate action from one or more pending source records, together with whatever the user had to supply. [SRV-031] The supplied part is stored as a `manual` source record and cited alongside the imported ones [SRV-032]
-* Delete a derived transaction or corporate action, returning its source records to pending [SRV-033]
+* List unattributed closing transactions, as a filter on the list endpoint [SRV-029]
+* Approving a `transfer_out` also creates the `transfer_in` records it implies, in the same operation [SRV-030]
+* Derive a transaction from one or more pending source records, together with whatever the user had to supply. [SRV-031] The supplied part is stored as a `manual` source record and cited alongside the imported ones [SRV-032]
+* Delete a derived transaction, returning its source records to pending [SRV-033]
 
 There is no endpoint that creates a transaction from nothing. Everything is derived from source records. [SRV-034]
 
@@ -66,18 +66,19 @@ There is no endpoint that creates a transaction from nothing. Everything is deri
 
 The server owns the FIFO logic and proposes; the client confirms what it was shown. [SRV-035]
 
-* Get a proposal for a sell: returns the sell, the proposed allocations with their derived figures, and a fingerprint of the proposal. [SRV-036] Also addressable as "the next sell awaiting attribution" for an account and security [SRV-037]
-* If the sell cannot be covered by the available unattributed buys, the proposal endpoint returns the shortfall instead of a proposal [SRV-038]
-* If the security has any pending source record, the proposal endpoint refuses and names what is outstanding [SRV-039]
-* Create an attribution: the client posts the sell, the allocations and the fingerprint it was shown. A fingerprint mismatch is a conflict, [SRV-040] so the client can never approve figures other than the ones displayed
+* Get a proposal for a closing transaction: returns it, the proposed allocations with their derived figures, and a fingerprint of the proposal. [SRV-036] Also addressable as "the next closing awaiting attribution" for an account and security [SRV-037]
+* The fingerprint covers the closing transaction, every allocation's opening id and quantity, and every derived money figure displayed. It is a hash of a canonical serialization, stable across processes, so a re-rating between display and approval changes it. [SRV-050] A fingerprint over ids and quantities alone would let the money change while the guarantee appeared to hold
+* If the closing cannot be covered by the available unattributed openings, the proposal endpoint returns the shortfall instead of a proposal [SRV-038]
+* If the security has any pending source record in that account, the proposal endpoint refuses and names what is outstanding [SRV-039]
+* Create an attribution: the client posts the closing, the allocations and the fingerprint it was shown. A fingerprint mismatch is a conflict, [SRV-040] so the client can never approve figures other than the ones displayed
 * Read, list and delete attributions. There is no update [SRV-041]
 * Deletion is refused if a later attribution exists for the same account and security [SRV-042]
 
-Declining a proposal is not an API call. [SRV-043] Nothing is stored, and the unattributed sell continues to block later sells by itself.
+Declining a proposal is not an API call. [SRV-043] Nothing is stored, and the unattributed closing continues to block later closings by itself.
 
 ## Reports
 
-* Income tax overview and buy report, both accepting optional account and year filters [SRV-044]
+* Income tax overview and acquisition report, both accepting optional account and year filters [SRV-044]
 * Reports are read-only projections; the response carries the same figures the CLI formats [SRV-045]
 
 ## FX rates

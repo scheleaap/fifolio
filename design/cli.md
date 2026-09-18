@@ -8,8 +8,8 @@ See `architecture.md` for the workspace layout and `domain.md` for the attributi
 
 CLI:
 * `fifolio-cli` starts the interactive application [CLI-001]
-* `fifolio-cli report <report name>` prints the corresponding report (see domain description). [CLI-002] Optional `--format` to produce human-readable, CSV or JSON output. [CLI-003] Optional `--account` and `--year` filters [CLI-004]
-* `fifolio-cli export-manual-information` writes every `manual` source record to a file [CLI-005]
+* `fifolio-cli report <income-tax|acquisitions>` prints the corresponding report. [CLI-002] Optional `--format` for human-readable, CSV or JSON output, defaulting to JSON. [CLI-003] Optional `--account` and `--year` filters [CLI-004]
+* `fifolio-cli export-manual-information <file>` writes every `manual` source record to the named file [CLI-005]
 * `fifolio-cli import-manual-information <file>` replays such a file into an empty or partial database [CLI-037]
 * `--server-url` selects the server, defaulting to `http://127.0.0.1:8000` [CLI-006]
 * `--lang` selects the interface language, `en` or `nl` [CLI-007]
@@ -78,7 +78,8 @@ An entry shows the imported rows it covers, every figure the file does state, an
 | Stock or cash dividend | which was elected, and if stock, the share count |
 | Split | the ratio |
 | Exchange or share-class swap | the target security and the ratio |
-| Cash merger, tender, partial buyback | the quantity disposed, and any shares received |
+| Cash merger, tender, partial buyback | the quantity disposed, and any target security |
+| Transfer out | approved like any disposal; the system emits the matching transfer_in records |
 
 Nothing is typed twice: the money, dates, currency and rate always come from the file. [CLI-021] What the user supplies is stored as a `manual` source record and cited beside the imported rows, so a derived transaction always names every source it rests on.
 
@@ -87,10 +88,10 @@ Where a group contains a reversal, the entry shows it as a reversal rather than 
 ## Sale attribution
 
 1. The user selects an account, and optionally a security
-2. The application requests the next sell awaiting attribution, and displays it with its proposed buys and the derived figures per allocation: quantity consumed, allocated cost, allocated buy fee, allocated proceeds, allocated sell fee, gain or loss
+2. The application requests the next closing transaction awaiting attribution — a sell, an expiration or a transfer out — and displays it with its proposed openings and the derived figures per allocation: quantity consumed, allocated cost, allocated buy fee, allocated proceeds, allocated sell fee, gain or loss. A transfer out shows no gain, because it realizes none, and names the transfer_in records approving it will create [CLI-041]
 3. The user approves or declines. Approving posts the proposal back for confirmation; declining stores nothing [CLI-033]
-4. On approval the application moves to the next pending sell. On decline it stops, because later sells for that account and security are blocked until this one is resolved
-5. If the sell cannot be covered by the available buys, the shortfall is shown instead of a proposal, with the missing quantity named. The usual remedy is importing the missing history, or completing a corporate action that created units
+4. On approval the application moves to the next pending closing. On decline it stops, because later sells for that account and security are blocked until this one is resolved
+5. If the closing cannot be covered by the available openings, the shortfall is shown instead of a proposal, with the missing quantity named. The usual remedy is importing the missing history, or completing a corporate action that created units
 6. If the security has anything outstanding in the completion queue, the application says so and links to it rather than offering a proposal [CLI-034]
 
 # Localization
