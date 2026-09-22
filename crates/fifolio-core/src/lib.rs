@@ -4,4 +4,5 @@
 
 pub mod decimal;
 pub mod entities;
+pub mod ordering;
 pub mod precision;

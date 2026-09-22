@@ -83,3 +83,16 @@ and has no proceeds, and nothing says what those columns hold.
 Blocks: `SRV-017`
 Rows that fail to parse are counted in the summary. Whether the import proceeds with the rest, or
 fails as a whole, is unstated.
+
+**OQ-013 — Where a row with no ordering column sorts.**
+Blocks: `IMP-SAXO-026`
+An ordering column may be absent from a row, and Saxo's is: its counter is the first populated of
+three booking ids, so the counter-less rows are precisely the corporate actions. A fixed choice is
+forced — falling through to the next key when either side is absent is not transitive, since `5`
+and `3` would each tie with a missing value while differing from each other — but which fixed
+choice is not determined. Absent-first places those rows before every counter-carrying row of their
+date; absent-last places them after; the alternative is to let file position stand for a missing
+value, which orders them where the export puts them.
+
+The mechanism in `ordering.rs` is unaffected either way and currently sorts absent first. What is
+blocked is the Saxo importer's binding of it.
