@@ -18,11 +18,11 @@ Reports are deliberately not part of the interactive application [CLI-008]: as a
 
 ## Exporting manual information
 
-Everything else in the database can be rebuilt by importing the broker files again. Manual entries cannot: they are the acquisition dates, share counts, stock-or-cash elections and exchange details that no export contains, and reconstructing them means the research was done twice.
+Everything else in the database can be rebuilt by importing the broker files again. Manual entries cannot: they are the share counts, stock-or-cash elections and exchange details that no export contains, and reconstructing them means the research was done twice.
 
 `export-manual-information` writes every manual entry to a file, so they can be kept alongside the broker exports. The file records, per entry, the account, the security, what was supplied, and which imported source records it was attached to. [CLI-009]
 
-The format is JSON, a single document carrying a schema version. [CLI-038] Manual records have heterogeneous shapes — a share count, a stock-or-cash election, a target security with a ratio, an acquisition date — which flatten badly into a table, and the file is read by a program rather than by a person.
+The format is JSON, a single document carrying a schema version. [CLI-038] Manual records have heterogeneous shapes — a share count, a stock-or-cash election, a target security with a ratio — which flatten badly into a table, and the file is read by a program rather than by a person.
 
 `import-manual-information` replays it: re-import the broker exports, replay this file, and the database is rebuilt without redoing the research. An entry whose imported source records are not present is reported and skipped rather than guessed at, [CLI-039] since a manual record attached to nothing has nowhere to belong. Replay is idempotent: an entry already present is recognized and not duplicated. [CLI-040]
 

@@ -370,3 +370,10 @@ it may differ from a rounded display in the trailing decimals. Adding an excepti
 promise the specification had already broken elsewhere would have made the rule incoherent rather
 than the arithmetic correct. `DOM-039` is restated to promise reconciliation against the booked
 amounts, which are exact, rather than against the printed unit price.
+
+**DEC-060 — An acquisition date can never be corrected by hand.** `cli.md` listed one among the
+manual entry shapes, against `SRV-054` and `IMP-SAXO-016`, which fix the date at import and never
+correct it. The user settled it: no correction. `DOM-097`'s three shapes are therefore the closed
+set, and the consequence is accepted — where a broker transfer carries a date that loses a parcel's
+grandfathered status, that status stays lost rather than being restorable by typing. A date the
+system did not derive is a date no audit trail supports.
