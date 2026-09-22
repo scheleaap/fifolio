@@ -112,6 +112,7 @@ Notes: Split out of FIF-056 in revision 2 and blocked then; DOM-082 left the und
 Confirmed unblocked in revision 10: OQ-014 asks where a `Herbeleggingsdividend`'s share count and price come from, but it blocks IMP-SAXO-013 only, so it freezes the Saxo importer (FIF-023, FIF-025) and not this type. Build the origin so that the taxable value arrives from a caller and is never computed here; that is what keeps DOM-082 reviewable while OQ-014 is open, and it is why the item sits before the importer that fills it.
 Its dependency FIF-056 is `done` (`74e4bd1`, recorded `5d54c2b`); `transaction.rs` already names this item at the absent field, so the increment is a variant field on `Buy` plus its unit tests, not a new module.
 Done in revision 11, commit `c1c3d58`. Verified against `crates/fifolio-core/src/transaction.rs` rather than the commit message: `Buy` carries `origin: BuyOrigin`, whose `StockDividend` variant holds the parcel's `taxable_value` as a carried `Money` with no constructor deriving it from quantity and unit price, and `Purchase` holds nothing. Its unit test fixture deliberately sets a taxable value that is *not* quantity times unit price, so a later implementation that computes the basis instead of reading it fails the test. Where that figure comes from for a Saxo `Herbeleggingsdividend` is still OQ-014 and still FIF-023 / FIF-025's problem.
+Partly corrected by FIF-091: DEC-061 (revision 13) settled that the taxable value **is** the buy's stored EUR gross, so the carried `taxable_value` field this item shipped is gone and the fixture's divergence it protected is the failure FIF-091 forbids. DOM-082 stays here; DOM-123 is FIF-091's.
 **Partly invalidated in revision 13 by DEC-061 (DOM-123).** The shipped shape holds the taxable value as a field of its own, and the very fixture this item's note cites as its safeguard — 81.00 against a stated 3 × 26.10 — is the divergence DEC-061 names and forbids. The item is **not** reopened and its acceptance is left as written, so the record of what was built and why stays legible; the correction is **FIF-091**, which carries DOM-123 and states what must change. DOM-082 itself is unchanged: the basis is still the taxable value and is still never computed here.
 
 ## FIF-058 Consumption versus citation
@@ -190,14 +191,16 @@ Blocked by: DOM-104 is on the undecided list.
 Notes: Split out of FIF-008 in revision 3. FIF-014's formulas read whichever figure this settles, so the two must be reviewed together once it is decided.
 
 ## FIF-091 A stock dividend's taxable value is its stored EUR gross
-Status: todo
+Status: done
 Requirements: DOM-123
 Depends on: FIF-057, FIF-008
 Acceptance: a `buy` issued as a stock dividend holds the taxable value at issue and the EUR gross as **one stored figure**, not two that can disagree; there is no field, constructor argument or accessor by which a caller can set them to different values, so the rule that every calculation reads the gross cannot pick up a number other than the basis; the unit tests of FIF-057 that assert a taxable value differing from the buy's own EUR figures are replaced by tests asserting the identity, and the replacement is deliberate rather than a deleted test.
 Notes: New in revision 13, carrying the one identifier `design/` gained in commit `47af98a` (DEC-061).
 **This item exists because a completed item is now partly wrong.** FIF-057 (`c1c3d58`) shipped `BuyOrigin::StockDividend { taxable_value }` as an independent `Money`, and its fixture sets 81.00 against a stated 3 × 26.10 = 78.30 — which is exactly the pair DEC-061 names as the failure it is closing. Rather than editing FIF-057's acceptance to make the shipped code retroactively correct, the correction is carried here where it can be reviewed on its own. FIF-057 keeps its record and gains a pointer to this item.
 It depends on FIF-008 because the figure the taxable value must **become** is the stored EUR gross, which FIF-008 is what introduces; doing it before that would mean collapsing into a field that does not yet exist. Since FIF-008 is implemented but uncommitted, the cheapest correct order is to finish FIF-008 and land this on top, rather than committing a shape that must then be unpicked.
+Named next to build in revision 16, FIF-008 having landed in `9a1e457`. The working tree is clean and the suite green, so this item starts from a committed base; the two figures to collapse are `BuyOrigin::StockDividend { taxable_value }` in `transaction.rs` and the buy's stored EUR gross, and the fixtures asserting 81.00 against 3 x 26.10 are the tests DEC-061 makes wrong.
 Where a Saxo `Herbeleggingsdividend`'s figure comes from is untouched by this and is still OQ-014, blocking IMP-SAXO-013 in FIF-023. DEC-061 says the two numbers are one; it does not say where that one number is read.
+Done in revision 16. `BuyOrigin::StockDividend` is now a unit variant and `Buy::taxable_value` reads the stored EUR gross, so no constructor argument, field or accessor can state the two apart. FIF-057's assertion that the two figures differ is replaced, not deleted: the test that asserted 81.00 against 3 x 26.10 now asserts the identity, and three cases were added for an ordinary purchase, a foreign gross whose EUR half is the basis, and a zero gross.
 
 ## FIF-009 FX rate resolution
 Status: todo
@@ -726,7 +729,19 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 15 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
+**Revision 16 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
+revision 14 (`b21d225` is still the last commit to touch it), so the live set is still **333
+identifiers**, each named by exactly one item, and `open-questions.md` still names the same **32
+blocked ids** across OQ-001 to OQ-016. The twenty-three blocked items are unchanged. No item was
+added, split, dropped, re-scoped, renumbered or re-ordered, and no dependency moved.
+
+* **Completed:** FIF-008 (`9a1e457`, tightened in `2d4da5b`), EUR valuation and the stored gross, which revision 15 named as next to build and which had stood uncommitted for three revisions. `valuation.rs` is now tracked and `transaction.rs` carries the `Valued` native/EUR pair and a `Conversion` per money-bearing variant. The hand-off worry revision 15 recorded is closed: nothing is uncommitted in the tree now, and the suite is green (`cargo test --workspace`, 0 failures).
+* **Moved without a new item:** DOM-084 went from FIF-008 to FIF-014 during revision 15's build, and both items record it. Coverage is unaffected — it is still named exactly once.
+* **Invalidated by the specification change:** nothing; the specification did not change.
+* **Newly blocked:** none. **Unblocked:** none. **Uncovered requirements:** none.
+* Next to build: **FIF-091**, a stock dividend's taxable value is its stored EUR gross. Both dependencies, FIF-057 and FIF-008, are `done`; DOM-123 is on no `Blocks:` line; it is the first `todo` in plan order whose dependencies are all satisfied. It is the correction FIF-008's own notes point at: `transaction.rs` still carries `BuyOrigin::StockDividend { taxable_value }` as an independent `Money`, with a fixture of 81.00 against a stated 3 x 26.10 = 78.30, which is the divergence DEC-061 forbids.
+
+**Revision 15.** A status reconciliation, not a replan. `design/` is unchanged since
 revision 14 (`b21d225` is still the last commit to touch it), so the live set is still **333
 identifiers**, each named by exactly one item, and `open-questions.md` still names the same **32
 blocked ids** across OQ-001 to OQ-016. The twenty-three blocked items are unchanged. No item was
@@ -980,6 +995,12 @@ the same twenty-one items are `blocked` and no other is. Two more placements wor
 
 * DOM-120 (a spreadsheet row's canonical rendering) is owned by FIF-017, where the reader abstraction lives, not by FIF-005, which owns the `SourceRecord` type and is `done`.
 * TST-030 (a blank Saxo cell round-trips as an empty cell) is owned by FIF-019, the reader that must accept both shapes, not by FIF-003, whose writer causes the divergence.
+
+Re-verified mechanically in revision 16: the `Requirements:` lines name 333 distinct ids, each
+exactly once, and they are precisely the live ids in `design/` less the nine retired ones, which are
+assigned to nothing; every item carrying one of the thirty-two ids on a `Blocks:` line is `blocked`
+and no other item is — twenty-three items, unchanged. DOM-084's move from FIF-008 to FIF-014 in
+revision 15 is the only placement that changed since revision 14.
 
 Re-verified mechanically in revision 8: the `Requirements:` lines name 328 distinct ids, each
 exactly once, and they are precisely the live ids in `design/`, the nine retired ones assigned to

@@ -42,12 +42,13 @@
 //! # A buy's origin
 //!
 //! A `buy` says how it arose [DOM-082]. An ordinary purchase has a cost basis it paid for; shares
-//! issued as a stock dividend paid nothing, so their basis is their taxable value at issue, and
-//! that value is a figure the origin carries rather than one this crate works out. Nothing here
-//! computes it, and nothing here derives it from the quantity and the unit price: it comes from
-//! the caller that read it off a statement or was told it, which is what keeps it sourced. Where
-//! the Saxo importer will find it — along with the share count itself — is OQ-014, still open;
-//! that question blocks IMP-SAXO-013, not this type.
+//! issued as a stock dividend paid nothing, so their basis is their taxable value at issue — and
+//! that value **is** the buy's EUR gross, held as one stored figure [DOM-123]. The origin carries
+//! no figure of its own, so a basis differing from the total every calculation reads is not a
+//! state this type can be in. Nothing here computes the value either: the gross is what the
+//! caller booked, off a statement or from the user, which is what keeps it sourced. Where the
+//! Saxo importer will find it — along with the share count itself — is OQ-014, still open; that
+//! question blocks IMP-SAXO-013, not this type.
 //!
 //! # Every money figure is a native/EUR pair
 //!
@@ -200,7 +201,9 @@ variant!(
         ///
         /// Display and reconciliation only: what a calculation reads is `gross` [DOM-085].
         unit_price: Valued<QuotedPrice>,
-        /// What the parcel cost in total, as booked [DOM-085].
+        /// What the parcel cost in total, as booked [DOM-085]. For a buy issued as a stock
+        /// dividend it is also the taxable value at issue, stored once [DOM-123]; read it
+        /// through [`Buy::taxable_value`].
         gross: Valued<Money>,
         /// Commission, exchange fees and transaction taxes, summed [DOM-012], converted at
         /// the same rate as the leg they belong to [DOM-035].
@@ -313,16 +316,30 @@ variant!(
 pub enum BuyOrigin {
     /// An ordinary purchase. Its cost basis is what it paid: quantity, unit price and fees.
     Purchase,
-    /// Shares issued as a stock dividend.
-    StockDividend {
-        /// The taxable value of the shares issued, at issue, for the parcel as a whole — which
-        /// is the parcel's cost basis, nothing having been paid for it [DOM-082].
-        ///
-        /// Carried, never computed: a stock dividend's taxable value is stated by the issuer or
-        /// supplied by the user, and a basis this crate invented from a price would be a
-        /// plausible wrong number in a tax return.
-        taxable_value: Money,
-    },
+    /// Shares issued as a stock dividend, whose cost basis is their taxable value at issue
+    /// [DOM-082].
+    ///
+    /// The variant holds nothing: that taxable value is the buy's EUR gross and is stored
+    /// there once [DOM-123]. A field here would be a second figure that could drift from the
+    /// one every calculation reads, which is a cost basis wrong and silent about it.
+    StockDividend,
+}
+
+impl Buy {
+    /// The taxable value at issue of shares issued as a stock dividend, which is their cost
+    /// basis, nothing having been paid for them [DOM-082]. `None` for an ordinary purchase,
+    /// which paid for its basis and has no such value.
+    ///
+    /// It reads the stored EUR gross rather than a field of its own [DOM-123], so there is no
+    /// way to state a taxable value and a gross that disagree. It is still never computed here:
+    /// the gross is the figure the caller booked, not one derived from quantity and unit price.
+    #[must_use]
+    pub fn taxable_value(&self) -> Option<Money> {
+        match self.origin {
+            BuyOrigin::Purchase => None,
+            BuyOrigin::StockDividend => Some(self.gross.eur()),
+        }
+    }
 }
 
 /// Where the units of a [`TransferIn`] came from [DOM-083].
@@ -552,12 +569,12 @@ mod tests {
         )
     }
 
-    /// A `buy` for shares issued as a stock dividend: 3 shares whose taxable value at issue was
-    /// 81.00, which is their cost basis since nothing was paid [DOM-082].
+    /// A `buy` for shares issued as a stock dividend: 3 shares booked at 26.10, so a gross of
+    /// 78.30 — which is their taxable value at issue and therefore their cost basis, nothing
+    /// having been paid [DOM-082, DOM-123].
     ///
-    /// The taxable value is deliberately not the 78.30 that the stated quantity and unit price
-    /// multiply to: the two are independent figures, and the difference is what lets a test see
-    /// whether the basis was sourced or worked out.
+    /// FIF-057's fixture stated 81.00 against this same 3 x 26.10; DEC-061 settled that the two
+    /// are one figure, so there is no second number to state here.
     fn stock_dividend_buy() -> Buy {
         Buy::new(
             derivation(),
@@ -565,9 +582,7 @@ mod tests {
             Valued::in_eur(QuotedPrice::new(dec!(26.10))),
             Valued::in_eur(Money::new(dec!(78.30))),
             Valued::in_eur(Money::zero()),
-            BuyOrigin::StockDividend {
-                taxable_value: Money::new(dec!(81.00)),
-            },
+            BuyOrigin::StockDividend,
             Conversion::native(date()),
         )
     }
@@ -870,52 +885,93 @@ mod tests {
         assert_eq!(buy().origin(), BuyOrigin::Purchase);
 
         let issued = stock_dividend_buy();
-        assert_eq!(
-            issued.origin(),
-            BuyOrigin::StockDividend {
-                taxable_value: Money::new(dec!(81.00)),
-            }
-        );
+        assert_eq!(issued.origin(), BuyOrigin::StockDividend);
         assert_ne!(issued.origin(), buy().origin());
     }
 
     /// The two origins are the whole set [DOM-082]: a third makes this match fail to compile.
     #[test]
     fn the_origin_is_a_closed_two_case_set() {
-        let origins = [
-            BuyOrigin::Purchase,
-            BuyOrigin::StockDividend {
-                taxable_value: Money::zero(),
-            },
-        ];
+        let origins = [BuyOrigin::Purchase, BuyOrigin::StockDividend];
 
         for origin in origins {
             match origin {
-                BuyOrigin::Purchase | BuyOrigin::StockDividend { .. } => {}
+                BuyOrigin::Purchase | BuyOrigin::StockDividend => {}
             }
         }
 
         assert_eq!(origins.len(), 2);
     }
 
-    /// A stock dividend's cost basis is the taxable value the caller supplied, and is not
-    /// derived from the buy's own figures [DOM-082].
+    /// A stock dividend's taxable value at issue **is** its stored EUR gross [DOM-123], and is
+    /// its cost basis [DOM-082].
     ///
-    /// The taxable value here is deliberately not `quantity * unit_price`: if anything in this
-    /// crate computed the basis, the assertion below would see the product instead of the
-    /// sourced figure. OQ-014 is where the Saxo importer's figures come from, and it is open;
-    /// nothing here stands in for it.
+    /// This replaces FIF-057's assertion that the taxable value differs from the buy's own EUR
+    /// figures — 81.00 against a stated 3 x 26.10 = 78.30. DEC-061 settled that the two are one
+    /// figure, so the divergence that test protected is the failure this one forbids.
     #[test]
-    fn a_stock_dividend_carries_a_sourced_taxable_value() {
+    fn a_stock_dividends_taxable_value_is_its_stored_eur_gross() {
         let issued = stock_dividend_buy();
 
-        let computed_from_the_buy = issued.quantity().get() * issued.unit_price().eur().get();
-        assert_ne!(computed_from_the_buy, dec!(81.00));
+        assert_eq!(issued.taxable_value(), Some(issued.gross().eur()));
+        assert_eq!(issued.taxable_value(), Some(Money::new(dec!(78.30))));
+    }
 
-        let BuyOrigin::StockDividend { taxable_value } = issued.origin() else {
-            panic!("the origin built as a stock dividend");
-        };
-        assert_eq!(taxable_value, Money::new(dec!(81.00)));
+    /// Only a stock dividend has a taxable value at issue [DOM-082]: an ordinary purchase paid
+    /// for its basis.
+    #[test]
+    fn an_ordinary_purchase_has_no_taxable_value_at_issue() {
+        assert_eq!(buy().taxable_value(), None);
+    }
+
+    /// The origin holds no figure, so no caller can set a taxable value differing from the gross
+    /// [DOM-123]: two stock dividends with different gross totals have the same origin, and each
+    /// taxable value follows its own gross.
+    #[test]
+    fn the_origin_carries_no_figure_that_could_differ_from_the_gross() {
+        let issued = stock_dividend_buy();
+        let other_gross = Money::new(dec!(81.00));
+        let mut other = issued.clone();
+        other.gross = Valued::in_eur(other_gross);
+
+        assert_eq!(issued.origin(), other.origin());
+        assert_eq!(other.taxable_value(), Some(other_gross));
+        assert_ne!(issued.taxable_value(), other.taxable_value());
+    }
+
+    /// The taxable value is the **EUR** half of the gross [DOM-123], not the native one: shares
+    /// issued in USD take their EUR figure as the cost basis, never the USD amount.
+    ///
+    /// The other stock-dividend fixtures are booked in EUR, where the two halves are equal and
+    /// a native/EUR mix-up is invisible. This case states them apart on purpose.
+    #[test]
+    fn a_stock_dividends_taxable_value_is_the_eur_half_of_a_foreign_gross() {
+        let gross = Valued::new(Money::new(dec!(230.00)), Money::new(dec!(209.63)));
+        let issued = Buy::new(
+            derivation(),
+            Quantity::new(dec!(40)),
+            Valued::new(
+                QuotedPrice::new(dec!(5.75)),
+                QuotedPrice::new(dec!(5.240750)),
+            ),
+            gross,
+            Valued::new(Money::zero(), Money::zero()),
+            BuyOrigin::StockDividend,
+            usd(),
+        );
+
+        assert_eq!(issued.taxable_value(), Some(Money::new(dec!(209.63))));
+        assert_ne!(issued.taxable_value(), Some(gross.native()));
+    }
+
+    /// A zero gross is a stated figure, not an absent one [DOM-123]: the origin decides whether
+    /// there is a taxable value, the amount decides only what it is.
+    #[test]
+    fn a_stock_dividend_with_a_zero_gross_has_a_taxable_value_of_zero() {
+        let mut issued = stock_dividend_buy();
+        issued.gross = Valued::in_eur(Money::zero());
+
+        assert_eq!(issued.taxable_value(), Some(Money::zero()));
     }
 
     /// Every money-bearing variant stores its native figures, its EUR figures and the
