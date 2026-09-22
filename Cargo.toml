@@ -5,6 +5,7 @@ members = [
     "crates/fifolio-server",
     "crates/fifolio-cli",
     "crates/fifolio-test-support",
+    "tools/anonymize-exports",
 ]
 
 [workspace.package]
