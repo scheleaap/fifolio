@@ -8,3 +8,4 @@ pub mod identity;
 pub mod ordering;
 pub mod precision;
 pub mod quotation;
+pub mod transaction;
