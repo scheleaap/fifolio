@@ -5,6 +5,7 @@
 pub mod decimal;
 pub mod entities;
 pub mod identity;
+pub mod manual_entry;
 pub mod ordering;
 pub mod precision;
 pub mod quotation;

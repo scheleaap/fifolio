@@ -121,11 +121,14 @@ Blocked by: DOM-101 is on the undecided list.
 Notes: Split out of FIF-056. DOM-070 (at most one consumer) is in FIF-060 and blocked alongside it; SRV-022 and DOM-119 (batch deletion refused on a citation the batch did not derive) are in FIF-012 and FIF-036, which can only be finished once this is settled.
 
 ## FIF-059 Manual entry entity
-Status: todo
-Requirements: DOM-097, DOM-098, DOM-099, DOM-100
+Status: done
+Requirements: DOM-097, DOM-098, DOM-099, DOM-100, DOM-122
 Depends on: FIF-005
-Acceptance: a `ManualEntry` type separate from `SourceRecord`, holding account, security, what the user supplied, and **the broker identities of the source records it answers** rather than internal keys, so it survives their deletion; the separation is structural — nothing in the type system lets an import undo remove one.
-Notes: New in this revision; the previous plan modeled manual information as a `manual` source record kind, which DEC-038 reversed.
+Acceptance: a `ManualEntry` type separate from `SourceRecord`, holding account, security, what the user supplied, and **the broker identities of the source records it answers** rather than internal keys, so it survives their deletion; the separation is structural — nothing in the type system lets an import undo remove one; what was supplied is the closed set of **three** shapes — a share count, a stock-or-cash election, a target security with a ratio — and an acquisition date is not among them, it being fixed at import and never corrected by hand.
+Notes: New in revision 4; the previous plan modeled manual information as a `manual` source record kind, which DEC-038 reversed.
+DOM-122 was added to this item in revision 12. It is the one identifier `design/` gained in commit `9d8c9b9` (DEC-060), and it is a closure clause on DOM-097 rather than a separate increment: it says which shape is *not* in the set this type models, so it belongs where the set is defined. It invalidates no completed work — FIF-024 already carried the fixed acquisition date from DEC-040, and FIF-038 already states that no endpoint edits one.
+Done in revision 13. Reviewed against acceptance rather than rebuilt: `manual_entry.rs` carries `ManualEntry` (account, `Isin`, `Supplied`, `Vec<RecordIdentity>`, accessors only) [DOM-098], `Supplied` with exactly the three DOM-097 shapes and no acquisition date [DOM-122], and an integer `Ratio` (DEC-055). The separation from `SourceRecord` is structural — no import batch, no owned record — so an undo has nothing here to remove [DOM-100]; that is a compile-time property no test can name. The one change the review made was to the module documentation, which called the variant set open to a further variant where DEC-060 closes it.
+Revision 12 marked this `in-progress`; revision 13 puts it back to `todo`, which is the convention revisions 5, 7 and 9 applied to FIF-055, FIF-003 and FIF-056 — uncommitted is unreviewed, and an unreviewed item is the item still to build. The deviation was not harmless: `in-progress` is not a selectable status, so a plan carrying two of them named nothing to build while two modules sat uncommitted. Completion is still recorded against commits, never against a working tree.
 
 ## FIF-006 Per-file order computation
 Status: done
