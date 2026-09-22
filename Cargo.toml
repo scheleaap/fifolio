@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/fifolio-core", "crates/fifolio-server", "crates/fifolio-cli"]
+members = [
+    "crates/fifolio-core",
+    "crates/fifolio-server",
+    "crates/fifolio-cli",
+    "crates/fifolio-test-support",
+]
 
 [workspace.package]
 edition = "2024"
@@ -20,3 +25,4 @@ cast_precision_loss = "deny"
 
 [workspace.dependencies]
 fifolio-core = { path = "crates/fifolio-core" }
+fifolio-test-support = { path = "crates/fifolio-test-support" }

@@ -35,6 +35,7 @@ Depends on: FIF-001
 Acceptance: the repository documents and demonstrates the three layers — unit (one module, no I/O), integration (crate against real deps in process, temp SQLite / real HTTP surface), end-to-end (real binaries, real db, free port); a shared test-support module provides a temporary-database helper and a free-port helper; every test names the requirement ids it covers, in the convention `.claude/agents/README.md` describes.
 Notes: TST-002 enumerates what must end up unit tested in core; the individual items below each carry their own share. This item owns the convention and the harness, not the coverage of every rule.
 The harness is the workspace member `fifolio-test-support`, a dev-dependency of the other three crates; its crate documentation is where the layers and the requirement-id convention are written down. The unit-layer demonstration lives there too, core carrying no logic yet; the first core unit tests arrive with FIF-004.
+Both binaries are stubs that exit before reading `argv`, so the end-to-end demonstration can only assert that they are built and fail loudly. The temporary database and the free port are passed but nothing consumes them; the assertion that a live process opens the one and binds the other belongs to FIF-032 and FIF-042. ARC-024 is checked mechanically against `Cargo.lock` in `fifolio-core/tests/dependency_graph.rs`.
 
 ## FIF-003 Anonymized broker fixtures
 Status: todo

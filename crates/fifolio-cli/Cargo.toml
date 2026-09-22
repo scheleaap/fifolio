@@ -25,6 +25,7 @@ unic-langid = "0.9.6"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+fifolio-test-support = { workspace = true }
 insta = "1.48.0"
 predicates = "3.1.4"
 tempfile = "3.27.0"

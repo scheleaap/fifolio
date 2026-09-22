@@ -21,6 +21,8 @@ thiserror = "2.0.20"
 tracing = "0.1.44"
 
 [dev-dependencies]
+cargo-lock = { version = "11.1.0", default-features = false }
+fifolio-test-support = { workspace = true }
 insta = "1.48.0"
 proptest = "1.11.0"
 tempfile = "3.27.0"

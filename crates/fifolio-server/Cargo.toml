@@ -23,6 +23,7 @@ utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "decimal"] }
 utoipa-axum = "0.2.0"
 
 [dev-dependencies]
+fifolio-test-support = { workspace = true }
 insta = "1.48.0"
 tempfile = "3.27.0"
 
