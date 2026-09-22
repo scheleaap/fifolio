@@ -49,6 +49,24 @@
 //! the Saxo importer will find it — along with the share count itself — is OQ-014, still open;
 //! that question blocks IMP-SAXO-013, not this type.
 //!
+//! # Every money figure is a native/EUR pair
+//!
+//! A transaction stores what the statement booked *and* what it is worth in EUR, with the rate
+//! that relates them, its source and its date [DOM-028] — the [`Conversion`] every
+//! money-bearing variant carries. Each figure is a [`Valued`] pair, so the two halves cannot
+//! drift to different scales [DOM-029] and an allocation reads the EUR half exactly as it
+//! reads the native one [DOM-084].
+//!
+//! The date those figures are valued at is the trade date on the [`Derivation`], never a
+//! settlement date [DOM-027]; [`Transaction::valuation_date`] is where that is said once.
+//! Nothing here holds a currency gain: the movement of the currency between acquisition and
+//! disposal is inside the securities gain [DOM-026].
+//!
+//! Every variant that opens or closes for cash also stores its **gross total**, not only its
+//! unit price [DOM-085]. Whether a calculation may read the unit price at all is DOM-104,
+//! undecided, and belongs to FIF-077; what this module fixes is that the total is there to be
+//! read.
+//!
 //! # Fields deliberately absent
 //!
 //! Each is owned by another item, and inventing it here would fix a rule this item does not
@@ -57,18 +75,19 @@
 //! | Absent | Variant | Owner |
 //! | --- | --- | --- |
 //! | account, security, source-record relations, the `order` consumed | all | FIF-076 (DOM-011, DOM-013) |
-//! | native/EUR figure pairs, the stored EUR gross | all with money | FIF-008 (DOM-028, DOM-085) |
+//! | the EUR gross | `transfer_out` | FIF-080 (DOM-112): it is derived from its own allocations, not stored |
 //! | quantity | `expiration` | FIF-079 (DOM-092): it is the unattributed remainder, not a stated figure |
 //! | target security and ratio | `transfer_out` | FIF-063 (DOM-090), FIF-076 |
 //! | ratio, as an integer numerator and denominator | `split` | FIF-061 (DOM-113) |
 //!
 //! The money fields present are the figures the variant states, at the scales of
-//! [`crate::decimal`]. FIF-008 is what turns each into a native/EUR pair.
+//! [`crate::decimal`].
 
 use chrono::NaiveDate;
 
 use crate::decimal::{Money, Quantity, QuotedPrice};
 use crate::entities::RecordIdentity;
+use crate::valuation::{Conversion, Valued};
 
 /// What every variant carries: its trade date, and the records it was derived from [DOM-016].
 ///
@@ -108,19 +127,37 @@ impl Derivation {
 /// The fields differ per variant and their accessors do not, so the accessors are generated.
 /// Every field is private and read-only, which is what makes a `transfer_in`'s source and date
 /// provenance non-editable by construction rather than by a check [DOM-083].
+///
+/// Fields listed in the trailing `borrowed` group are handed back by reference instead of by
+/// value; a [`Conversion`] names its currency and so is not `Copy`.
 macro_rules! variant {
     ($(#[$meta:meta])* $name:ident { $($(#[$field_meta:meta])* $field:ident: $type:ty),* $(,)? }) => {
+        variant!($(#[$meta])* $name { $($(#[$field_meta])* $field: $type,)* } borrowed {});
+    };
+    (
+        $(#[$meta:meta])* $name:ident { $($(#[$field_meta:meta])* $field:ident: $type:ty),* $(,)? }
+        borrowed { $($(#[$borrowed_meta:meta])* $borrowed:ident: $borrowed_type:ty),* $(,)? }
+    ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub struct $name {
             derivation: Derivation,
             $($field: $type,)*
+            $($borrowed: $borrowed_type,)*
         }
 
         impl $name {
+            /// A variant's constructor takes exactly the fields that variant has, which is the
+            /// point of the type; `transfer_in` has eight of them and grouping them behind a
+            /// builder would hide which ones a caller forgot.
+            #[allow(clippy::too_many_arguments)]
             #[must_use]
-            pub fn new(derivation: Derivation, $($field: $type,)*) -> Self {
-                Self { derivation, $($field,)* }
+            pub fn new(
+                derivation: Derivation,
+                $($field: $type,)*
+                $($borrowed: $borrowed_type,)*
+            ) -> Self {
+                Self { derivation, $($field,)* $($borrowed,)* }
             }
 
             #[must_use]
@@ -140,6 +177,14 @@ macro_rules! variant {
                     self.$field
                 }
             )*
+
+            $(
+                $(#[$borrowed_meta])*
+                #[must_use]
+                pub fn $borrowed(&self) -> &$borrowed_type {
+                    &self.$borrowed
+                }
+            )*
         }
     };
 }
@@ -152,11 +197,20 @@ variant!(
         /// The price the statement shows, so it still reconciles against the document
         /// [DOM-039]. Whether it is per unit or a percentage of par is the security's
         /// quotation.
-        unit_price: QuotedPrice,
-        /// Commission, exchange fees and transaction taxes, summed [DOM-012].
-        fees: Money,
+        ///
+        /// Display and reconciliation only: what a calculation reads is `gross` [DOM-085].
+        unit_price: Valued<QuotedPrice>,
+        /// What the parcel cost in total, as booked [DOM-085].
+        gross: Valued<Money>,
+        /// Commission, exchange fees and transaction taxes, summed [DOM-012], converted at
+        /// the same rate as the leg they belong to [DOM-035].
+        fees: Valued<Money>,
         /// How this buy arose [DOM-082].
         origin: BuyOrigin,
+    }
+    borrowed {
+        /// The rate the EUR figures were obtained under, its source and its date [DOM-028].
+        conversion: Conversion,
     }
 );
 
@@ -166,9 +220,11 @@ variant!(
     TransferIn {
         quantity: Quantity,
         /// What the parcel cost where it was acquired, carried onward rather than paid here.
-        cost_basis: Money,
-        /// Commission, exchange fees and transaction taxes, summed [DOM-012].
-        fees: Money,
+        /// It is this opening's gross [DOM-085].
+        cost_basis: Valued<Money>,
+        /// Commission, exchange fees and transaction taxes, summed [DOM-012], converted at
+        /// the same rate as the leg they belong to [DOM-035].
+        fees: Valued<Money>,
         /// When the parcel was acquired, which is what a holding period is counted from — and
         /// what `date_provenance` says the worth of.
         acquisition_date: NaiveDate,
@@ -177,16 +233,28 @@ variant!(
         /// Where the units came from [DOM-083].
         source: TransferInSource,
     }
+    borrowed {
+        /// The rate the EUR figures were obtained under, its source and its date [DOM-028].
+        conversion: Conversion,
+    }
 );
 
 variant!(
     /// Closes parcels against payment. Realizes a gain.
     Sell {
         quantity: Quantity,
-        /// The price the statement shows [DOM-039].
-        unit_price: QuotedPrice,
-        /// Commission, exchange fees and transaction taxes, summed [DOM-012].
-        fees: Money,
+        /// The price the statement shows [DOM-039]. Display and reconciliation only: what a
+        /// calculation reads is `gross` [DOM-085].
+        unit_price: Valued<QuotedPrice>,
+        /// The proceeds in total, as booked [DOM-085].
+        gross: Valued<Money>,
+        /// Commission, exchange fees and transaction taxes, summed [DOM-012], converted at
+        /// the same rate as the leg they belong to [DOM-035].
+        fees: Valued<Money>,
+    }
+    borrowed {
+        /// The rate the EUR figures were obtained under, its source and its date [DOM-028].
+        conversion: Conversion,
     }
 );
 
@@ -197,18 +265,37 @@ variant!(
     /// It carries no quantity: the quantity is the unattributed remainder rather than a stated
     /// figure, which is DOM-092 and belongs to FIF-079.
     Expiration {
-        /// Commission, exchange fees and transaction taxes, summed [DOM-012].
-        fees: Money,
+        /// What the position paid out, as booked — zero for a worthless expiry, and stored
+        /// rather than assumed so that every cash closing answers one formula [DOM-085]. It
+        /// has no unit price: there is no price at which nothing was sold.
+        gross: Valued<Money>,
+        /// Commission, exchange fees and transaction taxes, summed [DOM-012], converted at
+        /// the same rate as the leg they belong to [DOM-035].
+        fees: Valued<Money>,
+    }
+    borrowed {
+        /// The rate the EUR figures were obtained under, its source and its date [DOM-028].
+        conversion: Conversion,
     }
 );
 
 variant!(
     /// Closes parcels without payment: the basis carries onward into the records it emits, so
     /// it realizes **no** gain.
+    ///
+    /// The one money-bearing variant with no `gross`: a transfer has no proceeds, and the
+    /// basis it carries onward is derived from its own allocations rather than stored, which
+    /// is DOM-112 and belongs to FIF-080. Storing a figure here would be inventing the answer
+    /// to a question that is still open (OQ-003, OQ-011, OQ-016).
     TransferOut {
         quantity: Quantity,
-        /// Commission, exchange fees and transaction taxes, summed [DOM-012].
-        fees: Money,
+        /// Commission, exchange fees and transaction taxes, summed [DOM-012], converted at
+        /// the same rate as the leg they belong to [DOM-035].
+        fees: Valued<Money>,
+    }
+    borrowed {
+        /// The rate the EUR figures were obtained under, its source and its date [DOM-028].
+        conversion: Conversion,
     }
 );
 
@@ -332,6 +419,17 @@ impl Transaction {
         self.derivation().trade_date()
     }
 
+    /// The date this transaction's EUR figures are valued at: the trade date, which is the
+    /// obligating transaction, and never the settlement date [DOM-025, DOM-027].
+    ///
+    /// The same field as [`Transaction::trade_date`] and deliberately so — there is no
+    /// settlement date anywhere in this crate to reach for by mistake. It exists so that the
+    /// rule is named where a caller asks the question.
+    #[must_use]
+    pub fn valuation_date(&self) -> NaiveDate {
+        self.trade_date()
+    }
+
     /// The source records this transaction was derived from [DOM-016].
     #[must_use]
     pub fn cites(&self) -> &[RecordIdentity] {
@@ -405,9 +503,10 @@ mod tests {
 
     use rust_decimal_macros::dec;
 
-    use crate::decimal::Scaled;
+    use crate::decimal::{FxRate, Scaled};
     use crate::entities::Account;
     use crate::identity::{IdentitySource, identify};
+    use crate::valuation::{Currency, RateSource};
 
     fn account() -> Account {
         Account::new("Saxo", "69900/1000000")
@@ -425,13 +524,31 @@ mod tests {
         Derivation::new(date(), [cite("row-1")])
     }
 
+    /// The conversion the worked Saxo buy was booked under: USD figures, the EUR figures the
+    /// file states, and the quotient they imply as the stored rate [DOM-030, DOM-086].
+    fn usd() -> Conversion {
+        Conversion::new(
+            Currency::new("USD"),
+            FxRate::new(dec!(1.097171)),
+            RateSource::Broker,
+            date(),
+        )
+    }
+
+    /// 40 units at 5.75 USD: 230.00 USD of gross, 209.63 EUR at 1.097171 USD per EUR, and
+    /// 3.50 USD of fees converted at the same rate [DOM-035].
     fn buy() -> Buy {
         Buy::new(
             derivation(),
             Quantity::new(dec!(40)),
-            QuotedPrice::new(dec!(5.75)),
-            Money::new(dec!(8.32)),
+            Valued::new(
+                QuotedPrice::new(dec!(5.75)),
+                QuotedPrice::new(dec!(5.240750)),
+            ),
+            Valued::new(Money::new(dec!(230.00)), Money::new(dec!(209.63))),
+            Valued::new(Money::new(dec!(3.50)), Money::new(dec!(3.19))),
             BuyOrigin::Purchase,
+            usd(),
         )
     }
 
@@ -445,11 +562,13 @@ mod tests {
         Buy::new(
             derivation(),
             Quantity::new(dec!(3)),
-            QuotedPrice::new(dec!(26.10)),
-            Money::zero(),
+            Valued::in_eur(QuotedPrice::new(dec!(26.10))),
+            Valued::in_eur(Money::new(dec!(78.30))),
+            Valued::in_eur(Money::zero()),
             BuyOrigin::StockDividend {
                 taxable_value: Money::new(dec!(81.00)),
             },
+            Conversion::native(date()),
         )
     }
 
@@ -457,29 +576,44 @@ mod tests {
         TransferIn::new(
             derivation(),
             Quantity::new(dec!(300)),
-            Money::new(dec!(15420.00)),
-            Money::zero(),
+            Valued::in_eur(Money::new(dec!(15420.00))),
+            Valued::in_eur(Money::zero()),
             date(),
             DateProvenance::TransferDate,
             TransferInSource::Broker,
+            Conversion::native(date()),
         )
     }
 
+    /// The worked Saxo sell: 60 units, 1839.24 EUR of proceeds, so 30.654 a unit — which is
+    /// not the 30.65 the label prints [DOM-085].
     fn sell() -> Sell {
         Sell::new(
             derivation(),
             Quantity::new(dec!(60)),
-            QuotedPrice::new(dec!(30.65)),
-            Money::new(dec!(9.10)),
+            Valued::in_eur(QuotedPrice::new(dec!(30.654))),
+            Valued::in_eur(Money::new(dec!(1839.24))),
+            Valued::in_eur(Money::new(dec!(9.10))),
+            Conversion::native(date()),
         )
     }
 
     fn expiration() -> Expiration {
-        Expiration::new(derivation(), Money::zero())
+        Expiration::new(
+            derivation(),
+            Valued::in_eur(Money::zero()),
+            Valued::in_eur(Money::zero()),
+            Conversion::native(date()),
+        )
     }
 
     fn transfer_out() -> TransferOut {
-        TransferOut::new(derivation(), Quantity::new(dec!(25)), Money::zero())
+        TransferOut::new(
+            derivation(),
+            Quantity::new(dec!(25)),
+            Valued::in_eur(Money::zero()),
+            Conversion::native(date()),
+        )
     }
 
     fn split() -> Split {
@@ -536,9 +670,11 @@ mod tests {
         let transaction: Transaction = Buy::new(
             Derivation::new(date(), rows.clone()),
             Quantity::new(dec!(3)),
-            QuotedPrice::new(dec!(26.10)),
-            Money::zero(),
+            Valued::in_eur(QuotedPrice::new(dec!(26.10))),
+            Valued::in_eur(Money::new(dec!(78.30))),
+            Valued::in_eur(Money::zero()),
             BuyOrigin::Purchase,
+            Conversion::native(date()),
         )
         .into();
 
@@ -608,12 +744,14 @@ mod tests {
         let buy = Buy::new(
             derivation(),
             Quantity::new(dec!(100)),
-            QuotedPrice::new(dec!(3.00)),
-            Money::new(commission + exchange_fee + transaction_tax),
+            Valued::in_eur(QuotedPrice::new(dec!(3.00))),
+            Valued::in_eur(Money::new(dec!(300.00))),
+            Valued::in_eur(Money::new(commission + exchange_fee + transaction_tax)),
             BuyOrigin::Purchase,
+            Conversion::native(date()),
         );
 
-        assert_eq!(buy.fees(), Money::new(dec!(7.40)));
+        assert_eq!(buy.fees().native(), Money::new(dec!(7.40)));
     }
 
     /// Every variant that can bear a cost carries that one field, so one formula reads them
@@ -629,8 +767,8 @@ mod tests {
         ];
 
         assert_eq!(fees.len(), 5);
-        assert_eq!(buy().fees(), Money::new(dec!(8.32)));
-        assert_eq!(sell().fees(), Money::new(dec!(9.10)));
+        assert_eq!(buy().fees().native(), Money::new(dec!(3.50)));
+        assert_eq!(sell().fees().eur(), Money::new(dec!(9.10)));
     }
 
     /// A `transfer_in` says where its units came from and what its acquisition date is worth
@@ -649,11 +787,12 @@ mod tests {
         let from_corporate_action = TransferIn::new(
             derivation(),
             Quantity::new(dec!(10)),
-            Money::new(dec!(1000.00)),
-            Money::zero(),
+            Valued::in_eur(Money::new(dec!(1000.00))),
+            Valued::in_eur(Money::zero()),
             NaiveDate::from_ymd_opt(2019, 3, 14).expect("a valid date"),
             DateProvenance::Inherited,
             TransferInSource::CorporateAction,
+            Conversion::native(date()),
         );
         assert_eq!(
             from_corporate_action.source(),
@@ -763,13 +902,129 @@ mod tests {
     fn a_stock_dividend_carries_a_sourced_taxable_value() {
         let issued = stock_dividend_buy();
 
-        let computed_from_the_buy = issued.quantity().get() * issued.unit_price().get();
+        let computed_from_the_buy = issued.quantity().get() * issued.unit_price().eur().get();
         assert_ne!(computed_from_the_buy, dec!(81.00));
 
         let BuyOrigin::StockDividend { taxable_value } = issued.origin() else {
             panic!("the origin built as a stock dividend");
         };
         assert_eq!(taxable_value, Money::new(dec!(81.00)));
+    }
+
+    /// Every money-bearing variant stores its native figures, its EUR figures and the
+    /// conversion that relates them [DOM-028].
+    ///
+    /// Written as one list so that adding a sixth money-bearing variant without a conversion
+    /// fails to compile here rather than shipping an unreproducible EUR figure.
+    #[test]
+    fn every_money_bearing_variant_stores_both_currencies_and_the_conversion() {
+        let conversions = [
+            buy().conversion().clone(),
+            transfer_in().conversion().clone(),
+            sell().conversion().clone(),
+            expiration().conversion().clone(),
+            transfer_out().conversion().clone(),
+        ];
+
+        for conversion in &conversions {
+            assert!(!conversion.currency().code().is_empty());
+            assert_eq!(conversion.rate_date(), date());
+        }
+        assert_eq!(conversions.len(), 5);
+
+        let usd_buy = buy();
+        assert_eq!(usd_buy.conversion().currency().code(), "USD");
+        assert_eq!(usd_buy.conversion().rate(), FxRate::new(dec!(1.097171)));
+        assert_eq!(usd_buy.conversion().source(), RateSource::Broker);
+        assert_eq!(usd_buy.gross().native(), Money::new(dec!(230.00)));
+        assert_eq!(usd_buy.gross().eur(), Money::new(dec!(209.63)));
+
+        // A EUR-denominated leg is rate 1 from source `native`, and its two halves are one
+        // figure [DOM-033].
+        let eur_sell = sell();
+        assert_eq!(eur_sell.conversion().source(), RateSource::Native);
+        assert_eq!(eur_sell.gross().native(), eur_sell.gross().eur());
+    }
+
+    /// The EUR figures mirror the native ones: a price against a price, an amount against an
+    /// amount, at the same scale [DOM-029].
+    ///
+    /// The pair is read the same way on both sides, which is what lets an allocation take its
+    /// share from the EUR figure exactly as it takes it from the native one [DOM-084].
+    #[test]
+    fn the_eur_figures_mirror_the_native_ones_at_one_scale() {
+        let priced = buy();
+        let price = priced.unit_price().rounded();
+        assert_eq!(price.native(), QuotedPrice::new(dec!(5.75)));
+        assert_eq!(price.eur(), QuotedPrice::new(dec!(5.240750)));
+        assert!(price.native().get().scale() <= QuotedPrice::SCALE);
+        assert!(price.eur().get().scale() <= QuotedPrice::SCALE);
+
+        let fees = priced.fees().rounded();
+        assert_eq!(fees.native().get().scale(), Money::SCALE);
+        assert_eq!(fees.eur().get().scale(), Money::SCALE);
+    }
+
+    /// The EUR gross total is stored as well as the unit price [DOM-085].
+    ///
+    /// A fractional quantity is why: 10.14 EUR over 0.0827 units is 122.611850 a unit at the
+    /// price scale, and multiplying that back gives 10.1399999950 — the booked total is not
+    /// recoverable from the stored price [DEC-028]. At this size the residue disappears when
+    /// the product is rounded to cents; it does not disappear when it is taken pro-rata across
+    /// several allocations, which is why the total is stored rather than derived. Whether
+    /// anything may read the unit price at all is DOM-104, undecided, and belongs to FIF-077.
+    #[test]
+    fn the_eur_gross_total_is_stored_as_well_as_the_unit_price() {
+        let quantity = Quantity::new(dec!(0.0827));
+        let booked = Money::new(dec!(10.14));
+        let price = QuotedPrice::new(dec!(122.611850));
+
+        let fractional = Buy::new(
+            derivation(),
+            quantity,
+            Valued::in_eur(price),
+            Valued::in_eur(booked),
+            Valued::in_eur(Money::zero()),
+            BuyOrigin::Purchase,
+            Conversion::native(date()),
+        );
+
+        assert_eq!(fractional.gross().eur(), booked);
+        assert_ne!(
+            price.get() * quantity.get(),
+            booked.get(),
+            "a total rebuilt from the unit price is not the booked total"
+        );
+    }
+
+    /// Fees convert at the same rate as the leg they belong to [DOM-035], and every EUR figure
+    /// is reproducible from the stored rate, which is what makes it auditable [DOM-028].
+    #[test]
+    fn the_eur_figures_are_reproducible_from_the_stored_rate() {
+        let usd_buy = buy();
+        let rate = usd_buy.conversion().rate();
+
+        for (native_and_eur, label) in [(usd_buy.gross(), "gross"), (usd_buy.fees(), "fees")] {
+            let recomputed = Valued::converted(native_and_eur.native(), rate)
+                .expect("the stored rate is not zero")
+                .rounded();
+
+            assert_eq!(
+                recomputed.eur(),
+                native_and_eur.eur(),
+                "{label} does not reproduce from the stored rate"
+            );
+        }
+    }
+
+    /// A transaction is valued at its trade date, the obligating transaction, and there is no
+    /// settlement date to value at instead [DOM-025, DOM-027].
+    #[test]
+    fn every_variant_is_valued_at_its_trade_date() {
+        for transaction in every_variant() {
+            assert_eq!(transaction.valuation_date(), transaction.trade_date());
+            assert_eq!(transaction.valuation_date(), date());
+        }
     }
 
     /// Neither is editable [DOM-083]: the fields are private and there is no setter, which is a

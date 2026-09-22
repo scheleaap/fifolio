@@ -169,7 +169,7 @@ Acceptance: an identity abstraction that takes either a broker reference or a ha
 Done in revision 5, commit `fdf8990`. `identity.rs` offers `IdentitySource::BrokerReference` / `ParsedFields`, both scoped to the account, with a length-prefixed framing tested against flattening collisions and against a reference aliasing a hash.
 
 ## FIF-008 EUR valuation and the stored gross
-Status: todo
+Status: done
 Requirements: DOM-025, DOM-026, DOM-027, DOM-028, DOM-029, DOM-084, DOM-085, DOM-086
 Depends on: FIF-004, FIF-056
 Acceptance: every transaction stores native figures and EUR figures at the same scales, together with the rate, its source and its date; the valuation date is the trade date, never settlement; no separate currency-gain figure exists anywhere in the model; **the EUR gross total is stored as well as the unit price**; the stored rate is foreign units per EUR (`EUR = native / rate`), and a format quoting the inverse converts at full precision from the figures the file states, never from the rounded stored rate.
@@ -177,6 +177,8 @@ Notes: DOM-085 (DEC-028) and DOM-086 (DEC-027) were new in revision 2 and change
 Started and uncommitted at revision 13: `crates/fifolio-core/src/valuation.rs` is untracked, `lib.rs` declares it, and `crates/fifolio-core/src/transaction.rs` is modified to carry a `Valued` native/EUR pair per money figure plus a `Conversion` (rate, source, date) on every money-bearing variant, with the trade date named as the valuation date and the EUR gross stored alongside the unit price. The suite passes. It stays `todo` for the same reason FIF-059 does: there is no commit to cite. What is outstanding is review against the eight requirements above and a commit.
 Whoever finishes it should read **FIF-091** first. That item collapses a stock dividend's taxable value into the EUR gross this item introduces, and the working tree still carries both figures separately; committing the pair as-is entrenches the divergence DEC-061 forbids.
 Still uncommitted at revision 14 and still `todo`, for the same reason: `valuation.rs` is untracked and `transaction.rs` is modified in the working tree. The suite is green there (166 tests). The outstanding work is review against the eight requirements above, then a commit. Revision 14 puts **FIF-092** ahead of this item — that is a correction to code already committed wrong, and it touches `manual_entry.rs` only, so the two do not collide in the tree.
+Still uncommitted at revision 15, a third consecutive revision, and still `todo`: `valuation.rs` is untracked and `transaction.rs` modified, the suite green at 169 tests. FIF-092 landed in `cd09f97` around that tree without disturbing it, so nothing now sits ahead of this item. If a fourth revision finds it uncommitted, what needs fixing is the hand-off, not the item — the outstanding work is review against the eight requirements and a commit, then **FIF-091** on top, collapsing the stock dividend's taxable value into the EUR gross before the pair DEC-061 forbids is entrenched.
+Done in revision 15's build. The tree described above was reviewed against the eight requirements and committed as it stood, with one correction: a unit-test comment in `valuation.rs` called 218.32 USD "the worked Saxo buy", which is neither its booked amount (238.00) nor its gross (230.00); the figures now match `importers.md`. `Expiration` carrying a `gross` of zero, and `TransferOut` carrying none, are this item's two judgement calls — the first so every cash closing answers one formula, the second because a transfer's basis is derived from its allocations (DOM-112, FIF-080). **FIF-091** is next and lands on top: the stock dividend's `taxable_value` is still a second figure beside the EUR gross in this commit.
 
 ## FIF-077 The stored gross governs every calculation
 Status: blocked
@@ -721,6 +723,18 @@ Ids are never reused.
 * **FIF-018 — Corporate action engine.** Dropped in this revision. `domain.md` replaced the separate corporate-action entity with transaction variants (DEC-024, DEC-025), retiring DOM-014, DOM-015 and DOM-050 to DOM-053. Its two halves became FIF-061 (splits and effective quantity) and FIF-063 (transfer out emission, basis and decomposition); DOM-016, the citation rule, moved to FIF-056.
 
 # Revision history
+
+**Revision 15 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
+revision 14 (`b21d225` is still the last commit to touch it), so the live set is still **333
+identifiers**, each named by exactly one item, and `open-questions.md` still names the same **32
+blocked ids** across OQ-001 to OQ-016. The twenty-three blocked items are unchanged. No item was
+added, split, dropped, re-scoped, renumbered or re-ordered, and no dependency moved.
+
+* **Completed:** FIF-092 (`cd09f97`), the manual entry shapes, which revision 14 named as next to build and which that commit also recorded as `done`. Verified against `crates/fifolio-core/src/manual_entry.rs` rather than the commit message: `Supplied` has the five shapes DOM-097 lists, the standalone `ShareCount` variant is gone, and each shape carries a unit test naming its completion-queue case.
+* **Invalidated by the specification change:** nothing; the specification did not change.
+* **Newly blocked:** none. **Unblocked:** none. **Uncovered requirements:** none.
+* **Still uncommitted:** FIF-008. `valuation.rs` is untracked and `transaction.rs` modified, for the third consecutive revision. It stays `todo` under the rule revisions 5, 7, 9 and 13 applied: uncommitted is unreviewed, and an unreviewed item is still the item to build. The full suite is green there (169 tests, 0 failures).
+* Next to build: **FIF-008**, EUR valuation and the stored gross. Both dependencies, FIF-004 and FIF-056, are `done`; none of DOM-025 to DOM-029, DOM-084, DOM-085 or DOM-086 is on a `Blocks:` line — the undecided part of that area, DOM-104, is already split out into FIF-077. It is the first `todo` in plan order whose dependencies are all satisfied. The work is review and a commit, not a rebuild, and **FIF-091 lands on top of it**.
 
 **Revision 14 (this run).** `design/` changed twice since revision 13, in `a0ee437` (DEC-062) and
 `b21d225` (DEC-063 to DEC-066). Three requirement identifiers are added — DOM-124, DOM-125,

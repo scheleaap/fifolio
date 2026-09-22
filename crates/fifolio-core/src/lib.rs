@@ -10,3 +10,4 @@ pub mod ordering;
 pub mod precision;
 pub mod quotation;
 pub mod transaction;
+pub mod valuation;
