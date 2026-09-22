@@ -67,11 +67,12 @@ const IMPL = {
   properties: {
     verdict: { type: 'string', enum: ['pass', 'fail'] },
     decisions: { type: 'integer' },
+    newQuestions: { type: 'integer' },
     summary: { type: 'string' },
     changed: { type: 'string' },
     disagreements: { type: 'string' },
   },
-  required: ['verdict', 'decisions', 'summary', 'changed'],
+  required: ['verdict', 'decisions', 'newQuestions', 'summary', 'changed'],
 }
 
 const COMMIT = {
@@ -179,14 +180,25 @@ Put a short account of what changed in "summary".`,
 Requirements: ${plan.requirements}
 Acceptance: ${plan.acceptance}
 
-Implement only this item. If it cannot be completed as specified, stop and set decisions above
-zero rather than guessing. Ship tests with the change and run the suite before reporting.`,
+Implement only this item. If it cannot be completed as specified, set verdict to fail rather than
+guessing. Ship tests with the change and run the suite before reporting.
+
+Two different counts, and the difference decides whether the run halts for a human:
+
+* "decisions" counts every point the specification left undetermined that you met. Record them in
+  your summary. A point already covered by an entry in design/open-questions.md belongs here, and
+  only here. This count does NOT halt the run.
+* "newQuestions" counts only those undetermined points that are **not** covered by any entry in
+  design/open-questions.md and that a person must answer. Read that file before you count, and keep
+  the count at zero unless you genuinely found something new. This count DOES halt the run, so a
+  point already written down must never be counted here.`,
     { agentType: 'implementer', label: `build ${plan.nextItemId}`, phase: 'Implement', schema: IMPL },
   )
 
   if (!impl) return stop('implementer did not return', item)
-  if (impl.decisions > 0) return stop(`item ${plan.nextItemId} needs your decision`, impl.summary)
+  if (impl.newQuestions > 0) return stop(`item ${plan.nextItemId} needs your decision`, impl.summary)
   if (impl.verdict !== 'pass') return stop(`item ${plan.nextItemId} could not be completed`, impl.summary)
+  if (impl.decisions > 0) log(`${impl.decisions} point(s) left undetermined, all already recorded; continuing`)
 
   // --------------------------------------------------- review / fix loop
 
@@ -253,7 +265,7 @@ complying silently. Run the suite before reporting.`,
     )
 
     if (!impl) return stop('implementer did not return during the fix loop', item)
-    if (impl.decisions > 0) return stop(`fixing ${plan.nextItemId} needs your decision`, impl.summary)
+    if (impl.newQuestions > 0) return stop(`fixing ${plan.nextItemId} needs your decision`, impl.summary)
   }
 
   // -------------------------------------------------------------- commit
