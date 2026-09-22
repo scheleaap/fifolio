@@ -4,6 +4,7 @@
 
 pub mod decimal;
 pub mod entities;
+pub mod fx;
 pub mod identity;
 pub mod manual_entry;
 pub mod ordering;

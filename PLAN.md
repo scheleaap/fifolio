@@ -203,10 +203,13 @@ Where a Saxo `Herbeleggingsdividend`'s figure comes from is untouched by this an
 Done in revision 16. `BuyOrigin::StockDividend` is now a unit variant and `Buy::taxable_value` reads the stored EUR gross, so no constructor argument, field or accessor can state the two apart. FIF-057's assertion that the two figures differ is replaced, not deleted: the test that asserted 81.00 against 3 x 26.10 now asserts the identity, and three cases were added for an ordinary purchase, a foreign gross whose EUR half is the basis, and a zero gross.
 
 ## FIF-009 FX rate resolution
-Status: todo
+Status: done
 Requirements: DOM-030, DOM-031, DOM-032, DOM-033, DOM-034, DOM-035, ARC-019, ARC-027, TST-019, TST-020, TST-021
 Depends on: FIF-008
 Acceptance: rate source precedence `broker` > `ecb` > `native`; broker-stated EUR figures used verbatim with the implied quotient stored as the rate and marked informational, since nothing computes with it; EUR-denominated transactions get rate 1 and source `native`; an ECB lookup with no rate for the trade date falls back to the most recent published rate before it and stores that rate's own date; the fallback is bounded — nothing before the series begins in 1999, and a substitution more than seven days stale is an error; fees convert at the leg's rate; a missing, unfetchable rate fails with an error naming currency and date. The rate source is an injected trait; unit tests use a fake table with weekend and holiday gaps. No test opens a socket.
+Notes: Named next to build in revision 17, FIF-008 having landed in `9a1e457` and FIF-091 in `aa6aac5`. The working tree is clean and the suite green (173 tests), so this item starts from a committed base and is the first of the arithmetic items that needs no type of its own from an earlier item.
+The rate table itself is **not** here: persistence, seeding and the top-up feed are FIF-010, which depends on this item and on storage. What this item owns is resolution — the precedence, the fallback and its bound, the error — behind an injected trait, so it is unit testable with a fake table and reaches no socket [TST-019, TST-020, TST-021]. `valuation.rs` (FIF-008) already carries `Conversion` (rate, source, date), which is the shape a resolved rate must fill; ARC-027's "EUR = native / rate" direction is settled there and must not be re-decided here.
+Done in revision 17, in `crates/fifolio-core/src/fx.rs`. `resolve` answers all three sources behind the injected `RateTable` port: an EUR leg is tested first and takes rate 1 from `native`, a file-booked EUR figure takes the importer's quotient from `broker`, and a native-only leg looks the ECB rate up. The gap fallback stores the substituting publication's own date, and is bounded by `series_start()` and `MAX_SUBSTITUTION_DAYS`, so `BeforeSeries`, `Unavailable` and `StaleSubstitute` are three distinct errors and each names the currency and the date. `fee_in_eur` converts at the leg's own rate and refuses an informational one; `RateSource::is_informational` is that rule in mechanical form, and sits beside the enum in `valuation.rs`. Twelve unit tests run against a fake table built from the real 2024 Easter publication gap; none opens a socket.
 
 ## FIF-010 ECB rate cache and seeding
 Status: todo
@@ -729,7 +732,19 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 16 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
+**Revision 17 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
+revision 14 (`b21d225` is still the last commit to touch it), so the live set is still **333
+identifiers**, each named by exactly one item, and `open-questions.md` still names the same **32
+blocked ids** across OQ-001 to OQ-016. The twenty-three blocked items are unchanged. No item was
+added, split, dropped, re-scoped, renumbered or re-ordered, and no dependency moved.
+
+* **Completed:** FIF-091 (`aa6aac5`), a stock dividend's taxable value is its stored EUR gross, which revision 16 named as next to build. Verified against `crates/fifolio-core/src/transaction.rs` rather than the commit message: `BuyOrigin::StockDividend` is a unit variant and `Buy::taxable_value()` returns `self.gross.eur()`, so no field, constructor argument or accessor states the two apart. FIF-057's fixture asserting 81.00 against 3 x 26.10 is replaced by one asserting the identity at 78.30, and three cases sit beside it — an ordinary purchase has no taxable value, a USD gross takes its EUR half and never the native amount, and a zero gross is a stated figure. The replacement is visible in the diff, not a deletion.
+* **Invalidated by the specification change:** nothing; the specification did not change.
+* **Newly blocked:** none. **Unblocked:** none. **Uncovered requirements:** none. The nine identifiers absent from every item — DOM-009, DOM-014, DOM-015, DOM-021, DOM-041 and DOM-050 to DOM-053 — are the retired set `domain.md` itself lists as retired, so they are not live and need no item.
+* **Uncommitted work:** none. The tree is clean and `cargo test --workspace` passes 173 tests, 0 failures. The hand-off problem revisions 13 to 15 recorded has now stayed closed for two consecutive revisions.
+* Next to build: **FIF-009**, FX rate resolution. Its only dependency FIF-008 is `done`; none of DOM-030 to DOM-035, ARC-019, ARC-027, TST-019, TST-020 or TST-021 is on a `Blocks:` line; it is the first `todo` in plan order whose dependencies are all satisfied. Everything ahead of it in plan order is `done` or `blocked`. It is resolution only — the cache and the ECB seeding are FIF-010, which also waits on storage (FIF-011).
+
+**Revision 16.** A status reconciliation, not a replan. `design/` is unchanged since
 revision 14 (`b21d225` is still the last commit to touch it), so the live set is still **333
 identifiers**, each named by exactly one item, and `open-questions.md` still names the same **32
 blocked ids** across OQ-001 to OQ-016. The twenty-three blocked items are unchanged. No item was

@@ -159,6 +159,18 @@ pub enum RateSource {
     Native,
 }
 
+impl RateSource {
+    /// Whether the stored rate only records what the file's own EUR figures imply, so nothing
+    /// may convert with it [DOM-031].
+    ///
+    /// Resolution is [`crate::fx`]'s; this is the label that resolution sets, kept beside the
+    /// enum it reads.
+    #[must_use]
+    pub fn is_informational(self) -> bool {
+        matches!(self, Self::Broker)
+    }
+}
+
 /// The conversion a transaction's EUR figures were obtained under [DOM-028].
 ///
 /// Held whole rather than as three loose fields, so a rate can never be stored without saying
