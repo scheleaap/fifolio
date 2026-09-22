@@ -758,7 +758,15 @@ mod tests {
     /// all [DOM-012].
     #[test]
     fn every_costed_variant_carries_the_same_fee_field() {
-        let fees = [
+        // The list is the statement: all five expose the same accessor of the same type, and a
+        // variant that grew a second fee field would have to be read some other way.
+        let [
+            buy_fees,
+            _transfer_in_fees,
+            sell_fees,
+            _expiration_fees,
+            _transfer_out_fees,
+        ] = [
             buy().fees(),
             transfer_in().fees(),
             sell().fees(),
@@ -766,9 +774,8 @@ mod tests {
             transfer_out().fees(),
         ];
 
-        assert_eq!(fees.len(), 5);
-        assert_eq!(buy().fees().native(), Money::new(dec!(3.50)));
-        assert_eq!(sell().fees().eur(), Money::new(dec!(9.10)));
+        assert_eq!(buy_fees.native(), Money::new(dec!(3.50)));
+        assert_eq!(sell_fees.eur(), Money::new(dec!(9.10)));
     }
 
     /// A `transfer_in` says where its units came from and what its acquisition date is worth
@@ -914,8 +921,9 @@ mod tests {
     /// Every money-bearing variant stores its native figures, its EUR figures and the
     /// conversion that relates them [DOM-028].
     ///
-    /// Written as one list so that adding a sixth money-bearing variant without a conversion
-    /// fails to compile here rather than shipping an unreproducible EUR figure.
+    /// Written as one list so that every money-bearing variant answers the same assertions. It
+    /// does not catch a sixth such variant: one added without a conversion does not appear here
+    /// and this test keeps passing, so the list has to be extended by hand.
     #[test]
     fn every_money_bearing_variant_stores_both_currencies_and_the_conversion() {
         let conversions = [
@@ -930,7 +938,6 @@ mod tests {
             assert!(!conversion.currency().code().is_empty());
             assert_eq!(conversion.rate_date(), date());
         }
-        assert_eq!(conversions.len(), 5);
 
         let usd_buy = buy();
         assert_eq!(usd_buy.conversion().currency().code(), "USD");
@@ -949,8 +956,9 @@ mod tests {
     /// The EUR figures mirror the native ones: a price against a price, an amount against an
     /// amount, at the same scale [DOM-029].
     ///
-    /// The pair is read the same way on both sides, which is what lets an allocation take its
-    /// share from the EUR figure exactly as it takes it from the native one [DOM-084].
+    /// That an allocation share derives from this pair the same way on both sides and is never
+    /// stored independently is DOM-084, and no allocation type exists yet: it is asserted by
+    /// FIF-014, not here.
     #[test]
     fn the_eur_figures_mirror_the_native_ones_at_one_scale() {
         let priced = buy();
@@ -967,19 +975,20 @@ mod tests {
 
     /// The EUR gross total is stored as well as the unit price [DOM-085].
     ///
-    /// A fractional quantity is why: 10.14 EUR over 0.0827 units is 122.611850 a unit at the
-    /// price scale, and multiplying that back gives 10.1399999950 — the booked total is not
-    /// recoverable from the stored price [DEC-028]. At this size the residue disappears when
-    /// the product is rounded to cents; it does not disappear when it is taken pro-rata across
-    /// several allocations, which is why the total is stored rather than derived. Whether
-    /// anything may read the unit price at all is DOM-104, undecided, and belongs to FIF-077.
+    /// A large nominal against a price cut to its scale is why: 1_234_567.89 EUR over
+    /// 1_000_000 units is 1.23456789 a unit, which the price scale keeps as 1.234568
+    /// [DEC-028], and multiplying that back gives 1_234_568.00 — eleven cents away from the
+    /// booked total *after* rounding to cents, not a residue that vanishes there. The booked
+    /// total is therefore not recoverable from the stored price at any scale, which is why it
+    /// is stored rather than derived. Whether anything may read the unit price at all is
+    /// DOM-104, undecided, and belongs to FIF-077.
     #[test]
     fn the_eur_gross_total_is_stored_as_well_as_the_unit_price() {
-        let quantity = Quantity::new(dec!(0.0827));
-        let booked = Money::new(dec!(10.14));
-        let price = QuotedPrice::new(dec!(122.611850));
+        let quantity = Quantity::new(dec!(1_000_000));
+        let booked = Money::new(dec!(1_234_567.89));
+        let price = QuotedPrice::new(dec!(1.23456789)).rounded();
 
-        let fractional = Buy::new(
+        let nominal = Buy::new(
             derivation(),
             quantity,
             Valued::in_eur(price),
@@ -989,11 +998,13 @@ mod tests {
             Conversion::native(date()),
         );
 
-        assert_eq!(fractional.gross().eur(), booked);
+        assert_eq!(nominal.gross().eur(), booked);
+
+        let rebuilt = Money::new(price.get() * quantity.get()).rounded();
+        assert_eq!(rebuilt, Money::new(dec!(1_234_568.00)));
         assert_ne!(
-            price.get() * quantity.get(),
-            booked.get(),
-            "a total rebuilt from the unit price is not the booked total"
+            rebuilt, booked,
+            "a total rebuilt from the stored unit price differs from the booked one at money scale"
         );
     }
 
@@ -1025,6 +1036,43 @@ mod tests {
             assert_eq!(transaction.valuation_date(), transaction.trade_date());
             assert_eq!(transaction.valuation_date(), date());
         }
+
+        // Each leg is valued at its **own** date, not at one date for the position [DOM-025]:
+        // the acquisition below is five years before the disposal that closes it.
+        let acquired = NaiveDate::from_ymd_opt(2019, 3, 14).expect("a valid date");
+        let opened: Transaction = Buy::new(
+            Derivation::new(acquired, [cite("row-1")]),
+            Quantity::new(dec!(10)),
+            Valued::in_eur(QuotedPrice::new(dec!(100.00))),
+            Valued::in_eur(Money::new(dec!(1000.00))),
+            Valued::in_eur(Money::zero()),
+            BuyOrigin::Purchase,
+            Conversion::native(acquired),
+        )
+        .into();
+        let closed: Transaction = sell().into();
+
+        assert_eq!(opened.valuation_date(), acquired);
+        assert_eq!(closed.valuation_date(), date());
+        assert_ne!(opened.valuation_date(), closed.valuation_date());
+
+        // A `transfer_in` is the one variant carrying a second date. The figures were converted
+        // on the day it was booked here, so the valuation date is its trade date; the
+        // acquisition date is what a holding period is counted from [DOM-027].
+        let carried: Transaction = TransferIn::new(
+            derivation(),
+            Quantity::new(dec!(10)),
+            Valued::in_eur(Money::new(dec!(1000.00))),
+            Valued::in_eur(Money::zero()),
+            acquired,
+            DateProvenance::Inherited,
+            TransferInSource::CorporateAction,
+            Conversion::native(date()),
+        )
+        .into();
+
+        assert_eq!(carried.valuation_date(), date());
+        assert_ne!(carried.valuation_date(), acquired);
     }
 
     /// Neither is editable [DOM-083]: the fields are private and there is no setter, which is a

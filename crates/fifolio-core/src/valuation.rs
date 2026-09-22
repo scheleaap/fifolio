@@ -382,13 +382,16 @@ mod tests {
     fn a_conversion_records_the_rate_its_source_and_its_date() {
         let friday = NaiveDate::from_ymd_opt(2024, 4, 26).expect("a valid date");
         let conversion = Conversion::new(
-            Currency::new("usd"),
+            // A broker column that yields " usd " must key the rate table as one currency with
+            // "USD" [ARC-015]; two spellings would be a silent cache miss.
+            Currency::new(" usd "),
             FxRate::new(dec!(1.0414)),
             RateSource::Ecb,
             friday,
         );
 
         assert_eq!(conversion.currency().code(), "USD");
+        assert!(!conversion.currency().is_eur());
         assert_eq!(conversion.rate(), FxRate::new(dec!(1.0414)));
         assert_eq!(conversion.source(), RateSource::Ecb);
         assert_eq!(
@@ -409,8 +412,6 @@ mod tests {
                 RateSource::Broker | RateSource::Ecb | RateSource::Native => {}
             }
         }
-
-        assert_eq!(sources.len(), 3);
     }
 
     /// No currency gain is stored anywhere: the movement of the currency falls inside the
