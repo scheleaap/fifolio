@@ -109,6 +109,13 @@ An unimplemented requirement is the normal state before implementation; report i
 a reason to stop. Classify as decision-required anything a human has to decide: a contradiction
 between documents, or a requirement that does not determine behavior.
 
+"blockers" counts defects in the SPECIFICATION that make it unsafe to build anything further: the
+count halts the run, and it is the only count that does. Code that has not yet caught up with a
+requirement is not one, however wrong the code is meanwhile — that is a major, and it is a major
+even when the code would produce a wrong figure, because the item that fixes it cannot run while
+the run is halted. Check PLAN.md before you classify: if an item already owns the correction, say
+so in the finding and count it as a major.
+
 design/open-questions.md is the authoritative list of what is undecided. A finding already covered
 by an entry there is expected; report it briefly rather than at length. Report a decision-required
 finding in full only when it is NOT already covered, since that is a question for the user to add.
@@ -118,7 +125,8 @@ Do not edit that file.${RETURN_RULE}`,
 
 if (!audit) return stop('spec-auditor did not return')
 
-// A blocker is a wrong result or a violated invariant: nothing may be built over it.
+// A blocker is a defect in the specification itself: nothing may be built over it. Code lagging a
+// requirement is a major, not a blocker — halting on it would block the very item that fixes it.
 if (audit.blockers > 0) return stop('the specification has a blocking defect', audit.findings)
 
 // Decisions do not halt the run. What is undecided is recorded by hand in

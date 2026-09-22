@@ -18,7 +18,7 @@ Explicit non-goals (v1). The reports produce raw gain/loss figures; applying tax
 * Separate loss pots (Verlustverrechnungstöpfe) for stocks vs. other capital income
 * Vorabpauschale, Sparer-Pauschbetrag, Kapitalertragsteuer, Solidaritätszuschlag, church tax
 * Gains on foreign currency cash balances (potentially a separate private disposal under § 23 EStG)
-* Income that is not a disposal: dividends, interest, deposits, withdrawals, account fees. Such rows are recognized at import and deliberately not stored [DOM-002]
+* Income that is not a disposal: **cash** dividends, interest, deposits, withdrawals, account fees. Such rows are recognized at import and deliberately not stored [DOM-002] A dividend taken in shares is the exception: it issues a parcel, so its rows are stored and its buy carries a stock-dividend origin [DOM-124]
 
 Corporate actions are **in scope**. Examination of real broker exports showed they dominate the data rather than sitting at its edges: splits, cash mergers, share-class exchanges, bond redemptions and tender offers all occur, and ignoring them makes holdings and cost bases wrong. They are modeled as transaction variants rather than as a separate entity, because what a corporate action does to a holding is the same kind of thing a trade does.
 
@@ -38,7 +38,7 @@ Security
 
 Source record
 * One parsed row of a broker export, stored verbatim alongside its parsed fields. [DOM-007] Never edited after creation [DOM-008]
-* A delimited format has a verbatim line and stores it. A spreadsheet row has none — it is typed cells — so it stores a **canonical rendering**: each cell as the file holds it (an Excel serial date stays `45208`), keyed by column name, in sheet column order. This is a rendering, not the row, and it is defined here only so that re-importing the same file reproduces the same string [DOM-120]
+* A delimited format has a verbatim line and stores it. A spreadsheet row has none — it is typed cells — so it stores a **canonical rendering**: a JSON object mapping column name to cell value as a string, keys in sheet column order, serialized without insignificant whitespace. An Excel serial date stays `"45208"`; an empty cell is `""` and an absent one is omitted; the key is the header exactly as the file spells it, non-breaking spaces and leading spaces included. JSON is named rather than a delimited form because escaping, empties and absences then need no rules of our own. This is a rendering, not the row, and it is part of the on-disk format: a re-import must reproduce the string byte for byte [DOM-120]
 * Fields: raw content, parsed fields, identity (see Identity), order (see Ordering), consumed or not
 * Relations: belongs to: >= 1 import batches; consumed by: 0 or 1 transaction; cited by: >= 0 transactions
 
@@ -153,7 +153,7 @@ At import each source record is classified: [DOM-043]
 
 * **Derived automatically.** Rows where every field the variant needs is present and unambiguous [DOM-044]
 * **Pending.** The record affects holdings but the export does not contain everything needed. It waits for the user, who supplies the missing part. This is the completion queue [DOM-045]
-* **Recognized as non-position.** Dividends, interest, deposits, withdrawals and account fees. Not stored; the import summary reports how many were recognized as such [DOM-046]
+* **Recognized as non-position.** Cash dividends, interest, deposits, withdrawals and account fees. Not stored; the import summary reports how many were recognized as such [DOM-046] A dividend that issues shares is a position event and is stored [DOM-124]
 
 Nothing is invented. The user completes records that exist; there is no creation of a transaction from nothing. [DOM-047] Everything the user supplies becomes a manual entry, [DOM-048] so that hand-entered information is as traceable as imported information, and so that it can be exported and kept.
 
@@ -218,6 +218,8 @@ A `transfer_out` realizes no gain. Its allocations exist to record which parcels
 Sell fees belong wholly to the disposal that incurred them and are never spread onto parcels that the disposal did not touch. [DOM-060] Splitting a disposal's fee across its own allocations is a presentation of the same total, not a change of rule. Within a single disposal every unit has the same unit price, so splitting by quantity and splitting by proceeds share are identical.
 
 Rounding: each share is rounded to 2 decimals independently, and the resulting drift is absorbed by the last share, so that the shares always sum exactly to the parent figure. [DOM-061]
+
+A gain is computed from the four **rounded** shares, not exactly and then rounded, and a report total is the sum of the rounded rows. Every row therefore reconciles to its own columns and every total to the rows above it, which is the first thing a reader checks. The cost is up to two cents against the exact figure per allocation; the alternative buys that back and loses the arithmetic a reader can follow. [DOM-125]
 
 * opening-side shares (cost, buy fee): the last share is the allocation that exhausts the parcel. [DOM-062] A parcel not yet fully consumed therefore carries its remainder in its unsold units, which satisfies the requirement that fees are completely distributed once all units are disposed of
 * closing-side shares (proceeds, sell fee): the last share is the last allocation of that closing in canonical order [DOM-063]

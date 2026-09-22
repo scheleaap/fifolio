@@ -26,9 +26,18 @@ Both mappings were derived from real exports in `example_exports/`: five Saxo fi
 
 ## Ordering
 
-Rows are sorted on `Transactiedatum`, then on the first populated of `Bk Record Id`, `Booking Id`
-and `Transactie-ID` — all three are monotonic counters that ascend with date — and finally on file
-position taken in reverse, since the export is newest-first. [IMP-SAXO-026]
+Rows are sorted on `Transactiedatum`, then on `Bk Record Id`, then on `Booking Id`, then on
+`Transactie-ID`, each compared **only against itself**, and finally on file position taken in
+reverse, since the export is newest-first. [IMP-SAXO-026]
+
+Each of the three is a monotonic counter that ascends with date, but they are three disjoint
+counters and their magnitudes are unrelated — roughly 3.0e9, 4.0e10 and 7.0e9 in the fixtures — so
+folding them into one key would order a date carrying a mixture by which column a row happens to
+populate, which is arbitrary with respect to time. Ten dates in the fixtures carry such a mixture,
+and same-day order decides which parcel a same-day sell consumes, so it is a cost-basis input. Two
+rows sharing a counter are ordered by it; two rows populating different counters share no
+comparable value and fall through to file position. A row whose counter is absent is placed by the
+rule OQ-013 settles, and that rule governs this case too. [IMP-SAXO-036]
 
 `Corporate action-Id` is **not** monotonic with date and is never an ordering column. [IMP-SAXO-027]
 Across the sample the id columns separate every row on 32 of the 33 dates carrying more than one;

@@ -393,3 +393,34 @@ anyone and was wrong: `cli.md`'s completion queue asks for a split's ratio alone
 quantity with an optional target security, and `importers.md` already marks exactly those rows
 pending. DOM-097 now lists what the queue asks for. DEC-060 stands on its own subject; only its
 claim of closure at three is withdrawn.
+
+**DEC-063 — A dividend taken in shares is stored; only cash dividends are not.** DOM-002 and
+DOM-046 said without qualification that dividend rows are recognized and not stored, while
+IMP-SAXO-018 marks a share-issuing dividend pending and DOM-082 gives the resulting buy a
+stock-dividend origin. Both were normative and neither cited the other, so one implementer would
+have discarded the 2022 Philips acquisition and another kept it. Cash dividends are income and stay
+unstored; a dividend that issues a parcel is a position event.
+
+**DEC-064 — Saxo's three counters are three ordering columns, not one.** IMP-SAXO-026 folded
+`Bk Record Id`, `Booking Id` and `Transactie-ID` into a single key on the stated ground that all
+three ascend with date. They do, but as disjoint counters whose magnitudes differ by an order of
+magnitude, so a date carrying a mixture was ordered by which column a row happened to populate.
+Ten dates in the fixtures carry such a mixture and same-day order decides which parcel a same-day
+sell consumes. Each counter is now compared only against itself; rows populating different counters
+fall through to file position. Rejected: keeping the folded key and recording the inversion as a
+limitation, since it is a cost-basis input and the cost of doing it properly is one comparison.
+
+**DEC-065 — The stored rendering of a spreadsheet row is JSON.** DEC-057 specified the rendering's
+content and called it reproducible, but named no syntax: no separator, no escaping, no empty-versus-
+absent rule, no statement of which spelling of the header is the key. A JSON object of column name
+to cell string, keys in sheet order, settles all four by reference rather than by inventing rules,
+at the cost of a field that is not line-shaped. It is on-disk format: a re-import must reproduce it
+byte for byte.
+
+**DEC-066 — A gain is arithmetic on the rounded shares, and a total is the sum of rounded rows.**
+DOM-061 rounds each allocated share and lands the drift on the last, but a gain is not a share, so
+computing it from the four rounded figures or exactly-then-rounded differ by up to two cents per
+allocation and systematically across a year. Rounded shares win: every report row reconciles to its
+own columns and every total to the rows above it, which is the first thing a reader checks and the
+first thing that undermines a figure when it fails. The exact-then-rounded reading is closer per
+allocation and was rejected for that reason.
