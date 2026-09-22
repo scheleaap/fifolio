@@ -49,11 +49,12 @@ Acceptance: committed fixtures under a fixtures directory, derived from `design/
 Notes: This blocks every importer test, which is why it is third. The generator must be re-runnable against the real exports so a future export shape can be folded in; it must not embed the real values.
 
 ## FIF-004 Money scales and rounding mode
-Status: todo
+Status: done
 Requirements: ARC-006, ARC-007, ARC-010, DOM-087, TST-015, TST-016
 Depends on: FIF-001
 Acceptance: newtypes or wrappers over `rust_decimal` for quantity (8), unit price (6), monetary amount (2) and FX rate (6); no `f32`/`f64` anywhere in core; a single rounding function, **half away from zero**, applied only at storage and presentation boundaries, so that a realized loss rounds symmetrically to a gain; unit tests with hand-derivable synthetic inputs covering the scales and fractional quantities at full scale.
 Notes: Split twice. Revision 2 moved ARC-009 (what "full precision" means for intermediate arithmetic) to FIF-054. Revision 3 moves the quotation factor (ARC-008, DOM-038) to FIF-075, which is now the undecided half; the scales and the rounding mode are decided and reviewable without it. TST-016's other boundary cases are asserted in FIF-021 (EUR derivation) and FIF-014 (fee distribution remainders); this item owns the convention and the cases that are purely about scale.
+Done in revision 5, commit `1eec01a`. `decimal.rs` carries the four newtypes, `round_to` as the single half-away-from-zero rounding, and the `QuotedPrice` / `EffectivePrice` split that keeps the factor rule of FIF-075 reviewable; no `f32`/`f64` in core, enforced by `clippy::float_arithmetic`.
 
 ## FIF-075 Trade value and the quotation factor
 Status: blocked
@@ -64,25 +65,27 @@ Blocked by: ARC-008 and DOM-038 are on the undecided list.
 Notes: Split out of FIF-004 in revision 3. FIF-026 (the bond assertion that 3000 nominal at 139.46 costs 4183.80) and FIF-021 (EUR price reproduced with the factor applied once) both read this rule and are only fully reviewable once it is settled; their own requirements are decided, so they stay `todo`.
 
 ## FIF-054 Intermediate precision policy
-Status: todo
+Status: done
 Requirements: ARC-009
 Depends on: FIF-004
 Acceptance: a stated, tested policy for how precision is retained across a chain of operations — where a division may be left unrounded, what happens when `rust_decimal`'s 28-significant-digit limit is reached, and at which call boundaries a value must already be at its scale.
 Notes: Split out of FIF-004 in revision 2 and blocked then; ARC-009 left the undecided list in revision 3, so this is now buildable. Every item that divides — FIF-014, FIF-061, FIF-063 — reads it.
+Done in revision 5, commit `e38de9d`. `precision.rs` states the policy in its module documentation and tests it: the 28-significant-digit limit (not 28 decimals), its half-to-even rounding which is *not* ARC-010, unreliable round-tripping of a quotient, `checked_*` on overflow, and the two boundaries — persistence and presentation — at which a value must already be at its scale.
 
 ## FIF-005 Core reference entities
-Status: todo
+Status: done
 Requirements: DOM-004, DOM-005, DOM-006, DOM-007, DOM-008, DOM-017, DOM-037
 Depends on: FIF-004
 Acceptance: `Account`, `Security`, `SourceRecord` and `ImportBatch` types; `SecurityType` is the fixed enum `stock` | `bond` | `etf` | `fund` | `derivative` | `other`; `Quotation` is the fixed enum `per_unit` (default) | `percent_of_par`, editable independently of type; securities carry an auto-created flag; a source record holds raw content plus parsed fields and is constructible but never mutable; a batch records account, filename, format, timestamp and its four counts.
 Notes: Types only, no persistence and no engine. `Quotation`'s *defaulting* rule and the exact-price-storage rule moved to FIF-055; this item owns the enum and its editability. Reviewable against the Entities section of `domain.md` on its own.
+Done in revision 5, commit `9846b5a`. `entities.rs` carries `Account`, `Isin`, `SecurityType`, `Quotation` (`PerUnit` by `#[default]`), `Security` with its auto-created flag and independent `with_quotation` / `with_security_type`, `SourceRecord` (getters only, no setters), `SourceFormat`, `ImportCounts` and `ImportBatch`.
 
 ## FIF-055 Quotation defaulting and exact price storage
 Status: todo
 Requirements: DOM-036, DOM-039
 Depends on: FIF-005
 Acceptance: quotation is defaulted from the broker's instrument type at auto-creation and never guessed afterwards; prices are stored exactly as the statement shows them, so any figure in the application reconciles against a broker document.
-Notes: Split out of FIF-005 in revision 2 and blocked then; DOM-036 and DOM-039 left the undecided list in revision 3. Interacts with DEC-041 (an undeterminable quotation rejects the import) and with IMP-TR-021, which is still blocked (FIF-069).
+Notes: Implemented in `crates/fifolio-core/src/quotation.rs` but **uncommitted and unreviewed** as of revision 5, so it stays `todo`; the status moves when the work is committed and reviewed. Split out of FIF-005 in revision 2 and blocked then; DOM-036 and DOM-039 left the undecided list in revision 3. Interacts with DEC-041 (an undeterminable quotation rejects the import) and with IMP-TR-021, which is still blocked (FIF-069).
 
 ## FIF-056 Transaction sum type and its variants
 Status: todo
@@ -114,11 +117,12 @@ Acceptance: a `ManualEntry` type separate from `SourceRecord`, holding account, 
 Notes: New in this revision; the previous plan modeled manual information as a `manual` source record kind, which DEC-038 reversed.
 
 ## FIF-006 Per-file order computation
-Status: todo
+Status: done
 Requirements: DOM-040, DOM-088, DOM-102
 Depends on: FIF-005
 Acceptance: each source record carries an integer `order` computed **when the file is read**, from the file's own content: trade date, then the format's stated ordering columns, then the row's position normalized to the file's direction, so the order within a file is total and no import is ever refused for ambiguity; every variant takes part, `split` included; re-reading the same file reproduces the order exactly.
 Notes: Rewritten in revision 2; the revision-1 acceptance — trade date, execution time, per-account import sequence — is gone, DOM-041 retired, DEC-039 and DEC-045 replacing it. Revision 3 splits out the cross-file part: DOM-011, DOM-013 and DOM-111 moved to FIF-076, all three undecided. What remains is the order *within one file*, which is decided, self-contained and testable by importing a fixture twice. Per-format ordering columns are FIF-066 (Saxo) and FIF-027 (Trade Republic).
+Done in revision 5, commit `17cb593`. `ordering.rs` assigns orders from trade date, then the format-supplied ordering columns in their stated precedence, then row position normalized by `FileDirection`; tested to be a permutation and to reproduce exactly on a second read. The Saxo binding of the ordering columns (FIF-066) is now blocked by OQ-013, which does not affect this mechanism.
 
 ## FIF-076 Canonical order across files and the transaction order key
 Status: blocked
@@ -129,10 +133,11 @@ Blocked by: DOM-011, DOM-013 and DOM-111 are on the undecided list.
 Notes: Split out of FIF-006 and FIF-056 in revision 3; DOM-011 and DOM-013 are one sentence of `domain.md` and belong together. Everything that reads the canonical order — FIF-013, FIF-061, FIF-014, FIF-015 — depends on this rather than on FIF-006 alone.
 
 ## FIF-007 Source record identity and idempotency
-Status: todo
+Status: done
 Requirements: DOM-022, DOM-023, DOM-024
 Depends on: FIF-005
 Acceptance: an identity abstraction that takes either a broker reference or a hash of the parsed business fields, always scoped to the account; identical rows in two accounts produce distinct identities; re-importing the same rows into the same account produces no new source records. Format-specific identity rules live in FIF-020 and FIF-027.
+Done in revision 5, commit `fdf8990`. `identity.rs` offers `IdentitySource::BrokerReference` / `ParsedFields`, both scoped to the account, with a length-prefixed framing tested against flattening collisions and against a reference aliasing a hash.
 
 ## FIF-008 EUR valuation and the stored gross
 Status: todo
@@ -301,11 +306,16 @@ Blocked by: IMP-SAXO-025 is on the undecided list.
 Notes: Split out of FIF-019 in revision 3. FIF-066's third ordering key ("file position taken in reverse") states the same thing from the ordering side and is only correct once this is settled.
 
 ## FIF-066 Saxo: ordering columns
-Status: todo
+Status: blocked
 Requirements: IMP-SAXO-026, IMP-SAXO-027
 Depends on: FIF-019, FIF-006
 Acceptance: rows are ordered on `Transactiedatum`, then the first populated of `Bk Record Id`, `Booking Id` and `Transactie-ID`, then file position taken in reverse; `Corporate action-Id` is never an ordering column, because it is not monotonic with date. Tested on a fixture date carrying several rows where only that id is populated, so file position settles them.
-Notes: New in this revision; ordering is now computed from file content (DOM-040).
+Blocked by: IMP-SAXO-026 is on the undecided list (OQ-013).
+Notes: New in revision 2; ordering is now computed from file content (DOM-040). Newly blocked in
+revision 5: OQ-013 leaves undetermined where a row carrying none of the three booking ids sorts,
+and those rows are precisely Saxo's corporate actions. IMP-SAXO-027 (`Corporate action-Id` is never
+an ordering column) is decided, but it is one clause of the same ordering key and was not split out;
+the mechanism it binds to, `ordering.rs` from FIF-006, is unaffected and already built.
 
 ## FIF-020 Saxo: account normalization and row identity
 Status: todo
@@ -636,7 +646,18 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 4 (this run).** `design/` gained `open-questions.md`, which replaces `spec-auditor`'s
+**Revision 5 (this run).** A status reconciliation against the code and `git log`, not a replan. No
+item was re-cut, renumbered or re-scoped, and no acceptance criterion changed.
+
+* **Completed, each verified against `crates/fifolio-core/src/` rather than against the commit message:** FIF-002 (`90c9b9a`, already `done` in revision 4), FIF-004 (`1eec01a`), FIF-054 (`e38de9d`), FIF-005 (`9846b5a`), FIF-006 (`17cb593`), FIF-007 (`fdf8990`). Every one meets its acceptance; what each shipped is recorded on the item. `cargo test --workspace` passes, 63 unit tests in core.
+* **Newly blocked:** FIF-066 (Saxo ordering columns), by OQ-013, which is new in `design/open-questions.md`. It blocks IMP-SAXO-026. Blocked whole rather than split, because this run does not re-cut items; IMP-SAXO-027 rides along with it.
+* **Unblocked:** none. Every requirement blocked in revision 4 is still named on a `Blocks:` line, so the twenty items blocked then remain blocked; OQ-013 makes twenty-one.
+* **Not marked done:** FIF-055. `crates/fifolio-core/src/quotation.rs` implements it and `lib.rs` declares the module, but the work is uncommitted and unreviewed, so the item stays `todo`.
+
+Revision 4's closing sentence — that no item had been implemented since revision 1 — is superseded
+by this entry rather than edited.
+
+**Revision 4.** `design/` gained `open-questions.md`, which replaces `spec-auditor`'s
 regenerated list as the authority on what is undecided, precisely because that list churned between
 revisions 2 and 3 and split items on a boundary that then moved. The twenty-nine ids its `Blocks:`
 lines name are **identical, id for id, to the set revision 3 was built against**, so no item changed
@@ -687,8 +708,8 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-Twenty-nine requirements are named on the `Blocks:` lines of `design/open-questions.md`, and the
-twenty items carrying them are `blocked`. This plan does not resolve them; closing a question is a
+Thirty requirements are named on the `Blocks:` lines of `design/open-questions.md`, and the
+twenty-one items carrying them are `blocked`. This plan does not resolve them; closing a question is a
 change to `design/`, not to `PLAN.md`. Mapped from the open question to the owning item:
 
 * **OQ-001** a transaction's `order` when it consumes no record, or several — DOM-011 (FIF-076), DOM-101 (FIF-058), DOM-091 (FIF-063)
@@ -703,6 +724,7 @@ change to `design/`, not to `PLAN.md`. Mapped from the open question to the owni
 * **OQ-010** `quantity × unit_price × factor` is never invoked — ARC-008, DOM-038 (FIF-075), DOM-104 (FIF-077)
 * **OQ-011** a `transfer_out` row in the acquisition report — DOM-078 (FIF-082), DOM-112 (FIF-080)
 * **OQ-012** what a failed row does to its import — SRV-017 (FIF-085)
+* **OQ-013** where a row with no ordering column sorts — IMP-SAXO-026 (FIF-066)
 
 Two questions reach the same item from different directions: FIF-023 is blocked by OQ-005 and
 OQ-008, FIF-080 by OQ-003 and OQ-011. Both must close before either item unblocks.
@@ -731,3 +753,7 @@ Verified mechanically this revision: every `Requirements:` line taken together n
 ids, each exactly once, and they are precisely the live ids in `design/`. Verified alongside it that
 every item carrying an id named on a `Blocks:` line of `design/open-questions.md` is `blocked`, and
 that no other item is — twenty items, twenty-nine ids.
+
+Re-verified in revision 5 against the same lists: thirty ids, twenty-one items, the additions being
+IMP-SAXO-026 and FIF-066. Coverage is otherwise unchanged; `design/` gained no requirement
+identifier this revision, only the open question.
