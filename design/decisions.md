@@ -424,3 +424,11 @@ allocation and systematically across a year. Rounded shares win: every report ro
 own columns and every total to the rows above it, which is the first thing a reader checks and the
 first thing that undermines a figure when it fails. The exact-then-rounded reading is closer per
 allocation and was rejected for that reason.
+
+**DEC-067 — Storage refuses an unrounded value rather than rounding it.** ARC-010 read "rounding
+happens at storage and presentation boundaries", which the repositories implemented as a refusal:
+the caller rounds, the store checks. The two readings differ on what a store does with a figure
+carrying more decimals than its scale allows. Refusal wins, because a store that rounds on the way
+in cannot distinguish a figure that was meant to be rounded from one that arrived wrong, and the
+second is a bug worth surfacing at the point it occurs rather than absorbing silently. The wording
+now says before the boundary, and names the check.
