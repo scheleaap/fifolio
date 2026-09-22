@@ -109,6 +109,8 @@ Requirements: DOM-082
 Depends on: FIF-056
 Acceptance: a `buy` records how it arose — an ordinary purchase, or shares issued as a stock dividend whose cost basis is their taxable value at issue — and the taxable value is sourced rather than invented.
 Notes: Split out of FIF-056 in revision 2 and blocked then; DOM-082 left the undecided list in revision 3. FIF-025 is the Saxo dividend heuristic that produces these buys.
+Confirmed unblocked in revision 10: OQ-014 asks where a `Herbeleggingsdividend`'s share count and price come from, but it blocks IMP-SAXO-013 only, so it freezes the Saxo importer (FIF-023, FIF-025) and not this type. Build the origin so that the taxable value arrives from a caller and is never computed here; that is what keeps DOM-082 reviewable while OQ-014 is open, and it is why the item sits before the importer that fills it.
+Its dependency FIF-056 is `done` (`74e4bd1`, recorded `5d54c2b`); `transaction.rs` already names this item at the absent field, so the increment is a variant field on `Buy` plus its unit tests, not a new module.
 
 ## FIF-058 Consumption versus citation
 Status: blocked
@@ -680,6 +682,17 @@ Ids are never reused.
 
 # Revision history
 
+**Revision 10 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
+revision 8 (`8dbca69` is still the last commit to touch it), so the live set is still **328
+identifiers**, each named by exactly one item, and `open-questions.md` still names the same **32
+blocked ids** across OQ-001 to OQ-016. No item was added, split, re-scoped, renumbered or
+re-ordered, and no dependency moved.
+
+* **Completed:** FIF-056 (`74e4bd1`, recorded as done in `5d54c2b`), the transaction sum type — the work revisions 8 and 9 both found outstanding. Verified against `crates/fifolio-core/src/transaction.rs` rather than against the commit message: six variants grouped as `Opening` / `Closing` / `Split`, a `Derivation` carrying the trade date and the cited record identities on every variant, `TransferInSource` and `DateProvenance` read-only. The working tree is clean, so nothing else is implemented-but-unreviewed this revision, which is the first time since revision 4 that is true.
+* **Newly blocked:** none. **Unblocked:** none. The twenty-three blocked items are the twenty-three of revisions 8 and 9.
+* The revision-9 entry's bullet "Not marked done: FIF-056" is superseded by this one rather than edited; it was written before `5d54c2b`, and the hand-off it warned about did close on the next run.
+* Next to build: **FIF-057**, the buy origin and stock-dividend cost basis. Its only dependency, FIF-056, is `done`, and DOM-082 is on no `Blocks:` line. It is the first `todo` in plan order and the only one whose dependencies are all satisfied — FIF-059, the next candidate, likewise depends only on the `done` FIF-005, so if FIF-057 stalls that is the item to take instead.
+
 **Revision 9 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
 revision 8 (`8dbca69` is still the last commit to touch it; `3399056` changed only the workflow
 script), so the live set is still **328 identifiers**, each named by exactly one item, and
@@ -867,3 +880,8 @@ exactly once, and they are precisely the live ids in `design/`, the nine retired
 nothing. The two splits of this revision moved one id each and added no coverage: IMP-003 from
 FIF-065 to FIF-089, SRV-056 from FIF-070 to FIF-090. Every item carrying one of the thirty-two ids
 on a `Blocks:` line is `blocked` and no other item is — twenty-three items.
+
+Re-verified mechanically in revision 10: the `Requirements:` lines name 328 distinct ids, each
+exactly once, and they are precisely the live ids in `design/`, the nine retired ones assigned to
+nothing. Every item carrying one of the thirty-two ids on a `Blocks:` line is `blocked` and no other
+item is — twenty-three items. Nothing is uncovered and nothing is deferred.

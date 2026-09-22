@@ -39,6 +39,16 @@
 //! calculation, so modeling them separately would buy nothing and would invite a formula that
 //! deducts one and forgets another. The caller sums them; this type holds the total.
 //!
+//! # A buy's origin
+//!
+//! A `buy` says how it arose [DOM-082]. An ordinary purchase has a cost basis it paid for; shares
+//! issued as a stock dividend paid nothing, so their basis is their taxable value at issue, and
+//! that value is a figure the origin carries rather than one this crate works out. Nothing here
+//! computes it, and nothing here derives it from the quantity and the unit price: it comes from
+//! the caller that read it off a statement or was told it, which is what keeps it sourced. Where
+//! the Saxo importer will find it — along with the share count itself — is OQ-014, still open;
+//! that question blocks IMP-SAXO-013, not this type.
+//!
 //! # Fields deliberately absent
 //!
 //! Each is owned by another item, and inventing it here would fix a rule this item does not
@@ -48,7 +58,6 @@
 //! | --- | --- | --- |
 //! | account, security, source-record relations, the `order` consumed | all | FIF-076 (DOM-011, DOM-013) |
 //! | native/EUR figure pairs, the stored EUR gross | all with money | FIF-008 (DOM-028, DOM-085) |
-//! | origin: ordinary purchase or stock dividend | `buy` | FIF-057 (DOM-082) |
 //! | quantity | `expiration` | FIF-079 (DOM-092): it is the unattributed remainder, not a stated figure |
 //! | target security and ratio | `transfer_out` | FIF-063 (DOM-090), FIF-076 |
 //! | ratio, as an integer numerator and denominator | `split` | FIF-061 (DOM-113) |
@@ -136,7 +145,8 @@ macro_rules! variant {
 }
 
 variant!(
-    /// Opens a parcel against payment. Realizes no gain.
+    /// Opens a parcel against payment, or against a stock dividend's taxable value when
+    /// nothing was paid [DOM-082]. Realizes no gain.
     Buy {
         quantity: Quantity,
         /// The price the statement shows, so it still reconciles against the document
@@ -145,6 +155,8 @@ variant!(
         unit_price: QuotedPrice,
         /// Commission, exchange fees and transaction taxes, summed [DOM-012].
         fees: Money,
+        /// How this buy arose [DOM-082].
+        origin: BuyOrigin,
     }
 );
 
@@ -208,6 +220,23 @@ variant!(
     /// effective quantity — which is undecided (OQ-004) and belongs to FIF-061.
     Split {}
 );
+
+/// How a [`Buy`] arose [DOM-082].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BuyOrigin {
+    /// An ordinary purchase. Its cost basis is what it paid: quantity, unit price and fees.
+    Purchase,
+    /// Shares issued as a stock dividend.
+    StockDividend {
+        /// The taxable value of the shares issued, at issue, for the parcel as a whole — which
+        /// is the parcel's cost basis, nothing having been paid for it [DOM-082].
+        ///
+        /// Carried, never computed: a stock dividend's taxable value is stated by the issuer or
+        /// supplied by the user, and a basis this crate invented from a price would be a
+        /// plausible wrong number in a tax return.
+        taxable_value: Money,
+    },
+}
 
 /// Where the units of a [`TransferIn`] came from [DOM-083].
 ///
@@ -376,6 +405,7 @@ mod tests {
 
     use rust_decimal_macros::dec;
 
+    use crate::decimal::Scaled;
     use crate::entities::Account;
     use crate::identity::{IdentitySource, identify};
 
@@ -401,6 +431,25 @@ mod tests {
             Quantity::new(dec!(40)),
             QuotedPrice::new(dec!(5.75)),
             Money::new(dec!(8.32)),
+            BuyOrigin::Purchase,
+        )
+    }
+
+    /// A `buy` for shares issued as a stock dividend: 3 shares whose taxable value at issue was
+    /// 81.00, which is their cost basis since nothing was paid [DOM-082].
+    ///
+    /// The taxable value is deliberately not the 78.30 that the stated quantity and unit price
+    /// multiply to: the two are independent figures, and the difference is what lets a test see
+    /// whether the basis was sourced or worked out.
+    fn stock_dividend_buy() -> Buy {
+        Buy::new(
+            derivation(),
+            Quantity::new(dec!(3)),
+            QuotedPrice::new(dec!(26.10)),
+            Money::zero(),
+            BuyOrigin::StockDividend {
+                taxable_value: Money::new(dec!(81.00)),
+            },
         )
     }
 
@@ -489,6 +538,7 @@ mod tests {
             Quantity::new(dec!(3)),
             QuotedPrice::new(dec!(26.10)),
             Money::zero(),
+            BuyOrigin::Purchase,
         )
         .into();
 
@@ -560,6 +610,7 @@ mod tests {
             Quantity::new(dec!(100)),
             QuotedPrice::new(dec!(3.00)),
             Money::new(commission + exchange_fee + transaction_tax),
+            BuyOrigin::Purchase,
         );
 
         assert_eq!(buy.fees(), Money::new(dec!(7.40)));
@@ -664,6 +715,61 @@ mod tests {
                 Transaction::Closing(closing)
             );
         }
+    }
+
+    /// A `buy` records how it arose: an ordinary purchase, or shares issued as a stock dividend
+    /// [DOM-082].
+    #[test]
+    fn a_buy_records_how_it_arose() {
+        assert_eq!(buy().origin(), BuyOrigin::Purchase);
+
+        let issued = stock_dividend_buy();
+        assert_eq!(
+            issued.origin(),
+            BuyOrigin::StockDividend {
+                taxable_value: Money::new(dec!(81.00)),
+            }
+        );
+        assert_ne!(issued.origin(), buy().origin());
+    }
+
+    /// The two origins are the whole set [DOM-082]: a third makes this match fail to compile.
+    #[test]
+    fn the_origin_is_a_closed_two_case_set() {
+        let origins = [
+            BuyOrigin::Purchase,
+            BuyOrigin::StockDividend {
+                taxable_value: Money::zero(),
+            },
+        ];
+
+        for origin in origins {
+            match origin {
+                BuyOrigin::Purchase | BuyOrigin::StockDividend { .. } => {}
+            }
+        }
+
+        assert_eq!(origins.len(), 2);
+    }
+
+    /// A stock dividend's cost basis is the taxable value the caller supplied, and is not
+    /// derived from the buy's own figures [DOM-082].
+    ///
+    /// The taxable value here is deliberately not `quantity * unit_price`: if anything in this
+    /// crate computed the basis, the assertion below would see the product instead of the
+    /// sourced figure. OQ-014 is where the Saxo importer's figures come from, and it is open;
+    /// nothing here stands in for it.
+    #[test]
+    fn a_stock_dividend_carries_a_sourced_taxable_value() {
+        let issued = stock_dividend_buy();
+
+        let computed_from_the_buy = issued.quantity().get() * issued.unit_price().get();
+        assert_ne!(computed_from_the_buy, dec!(81.00));
+
+        let BuyOrigin::StockDividend { taxable_value } = issued.origin() else {
+            panic!("the origin built as a stock dividend");
+        };
+        assert_eq!(taxable_value, Money::new(dec!(81.00)));
     }
 
     /// Neither is editable [DOM-083]: the fields are private and there is no setter, which is a
