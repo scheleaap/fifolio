@@ -5,8 +5,9 @@
 //! nothing here depends on a fixed path and the suite runs in parallel.
 //!
 //! This is a demonstration of the harness, not coverage of `fifolio-core`: nothing below calls
-//! into the crate, which holds no schema yet. Migrations, the invariants storage enforces and
-//! batch deletion (TST-004) arrive with FIF-011, which is where this file starts naming ids.
+//! into the crate. The migrations and the repositories over them are exercised in
+//! `tests/storage.rs`, which is where TST-004 is named; the invariants storage enforces and
+//! batch deletion arrive with FIF-012 and FIF-036.
 
 use fifolio_test_support::TempDb;
 use sqlx::sqlite::SqlitePool;

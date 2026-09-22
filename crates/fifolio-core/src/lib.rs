@@ -10,5 +10,6 @@ pub mod manual_entry;
 pub mod ordering;
 pub mod precision;
 pub mod quotation;
+pub mod storage;
 pub mod transaction;
 pub mod valuation;

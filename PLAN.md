@@ -58,6 +58,7 @@ Depends on: FIF-001
 Acceptance: newtypes or wrappers over `rust_decimal` for quantity (8), unit price (6), monetary amount (2) and FX rate (6); no `f32`/`f64` anywhere in core; a single rounding function, **half away from zero**, applied only at storage and presentation boundaries, so that a realized loss rounds symmetrically to a gain; unit tests with hand-derivable synthetic inputs covering the scales and fractional quantities at full scale.
 Notes: Split twice. Revision 2 moved ARC-009 (what "full precision" means for intermediate arithmetic) to FIF-054. Revision 3 moves the quotation factor (ARC-008, DOM-038) to FIF-075, which is now the undecided half; the scales and the rounding mode are decided and reviewable without it. TST-016's other boundary cases are asserted in FIF-021 (EUR derivation) and FIF-014 (fee distribution remainders); this item owns the convention and the cases that are purely about scale.
 Done in revision 5, commit `1eec01a`. `decimal.rs` carries the four newtypes, `round_to` as the single half-away-from-zero rounding, and the `QuotedPrice` / `EffectivePrice` split that keeps the factor rule of FIF-075 reviewable; no `f32`/`f64` in core, enforced by `clippy::float_arithmetic`.
+Amended in revision 19, without reopening the item: ARC-010 was restated in `72abea7` (DEC-067) to say rounding happens **before** the storage and presentation boundaries and is the caller's act, a store refusing an unrounded value rather than absorbing it. Nothing this item shipped is invalidated — `round_to` is still the single half-away-from-zero function and callers are still who apply it. What the restatement changes is who checks, and that is a clause of **FIF-011**, whose acceptance now carries it.
 
 ## FIF-075 Trade value and the quotation factor
 Status: blocked
@@ -209,7 +210,7 @@ Depends on: FIF-008
 Acceptance: rate source precedence `broker` > `ecb` > `native`; broker-stated EUR figures used verbatim with the implied quotient stored as the rate and marked informational, since nothing computes with it; EUR-denominated transactions get rate 1 and source `native`; an ECB lookup with no rate for the trade date falls back to the most recent published rate before it and stores that rate's own date; the fallback is bounded — nothing before the series begins in 1999, and a substitution more than seven days stale is an error; fees convert at the leg's rate; a missing, unfetchable rate fails with an error naming currency and date. The rate source is an injected trait; unit tests use a fake table with weekend and holiday gaps. No test opens a socket.
 Notes: Named next to build in revision 17, FIF-008 having landed in `9a1e457` and FIF-091 in `aa6aac5`. The working tree is clean and the suite green (173 tests), so this item starts from a committed base and is the first of the arithmetic items that needs no type of its own from an earlier item.
 The rate table itself is **not** here: persistence, seeding and the top-up feed are FIF-010, which depends on this item and on storage. What this item owns is resolution — the precedence, the fallback and its bound, the error — behind an injected trait, so it is unit testable with a fake table and reaches no socket [TST-019, TST-020, TST-021]. `valuation.rs` (FIF-008) already carries `Conversion` (rate, source, date), which is the shape a resolved rate must fill; ARC-027's "EUR = native / rate" direction is settled there and must not be re-decided here.
-Done in revision 17, in `crates/fifolio-core/src/fx.rs`. `resolve` answers all three sources behind the injected `RateTable` port: an EUR leg is tested first and takes rate 1 from `native`, a file-booked EUR figure takes the importer's quotient from `broker`, and a native-only leg looks the ECB rate up. The gap fallback stores the substituting publication's own date, and is bounded by `series_start()` and `MAX_SUBSTITUTION_DAYS`, so `BeforeSeries`, `Unavailable` and `StaleSubstitute` are three distinct errors and each names the currency and the date. `fee_in_eur` converts at the leg's own rate and refuses an informational one; `RateSource::is_informational` is that rule in mechanical form, and sits beside the enum in `valuation.rs`. Twelve unit tests run against a fake table built from the real 2024 Easter publication gap; none opens a socket.
+Done in revision 17, commit `6384132`, in `crates/fifolio-core/src/fx.rs`. `resolve` answers all three sources behind the injected `RateTable` port: an EUR leg is tested first and takes rate 1 from `native`, a file-booked EUR figure takes the importer's quotient from `broker`, and a native-only leg looks the ECB rate up. The gap fallback stores the substituting publication's own date, and is bounded by `series_start()` and `MAX_SUBSTITUTION_DAYS`, so `BeforeSeries`, `Unavailable` and `StaleSubstitute` are three distinct errors and each names the currency and the date. `fee_in_eur` converts at the leg's own rate and refuses an informational one; `RateSource::is_informational` is that rule in mechanical form, and sits beside the enum in `valuation.rs`. Twelve unit tests run against a fake table built from the real 2024 Easter publication gap; none opens a socket.
 
 ## FIF-010 ECB rate cache and seeding
 Status: todo
@@ -221,7 +222,13 @@ Acceptance: a rate table keyed by currency and date; a seeding path that ingests
 Status: todo
 Requirements: ARC-011, ARC-012, ARC-013, ARC-014, DOM-071, TST-004
 Depends on: FIF-005, FIF-056, FIF-059
-Acceptance: one SQLite file, default `./fifolio.db`, created on first run and overridable; versioned `sqlx` migrations applied on startup; repositories for every entity, the manual entry included; a unique constraint on security ISIN; integration tests against a real temporary database covering migration from empty and the ISIN uniqueness failure.
+Acceptance: one SQLite file, default `./fifolio.db`, created on first run and overridable; versioned `sqlx` migrations applied on startup; repositories for every entity, the manual entry included; a unique constraint on security ISIN; integration tests against a real temporary database covering migration from empty and the ISIN uniqueness failure. A repository **refuses** a figure carrying more decimals than its kind's scale allows, with a distinguishable error, rather than rounding it on the way in [ARC-010 as restated by DEC-067]; one integration test per scale asserts the refusal.
+Notes: Named next to build in revision 18. Its three dependencies are `done` — FIF-005 (`9846b5a`), FIF-056 (`74e4bd1`) and FIF-059 (`4af8667`, widened by FIF-092 in `cd09f97`) — and none of its six requirements is on a `Blocks:` line. It is not the first `todo` in document order: FIF-010 sits ahead of it and waits on this item for the table it caches into, which is why storage comes first.
+It is the first item to leave pure core arithmetic, and the first whose tests are integration-layer against a real temporary database rather than unit tests [TST-004]; `fifolio-test-support` (FIF-002) already provides the temporary-database helper, so the harness is not part of this increment.
+What it persists is the types built so far and no more: `Account`, `Security`, `SourceRecord`, `ImportBatch` (FIF-005), the six `Transaction` variants with their `Valued` pairs and `Conversion` (FIF-056, FIF-008), and `ManualEntry` with its five `Supplied` shapes (FIF-059, FIF-092). Fields whose rules are still blocked must not be invented here: a transaction carries no relation to account, security or source record yet — DOM-013 is FIF-076's and is blocked — and no allocation or attribution table is called for by this item's requirements. A migration that adds those columns later is cheaper than a schema that guesses them now.
+ARC-010's rounding boundary is FIF-004's `round_to`, and FIF-054 names persistence as one of the two boundaries at which a value must already be at its scale; the repositories are where that is enforced, so a scale violation should be impossible to write rather than merely untested.
+Revision 19 found the whole increment written and **uncommitted**: `crates/fifolio-core/migrations/0001_initial.sql`, `crates/fifolio-core/src/storage/` (`mod.rs`, `codec.rs`, `entities.rs`, `manual_entries.rs`, `transactions.rs`) and `crates/fifolio-core/tests/storage.rs` are untracked, with `Cargo.toml`, `lib.rs`, `entities.rs`, `precision.rs` and `tests/temporary_database.rs` modified. The suite is green there: 207 tests, 0 failures, of which `tests/storage.rs` contributes 21 at the integration layer. It stays `todo` under the convention revisions 5, 7, 9, 13 and 15 applied — uncommitted is unreviewed, and an unreviewed item is the item still to build. The outstanding work is review against the six requirements above and a commit, not a rebuild.
+The one thing that landed in `design/` while that tree sat there is DEC-067 (`72abea7`), which is the acceptance clause added above; the tree already implements it as `StorageError::UnscaledValue` via `codec::at_scale`, so the decision documents what was built rather than contradicting it. Check that the refusal is asserted per scale and not only for money.
 
 ## FIF-012 Storage-enforced invariants
 Status: todo
@@ -732,6 +739,35 @@ Ids are never reused.
 
 # Revision history
 
+**Revision 19 (this run).** A status reconciliation with one specification change to absorb.
+`design/` changed in `72abea7` (DEC-067): ARC-010 is restated so that rounding happens **before**
+the storage and presentation boundaries and storage refuses an unrounded value instead of rounding
+it. The commit adds a decision, not a requirement identifier, so the live set is still **333
+identifiers**, each named by exactly one item. `open-questions.md` is untouched and still names the
+same **32 blocked ids** across OQ-001 to OQ-016; the twenty-three blocked items are unchanged. No
+item was added, split, dropped, renumbered or re-ordered, and no dependency moved.
+
+* **Completed:** none. Revision 18 named FIF-011 next to build; the work exists but is uncommitted, so the item is still `todo`.
+* **Invalidated by the specification change:** nothing completed. ARC-010 sits on FIF-004 (`1eec01a`), which shipped `round_to` and left the applying to callers; DEC-067 decides who *checks*, which is FIF-011's repositories and is unbuilt as far as the history goes. FIF-004 gains a pointer rather than an edited acceptance; **FIF-011's acceptance gains the refusal clause**, which is allowed because the item is `todo`.
+* **Re-scoped:** FIF-011 only, by that one clause.
+* **Newly blocked:** none. **Unblocked:** none. **Uncovered requirements:** none. The nine identifiers absent from every item — DOM-009, DOM-014, DOM-015, DOM-021, DOM-041 and DOM-050 to DOM-053 — are the retired set `domain.md` itself lists as retired.
+* **Uncommitted work: FIF-011, whole.** The migrations directory, `src/storage/` and `tests/storage.rs` are untracked and five tracked files are modified. `cargo test --workspace` passes 207 tests, 0 failures. This is the hand-off problem revisions 13 to 15 recorded, returning after three clean revisions; the fix is a commit, not a replan.
+* **Flagged for `spec-auditor`, not a planning decision:** the sentence `72abea7` rewrote cites `[ARC-025]` on its rationale clause, while ARC-025 is already the UI-agnostic client layer requirement further down `architecture.md`. One identifier now labels two unrelated statements. Coverage is unaffected — ARC-025 is FIF-045's — but the citation is wrong in one of the two places.
+* Next to build: **FIF-011**, SQLite storage and migrations, unchanged from revision 18 and for the same reason: its dependencies FIF-005, FIF-056 and FIF-059 are all `done`, none of ARC-011 to ARC-014, DOM-071 or TST-004 is on a `Blocks:` line, and everything ahead of it in plan order is `done` or `blocked` except FIF-010, which waits on it. The work is to read the untracked tree against the six requirements and the new refusal clause, then commit it. FIF-012, FIF-017, FIF-032 and FIF-010 all unblock behind it.
+
+**Revision 18 (this run).** A status reconciliation, not a replan, for the second consecutive
+revision. `design/` is unchanged since revision 14 — `b21d225` is still the last commit to touch it
+— so the live set is still **333 identifiers**, each named by exactly one item, and
+`open-questions.md` still names the same **32 blocked ids** across OQ-001 to OQ-016. The
+twenty-three blocked items are unchanged. No item was added, split, dropped, re-scoped, renumbered
+or re-ordered, and no dependency moved.
+
+* **Completed:** FIF-009 (`6384132`), FX rate resolution, which revision 17 named as next to build. Verified against `crates/fifolio-core/src/fx.rs` rather than the commit message: `resolve` answers the three sources in the stated precedence behind an injected `RateTable`, the gap fallback stores the substituting publication's own date and is bounded at both ends by `series_start()` and `MAX_SUBSTITUTION_DAYS`, and `BeforeSeries`, `Unavailable` and `StaleSubstitute` each name the currency and the date. `fee_in_eur` refuses an informational rate. Twelve unit tests, none opening a socket [TST-019 to TST-021]. Revision 17 recorded the item as done without a commit hash; the hash is now on the item.
+* **Invalidated by the specification change:** nothing; the specification did not change.
+* **Newly blocked:** none. **Unblocked:** none. **Uncovered requirements:** none. The nine identifiers absent from every item — DOM-009, DOM-014, DOM-015, DOM-021, DOM-041 and DOM-050 to DOM-053 — are the retired set `domain.md` itself lists as retired.
+* **Uncommitted work:** none. The tree is clean and `cargo test --workspace` passes 185 tests, 0 failures. The hand-off problem revisions 13 to 15 recorded has now stayed closed for three consecutive revisions.
+* Next to build: **FIF-011**, SQLite storage and migrations. Its dependencies FIF-005, FIF-056 and FIF-059 are all `done`, and none of ARC-011 to ARC-014, DOM-071 or TST-004 is on a `Blocks:` line. FIF-010 stands ahead of it in document order and is not ready: it depends on this item. Everything else ahead of FIF-011 is `done` or `blocked`. This is the point at which the plan leaves core arithmetic, and the point at which the remaining `todo` items stop being reachable one at a time — FIF-012, FIF-017, FIF-032 and FIF-010 all unblock behind it, so a schema that guesses at the still-undecided relations would be expensive to unpick.
+
 **Revision 17 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
 revision 14 (`b21d225` is still the last commit to touch it), so the live set is still **333
 identifiers**, each named by exactly one item, and `open-questions.md` still names the same **32
@@ -975,6 +1011,14 @@ in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
 
+Re-verified mechanically in revision 19 by extracting the identifiers from `design/*.md` and
+comparing them against the `Requirements:` lines of this file: those lines name **333** distinct
+ids, each exactly once, and they are precisely the live ids in `design/` less the nine retired ones,
+which are assigned to nothing. `72abea7` restated ARC-010 and added DEC-067 but introduced no
+identifier. Every item carrying one of the thirty-two ids on a `Blocks:` line of
+`open-questions.md` is `blocked` and no other item is — twenty-three items, checked by script.
+No placement changed. Nothing is uncovered and nothing is deferred.
+
 All **333** live requirement identifiers in `design/` are assigned to exactly one item. Nothing is
 uncovered and nothing is deliberately deferred. The nine retired identifiers — DOM-009, DOM-014,
 DOM-015, DOM-021, DOM-041, DOM-050, DOM-051, DOM-052, DOM-053 — are assigned to nothing, by design.
@@ -1010,6 +1054,14 @@ the same twenty-one items are `blocked` and no other is. Two more placements wor
 
 * DOM-120 (a spreadsheet row's canonical rendering) is owned by FIF-017, where the reader abstraction lives, not by FIF-005, which owns the `SourceRecord` type and is `done`.
 * TST-030 (a blank Saxo cell round-trips as an empty cell) is owned by FIF-019, the reader that must accept both shapes, not by FIF-003, whose writer causes the divergence.
+
+Re-verified mechanically in revision 18 by extracting the identifiers from `design/*.md` and
+comparing them against the `Requirements:` lines of this file: those lines name **333** distinct
+ids, each exactly once, and they are precisely the live ids in `design/` less the nine retired ones,
+which are assigned to nothing. `design/` gained no identifier since revision 14. Every item carrying
+one of the thirty-two ids on a `Blocks:` line of `open-questions.md` is `blocked` and no other item
+is — twenty-three items, unchanged. No placement changed. Nothing is uncovered and nothing is
+deferred.
 
 Re-verified mechanically in revision 16: the `Requirements:` lines name 333 distinct ids, each
 exactly once, and they are precisely the live ids in `design/` less the nine retired ones, which are

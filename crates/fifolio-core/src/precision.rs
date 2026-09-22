@@ -68,8 +68,9 @@
 //!
 //! At two call boundaries, and nowhere else:
 //!
-//! * **persistence** — every value bound into a statement is `.rounded()` first, so what is
-//!   stored is at its scale and two equal amounts store identically;
+//! * **persistence** — every value bound into a statement is already at its scale, so two equal
+//!   amounts store identically; the repositories refuse one that is not rather than rounding it
+//!   themselves, because a rounding the caller never performed must not be attributed to it;
 //! * **presentation** — every value handed to a formatter, a serializer or a report is
 //!   `.rounded()` first.
 //!

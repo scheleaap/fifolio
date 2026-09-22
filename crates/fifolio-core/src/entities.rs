@@ -54,14 +54,17 @@ impl Account {
 /// An ISIN, a security's natural key.
 ///
 /// Not validated here: no requirement asks for a check digit, and a broker file that names an
-/// instrument is the authority on what it is called.
+/// instrument is the authority on what it is called. Trimmed and uppercased on construction,
+/// as a [`crate::valuation::Currency`] is, because the ISIN is a security's uniqueness key
+/// [DOM-071] and storage compares it byte for byte: ` nl0000009538` reaching a column as a
+/// second spelling would be a second security for one instrument.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Isin(String);
 
 impl Isin {
     #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn new(value: impl AsRef<str>) -> Self {
+        Self(value.as_ref().trim().to_ascii_uppercase())
     }
 
     #[must_use]
@@ -380,6 +383,15 @@ mod tests {
 
     fn isin() -> Isin {
         Isin::new("NL0000102077")
+    }
+
+    /// One instrument is one key: a variant spelling normalizes to the same ISIN, so the
+    /// uniqueness constraint over it cannot be sidestepped by case or stray whitespace
+    /// [DOM-071].
+    #[test]
+    fn an_isin_is_trimmed_and_uppercased() {
+        assert_eq!(Isin::new(" nl0000102077 "), isin());
+        assert_eq!(Isin::new("NL0000102077").as_str(), "NL0000102077");
     }
 
     /// The security type enum is the fixed set the specification names, and nothing else
