@@ -104,13 +104,15 @@ Done in revision 9, commit `74e4bd1`, which is the work revisions 8 and 9 found 
 Shape of what was built: `Transaction` nests `Opening` (`Buy`, `TransferIn`) over `Closing` (`Sell`, `Expiration`, `TransferOut`) over `Split`, so DOM-081's grouping is a type a function can take rather than a label it must check. Every variant carries a `Derivation` — trade date plus the source-record identities it cites [DOM-016] — and citations are by `RecordIdentity`, not by a relation, since DOM-013 is FIF-076's. The `>= 1` cardinality is deliberately not enforced: OQ-002 says an emitted `transfer_in` is derived from no row, so a non-empty check here would answer it in code. Fields belonging to other items (EUR pairs, buy origin, expiration quantity, transfer and split ratios) are absent and the module documents each absence against its owning item.
 
 ## FIF-057 Buy origin and stock-dividend cost basis
-Status: todo
+Status: done
 Requirements: DOM-082
 Depends on: FIF-056
 Acceptance: a `buy` records how it arose — an ordinary purchase, or shares issued as a stock dividend whose cost basis is their taxable value at issue — and the taxable value is sourced rather than invented.
 Notes: Split out of FIF-056 in revision 2 and blocked then; DOM-082 left the undecided list in revision 3. FIF-025 is the Saxo dividend heuristic that produces these buys.
 Confirmed unblocked in revision 10: OQ-014 asks where a `Herbeleggingsdividend`'s share count and price come from, but it blocks IMP-SAXO-013 only, so it freezes the Saxo importer (FIF-023, FIF-025) and not this type. Build the origin so that the taxable value arrives from a caller and is never computed here; that is what keeps DOM-082 reviewable while OQ-014 is open, and it is why the item sits before the importer that fills it.
 Its dependency FIF-056 is `done` (`74e4bd1`, recorded `5d54c2b`); `transaction.rs` already names this item at the absent field, so the increment is a variant field on `Buy` plus its unit tests, not a new module.
+Done in revision 11, commit `c1c3d58`. Verified against `crates/fifolio-core/src/transaction.rs` rather than the commit message: `Buy` carries `origin: BuyOrigin`, whose `StockDividend` variant holds the parcel's `taxable_value` as a carried `Money` with no constructor deriving it from quantity and unit price, and `Purchase` holds nothing. Its unit test fixture deliberately sets a taxable value that is *not* quantity times unit price, so a later implementation that computes the basis instead of reading it fails the test. Where that figure comes from for a Saxo `Herbeleggingsdividend` is still OQ-014 and still FIF-023 / FIF-025's problem.
+**Partly invalidated in revision 13 by DEC-061 (DOM-123).** The shipped shape holds the taxable value as a field of its own, and the very fixture this item's note cites as its safeguard — 81.00 against a stated 3 × 26.10 — is the divergence DEC-061 names and forbids. The item is **not** reopened and its acceptance is left as written, so the record of what was built and why stays legible; the correction is **FIF-091**, which carries DOM-123 and states what must change. DOM-082 itself is unchanged: the basis is still the taxable value and is still never computed here.
 
 ## FIF-058 Consumption versus citation
 Status: blocked
@@ -122,13 +124,26 @@ Notes: Split out of FIF-056. DOM-070 (at most one consumer) is in FIF-060 and bl
 
 ## FIF-059 Manual entry entity
 Status: done
-Requirements: DOM-097, DOM-098, DOM-099, DOM-100, DOM-122
+Requirements: DOM-098, DOM-099, DOM-100, DOM-122
 Depends on: FIF-005
 Acceptance: a `ManualEntry` type separate from `SourceRecord`, holding account, security, what the user supplied, and **the broker identities of the source records it answers** rather than internal keys, so it survives their deletion; the separation is structural — nothing in the type system lets an import undo remove one; what was supplied is the closed set of **three** shapes — a share count, a stock-or-cash election, a target security with a ratio — and an acquisition date is not among them, it being fixed at import and never corrected by hand.
 Notes: New in revision 4; the previous plan modeled manual information as a `manual` source record kind, which DEC-038 reversed.
 DOM-122 was added to this item in revision 12. It is the one identifier `design/` gained in commit `9d8c9b9` (DEC-060), and it is a closure clause on DOM-097 rather than a separate increment: it says which shape is *not* in the set this type models, so it belongs where the set is defined. It invalidates no completed work — FIF-024 already carried the fixed acquisition date from DEC-040, and FIF-038 already states that no endpoint edits one.
 Done in revision 13. Reviewed against acceptance rather than rebuilt: `manual_entry.rs` carries `ManualEntry` (account, `Isin`, `Supplied`, `Vec<RecordIdentity>`, accessors only) [DOM-098], `Supplied` with exactly the three DOM-097 shapes and no acquisition date [DOM-122], and an integer `Ratio` (DEC-055). The separation from `SourceRecord` is structural — no import batch, no owned record — so an undo has nothing here to remove [DOM-100]; that is a compile-time property no test can name. The one change the review made was to the module documentation, which called the variant set open to a further variant where DEC-060 closes it.
-Revision 12 marked this `in-progress`; revision 13 puts it back to `todo`, which is the convention revisions 5, 7 and 9 applied to FIF-055, FIF-003 and FIF-056 — uncommitted is unreviewed, and an unreviewed item is the item still to build. The deviation was not harmless: `in-progress` is not a selectable status, so a plan carrying two of them named nothing to build while two modules sat uncommitted. Completion is still recorded against commits, never against a working tree.
+Revision 12 marked this `in-progress`; revision 13 put it back to `todo`, which is the convention revisions 5, 7 and 9 applied to FIF-055, FIF-003 and FIF-056 — uncommitted is unreviewed, and an unreviewed item is the item still to build. The deviation was not harmless: `in-progress` is not a selectable status, so a plan carrying two of them named nothing to build while two modules sat uncommitted. Completion is still recorded against commits, never against a working tree.
+Done in revision 14, commit `4af8667`, which is the module revision 13 found uncommitted.
+**Partly invalidated the same day by DEC-062 (`a0ee437`), which landed after that commit.** DOM-097's list is five shapes, not three, and `manual_entry.rs` shipped the three. The correction is **FIF-092**, which now carries DOM-097; this item keeps DOM-098 to DOM-100 and DOM-122 — the entity, its broker-identity references, its structural separation from `SourceRecord` and the closure clause on the acquisition date — none of which DEC-062 touches. The acceptance above is left as written, including the word "three", so what was built and on what reading stays legible.
+
+## FIF-092 Manual entry shapes are the five the completion queue asks for
+Status: done
+Requirements: DOM-097
+Depends on: FIF-059
+Acceptance: `Supplied` carries exactly the shapes `domain.md` now lists — a stock-or-cash election, carrying a share count when the answer is stock; a ratio alone, for a split; a target security with a ratio, for an exchange; a quantity disposed with an optional target security, for a cash merger, tender or partial buyback — and no others; a share count that exists only as part of a stock election cannot be constructed apart from one; each shape is reachable from the completion-queue case in `cli.md` and `importers.md` that asks for it, and a unit test names that case per shape.
+Notes: New in revision 14, carrying DOM-097 away from FIF-059.
+**This item exists because a completed item is now partly wrong.** FIF-059 shipped `Supplied` with three variants — `ShareCount`, `Election`, `Exchange` — in commit `4af8667`; commit `a0ee437` (DEC-062) landed afterwards and widened DOM-097 to five, withdrawing DEC-060's claim that the set closed at three. The two missing shapes are a split's bare ratio and a disposed quantity with an optional target, both of which `importers.md` already marks pending, so the gap is not hypothetical: the completion queue would have had rows with no shape to answer them in. Rather than editing FIF-059's acceptance so the shipped code reads as correct in hindsight, the correction is carried here and reviewed on its own.
+`ShareCount` as a standalone variant is the part that must change rather than be added to: DOM-097 binds the count to the stock election, and leaving both shapes available lets a caller record a count with no election behind it.
+DOM-122 stays with FIF-059. It says which shape is *not* in the set, and DEC-062 explicitly leaves DEC-060's own subject standing.
+Done in revision 14. `Supplied` now reads `Election` (with `Election::Stock { shares }`), `Split`, `Exchange` and `Disposal { quantity, target: Option<Isin> }`; the standalone `ShareCount` variant is gone, so a count is reachable only through a stock election. One unit test per completion-queue case names the case and the `Acties` row behind it, and the exhaustive match over all five stands in for the closure clause.
 
 ## FIF-006 Per-file order computation
 Status: done
@@ -159,6 +174,9 @@ Requirements: DOM-025, DOM-026, DOM-027, DOM-028, DOM-029, DOM-084, DOM-085, DOM
 Depends on: FIF-004, FIF-056
 Acceptance: every transaction stores native figures and EUR figures at the same scales, together with the rate, its source and its date; the valuation date is the trade date, never settlement; no separate currency-gain figure exists anywhere in the model; **the EUR gross total is stored as well as the unit price**; the stored rate is foreign units per EUR (`EUR = native / rate`), and a format quoting the inverse converts at full precision from the figures the file states, never from the rounded stored rate.
 Notes: DOM-085 (DEC-028) and DOM-086 (DEC-027) were new in revision 2 and change the shape of every transaction record; this is why the item sits before storage rather than beside it. Revision 3 splits DOM-104 — that the stored gross, not the unit price, is what every calculation reads — into FIF-077, because it is undecided.
+Started and uncommitted at revision 13: `crates/fifolio-core/src/valuation.rs` is untracked, `lib.rs` declares it, and `crates/fifolio-core/src/transaction.rs` is modified to carry a `Valued` native/EUR pair per money figure plus a `Conversion` (rate, source, date) on every money-bearing variant, with the trade date named as the valuation date and the EUR gross stored alongside the unit price. The suite passes. It stays `todo` for the same reason FIF-059 does: there is no commit to cite. What is outstanding is review against the eight requirements above and a commit.
+Whoever finishes it should read **FIF-091** first. That item collapses a stock dividend's taxable value into the EUR gross this item introduces, and the working tree still carries both figures separately; committing the pair as-is entrenches the divergence DEC-061 forbids.
+Still uncommitted at revision 14 and still `todo`, for the same reason: `valuation.rs` is untracked and `transaction.rs` is modified in the working tree. The suite is green there (166 tests). The outstanding work is review against the eight requirements above, then a commit. Revision 14 puts **FIF-092** ahead of this item — that is a correction to code already committed wrong, and it touches `manual_entry.rs` only, so the two do not collide in the tree.
 
 ## FIF-077 The stored gross governs every calculation
 Status: blocked
@@ -167,6 +185,16 @@ Depends on: FIF-008
 Acceptance: allocation shares are taken pro-rata from the booked EUR gross total and never rebuilt from the unit price; the unit price exists for display and reconciliation against the statement and nothing computes with it, enforced so that a caller cannot reach for it by accident.
 Blocked by: DOM-104 is on the undecided list.
 Notes: Split out of FIF-008 in revision 3. FIF-014's formulas read whichever figure this settles, so the two must be reviewed together once it is decided.
+
+## FIF-091 A stock dividend's taxable value is its stored EUR gross
+Status: todo
+Requirements: DOM-123
+Depends on: FIF-057, FIF-008
+Acceptance: a `buy` issued as a stock dividend holds the taxable value at issue and the EUR gross as **one stored figure**, not two that can disagree; there is no field, constructor argument or accessor by which a caller can set them to different values, so the rule that every calculation reads the gross cannot pick up a number other than the basis; the unit tests of FIF-057 that assert a taxable value differing from the buy's own EUR figures are replaced by tests asserting the identity, and the replacement is deliberate rather than a deleted test.
+Notes: New in revision 13, carrying the one identifier `design/` gained in commit `47af98a` (DEC-061).
+**This item exists because a completed item is now partly wrong.** FIF-057 (`c1c3d58`) shipped `BuyOrigin::StockDividend { taxable_value }` as an independent `Money`, and its fixture sets 81.00 against a stated 3 × 26.10 = 78.30 — which is exactly the pair DEC-061 names as the failure it is closing. Rather than editing FIF-057's acceptance to make the shipped code retroactively correct, the correction is carried here where it can be reviewed on its own. FIF-057 keeps its record and gains a pointer to this item.
+It depends on FIF-008 because the figure the taxable value must **become** is the stored EUR gross, which FIF-008 is what introduces; doing it before that would mean collapsing into a field that does not yet exist. Since FIF-008 is implemented but uncommitted, the cheapest correct order is to finish FIF-008 and land this on top, rather than committing a shape that must then be unpicked.
+Where a Saxo `Herbeleggingsdividend`'s figure comes from is untouched by this and is still OQ-014, blocking IMP-SAXO-013 in FIF-023. DEC-061 says the two numbers are one; it does not say where that one number is read.
 
 ## FIF-009 FX rate resolution
 Status: todo
@@ -233,10 +261,11 @@ Notes: New in this revision, replacing the "quantity adjustment" half of the ret
 
 ## FIF-014 Allocation figure derivation and the drift rule
 Status: todo
-Requirements: DOM-058, DOM-059, DOM-060, DOM-061, DOM-062, DOM-063, DOM-093, DOM-105
+Requirements: DOM-058, DOM-059, DOM-060, DOM-061, DOM-062, DOM-063, DOM-093, DOM-105, DOM-125
 Depends on: FIF-013, FIF-061, FIF-004, FIF-054
-Acceptance: allocated cost, buy fee, proceeds, sell fee and gain computed on demand from the parent transactions, exactly as the formulas in `domain.md` state, with the opening side divided by its effective quantity **as of the closing** and the closing side by the closing's own quantity; every closing variant carries `eur_gross` and `eur_fees` so one formula reads them all, and `split` carries neither; each share rounded to 2 decimals independently with drift absorbed by the last share, opening-side last being the allocation that exhausts the parcel and closing-side last being the last allocation of that closing in canonical order; sell fees never spread beyond their own closing. Unit tests include a division that is exact, one leaving one cent, and one leaving many.
+Acceptance: allocated cost, buy fee, proceeds, sell fee and gain computed on demand from the parent transactions, exactly as the formulas in `domain.md` state, with the opening side divided by its effective quantity **as of the closing** and the closing side by the closing's own quantity; every closing variant carries `eur_gross` and `eur_fees` so one formula reads them all, and `split` carries neither; each share rounded to 2 decimals independently with drift absorbed by the last share, opening-side last being the allocation that exhausts the parcel and closing-side last being the last allocation of that closing in canonical order; sell fees never spread beyond their own closing; **a gain is arithmetic on the four rounded shares**, not computed exactly and rounded afterwards, so every allocation reconciles to its own columns. Unit tests include a division that is exact, one leaving one cent, and one leaving many, and one where rounding-then-subtracting and subtracting-then-rounding differ, asserting the former.
 Notes: Blocked in revision 2 on DOM-059, DOM-105 and DOM-112; the first two are now decided. DOM-112 (a `transfer_out`'s `eur_gross` derived from its own allocations) moved to FIF-080 in revision 3, so this item covers the cash closings only.
+DOM-125 is new in revision 14 (DEC-066). It belongs here, with the rounding rule it qualifies, and not with the reports: its second half — a total is the sum of the rounded rows — is a consequence the report items FIF-030 and FIF-031 inherit by summing what this item produces, and neither is built yet. It costs up to two cents against the exact figure per allocation, deliberately; say so in the code comment, or someone will "fix" it.
 
 ## FIF-080 Transfer out has no proceeds and no gain
 Status: blocked
@@ -270,10 +299,11 @@ Notes: Blocked in revision 2; TST-010 left the undecided list in revision 3. Its
 
 ## FIF-017 Import and derivation framework
 Status: todo
-Requirements: DOM-002, DOM-042, DOM-044, DOM-045, DOM-046, DOM-048, DOM-120, ARC-023
+Requirements: DOM-002, DOM-042, DOM-044, DOM-045, DOM-046, DOM-048, DOM-120, DOM-124, ARC-023
 Depends on: FIF-007, FIF-011
-Acceptance: an importer trait over a source file that yields source records; rows where every field the variant needs is present and unambiguous are derived automatically; rows that affect holdings but lack something only the user knows become pending, which is the completion queue; dividends, interest, deposits, withdrawals and account fees are recognized as non-position, counted and not stored; everything the user supplies becomes a manual entry. XLSX reading via `calamine` and CSV via `csv` sit behind the same reader abstraction; a delimited row stores its verbatim line while a spreadsheet row, having none, stores the canonical rendering `domain.md` defines — each cell as the file holds it, an Excel serial date staying `45208`, keyed by column name in sheet column order — so that re-reading the same file reproduces the same string.
+Acceptance: an importer trait over a source file that yields source records; rows where every field the variant needs is present and unambiguous are derived automatically; rows that affect holdings but lack something only the user knows become pending, which is the completion queue; **cash** dividends, interest, deposits, withdrawals and account fees are recognized as non-position, counted and not stored, while a dividend that issues shares is a position event whose rows are stored and whose buy carries a stock-dividend origin; everything the user supplies becomes a manual entry. XLSX reading via `calamine` and CSV via `csv` sit behind the same reader abstraction; a delimited row stores its verbatim line while a spreadsheet row, having none, stores the canonical rendering `domain.md` defines — each cell as the file holds it, an Excel serial date staying `45208`, keyed by column name in sheet column order — so that re-reading the same file reproduces the same string.
 Notes: DOM-120 is new in revision 7 (DEC-057) and sits here because the reader abstraction is what constructs the stored raw content; FIF-005, which owns the `SourceRecord` type, is `done` and its field is untyped as to how it was rendered. DOM-043, the classification taxonomy these three outcomes belong to, moved to FIF-064 in revision 2. Revision 3 moves DOM-047, "nothing is invented", to FIF-081, it being undecided; the three outcomes stand without it.
+DOM-124 is new in revision 14 (DEC-063) and sits here rather than in FIF-025 because it is the exception clause on DOM-002 and DOM-046, which this item owns; it is format-agnostic, and the Saxo heuristic that recognizes such a dividend is FIF-025's, which already derives the buy. Nothing completed is invalidated: the classification is not built yet.
 
 ## FIF-081 Nothing is created from nothing
 Status: blocked
@@ -329,15 +359,21 @@ Notes: Split out of FIF-019 in revision 3. FIF-066's third ordering key ("file p
 
 ## FIF-066 Saxo: ordering columns
 Status: blocked
-Requirements: IMP-SAXO-026, IMP-SAXO-027
+Requirements: IMP-SAXO-026, IMP-SAXO-027, IMP-SAXO-036
 Depends on: FIF-019, FIF-006
-Acceptance: rows are ordered on `Transactiedatum`, then the first populated of `Bk Record Id`, `Booking Id` and `Transactie-ID`, then file position taken in reverse; `Corporate action-Id` is never an ordering column, because it is not monotonic with date. Tested on a fixture date carrying several rows where only that id is populated, so file position settles them.
+Acceptance: rows are ordered on `Transactiedatum`, then on `Bk Record Id`, then `Booking Id`, then `Transactie-ID`, **each compared only against itself**, then file position taken in reverse; two rows populating different counters share no comparable value and fall through to file position; `Corporate action-Id` is never an ordering column, because it is not monotonic with date. Tested on a fixture date carrying several rows where only that id is populated, so file position settles them, and on one of the ten fixture dates that carry a mixture of counters, asserting the order does not depend on which column a row happens to populate.
 Blocked by: IMP-SAXO-026 is on the undecided list (OQ-013).
 Notes: New in revision 2; ordering is now computed from file content (DOM-040). Newly blocked in
 revision 5: OQ-013 leaves undetermined where a row carrying none of the three booking ids sorts,
 and those rows are precisely Saxo's corporate actions. IMP-SAXO-027 (`Corporate action-Id` is never
 an ordering column) is decided, but it is one clause of the same ordering key and was not split out;
 the mechanism it binds to, `ordering.rs` from FIF-006, is unaffected and already built.
+Restated in revision 14 by DEC-064, which adds IMP-SAXO-036: the three booking counters are three
+ordering columns, not one folded key, because their magnitudes are unrelated and ten fixture dates
+carry a mixture, which same-day order then settles arbitrarily — and same-day order decides which
+parcel a same-day sell consumes. The acceptance above is rewritten accordingly; the item was
+`blocked` and unbuilt, so nothing is invalidated. IMP-SAXO-036 is not separately decidable: its last
+clause hands absent counters back to OQ-013, which is what blocks this item.
 
 ## FIF-020 Saxo: account normalization and row identity
 Status: todo
@@ -630,6 +666,7 @@ Requirements: CLI-005, CLI-009, CLI-038
 Depends on: FIF-045, FIF-072
 Acceptance: writes every manual entry to the named file as **a single JSON document carrying a schema version**, recording per entry the account, the security, what was supplied, and the identities of the imported source records it was attached to.
 Notes: Previously blocked on decision D2, the file format. DEC-020 and CLI-038 resolved it: versioned JSON, with a matching import (FIF-074). D2 is closed.
+Revision 12: CLI-009 and CLI-038 were restated in `9d8c9b9` (DEC-060) to drop the acquisition date from the list of manual shapes the exported document carries. The ids and this item's acceptance are unchanged — the shapes are FIF-059's closed set, which the exporter simply serializes — so nothing here is invalidated; recorded so the narrowing is not rediscovered as a discrepancy against an older reading of `cli.md`.
 
 ## FIF-074 `import-manual-information` subcommand
 Status: todo
@@ -684,6 +721,56 @@ Ids are never reused.
 * **FIF-018 — Corporate action engine.** Dropped in this revision. `domain.md` replaced the separate corporate-action entity with transaction variants (DEC-024, DEC-025), retiring DOM-014, DOM-015 and DOM-050 to DOM-053. Its two halves became FIF-061 (splits and effective quantity) and FIF-063 (transfer out emission, basis and decomposition); DOM-016, the citation rule, moved to FIF-056.
 
 # Revision history
+
+**Revision 14 (this run).** `design/` changed twice since revision 13, in `a0ee437` (DEC-062) and
+`b21d225` (DEC-063 to DEC-066). Three requirement identifiers are added — DOM-124, DOM-125,
+IMP-SAXO-036 — and one, DOM-097, is restated in a way that contradicts shipped code. The live set is
+**333**. `open-questions.md` is untouched and still names the same **32 blocked ids** across OQ-001
+to OQ-016, so the twenty-three blocked items are unchanged.
+
+* **Completed:** FIF-059 (`4af8667`), the manual entry entity, which revision 13 named as next to build.
+* **Invalidated by the specification change: yes, for the second time.** DEC-062 withdraws DEC-060's claim that DOM-097's list closed at three shapes and names five. FIF-059's commit landed *before* that decision, so `manual_entry.rs` ships three variants and is missing a split's bare ratio and a disposed quantity with an optional target — both of which `importers.md` already marks pending, so the completion queue would meet rows it has no shape to answer. Said as its own item, **FIF-092**, which takes DOM-097 from FIF-059; FIF-059 stays `done` with a pointer and keeps DOM-098 to DOM-100 and DOM-122.
+* **Added:** FIF-092 (DOM-097), placed immediately after FIF-059, which it corrects and which everything reading the shapes — FIF-062, FIF-072, FIF-051 — sits behind.
+* **Added coverage without new items:** DOM-124 (DEC-063, a dividend taken in shares is stored) joins FIF-017, which already owns the DOM-002 / DOM-046 rule it qualifies; DOM-125 (DEC-066, a gain is arithmetic on the rounded shares) joins FIF-014, which owns the rounding rule it qualifies; IMP-SAXO-036 (DEC-064, three ordering columns rather than one folded key) joins FIF-066, whose acceptance is rewritten to match. None of the three is separately reviewable from the item it joins, and none of the three items is built, so no completed work is touched.
+* **FIF-066's acceptance was rewritten rather than annotated**, which is allowed only because the item is `blocked` and unbuilt. IMP-SAXO-036 does not unblock it: its closing clause hands absent counters back to OQ-013, which is exactly what blocks it.
+* **Newly blocked:** none. **Unblocked:** none. Nothing was dropped or renumbered, and no dependency moved.
+* Next to build: **FIF-092**, the manual entry shapes. Its only dependency FIF-059 is `done`, DOM-097 is on no `Blocks:` line, and it is the first `todo` in plan order whose dependencies are all satisfied — it sits immediately after the item it corrects, which is where a correction is reviewable. It is ahead of FIF-008 deliberately: DOM-097's shapes are already committed wrong, and FIF-062, FIF-072 and FIF-051 all read them, so the longer it stands the more is built on three variants where the queue asks for five. The work is one enum and its tests, in `manual_entry.rs`, which FIF-008's uncommitted tree does not touch — but that tree (`valuation.rs` untracked, `transaction.rs` modified) is still there, so commit around it deliberately rather than sweeping it into this item's commit.
+* After that: **FIF-008**, EUR valuation and the stored gross, whose module is written and uncommitted; the work there is review and a commit, and **FIF-091 lands on top of it** — read that item before committing the pair of figures DEC-061 forbids.
+
+**Revision 13.** `design/` changed again, in commit `47af98a` (DEC-061): a stock
+dividend's taxable value and its EUR gross are **one** figure, not two. It adds one requirement
+identifier, DOM-123, taking the live set to **330**. `open-questions.md` is untouched and still
+names the same **32 blocked ids** across OQ-001 to OQ-016, so the twenty-three blocked items are
+unchanged.
+
+* **Invalidated by the specification change: yes, and for the first time.** DEC-061 contradicts part of what FIF-057 shipped in `c1c3d58` — the taxable value as a field of its own, with a test fixture setting it to 81.00 against the buy's own 78.30, which is the exact pair the decision names. Said as its own item, **FIF-091**, rather than by editing FIF-057's acceptance until the shipped code looks right in hindsight. FIF-057 stays `done` with a pointer; the correction is reviewable on its own.
+* **Added:** FIF-091 (DOM-123), placed after FIF-008 because the figure the taxable value collapses into is the EUR gross FIF-008 introduces.
+* **Status convention corrected.** Revision 12 introduced `in-progress` for FIF-059, whose module was written and uncommitted. `in-progress` is not selectable, and this revision found **two** such modules — FIF-059's `manual_entry.rs` and FIF-008's `valuation.rs`, both untracked, both green — which between them would have left the plan naming nothing to build while everything downstream waited on their commits. Both are `todo` again, which is what revisions 5, 7 and 9 did with FIF-055, FIF-003 and FIF-056: uncommitted is unreviewed, and an unreviewed item is still the item to build. The notes on both say the outstanding work is review and a commit, not a rebuild.
+* **Completed:** none. **Newly blocked:** none. **Unblocked:** none. No item was split, dropped, renumbered or re-ordered, and no dependency moved.
+* Next to build: **FIF-059**, the manual entry entity, unchanged from revision 11's answer and for the same reason — its only dependency FIF-005 is `done`, none of DOM-097 to DOM-100 or DOM-122 is on a `Blocks:` line, and it is the first such item in plan order. FIF-011, and through it the whole storage and import chain, waits on it. The work is to read `manual_entry.rs` against the acceptance and commit it. FIF-008 is the next one after, and FIF-091 lands on top of that.
+
+**Revision 12.** `design/` **did** change since revision 8, which revisions 10 and 11
+both missed: commit `9d8c9b9` (DEC-060) settles that an acquisition date can never be corrected by
+hand. It adds one requirement identifier, DOM-122, and restates the prose of CLI-009 and CLI-038
+without changing their ids. The live set is therefore **329 identifiers**, not 328.
+`open-questions.md` is untouched and still names the same **32 blocked ids** across OQ-001 to
+OQ-016, so the twenty-three blocked items are unchanged.
+
+* **Added coverage:** DOM-122 joins FIF-059 rather than becoming an item of its own; it closes the set DOM-097 opens and cannot be reviewed apart from it. No item was split, dropped, renumbered or re-ordered, and no dependency moved.
+* **Invalidated by the specification change:** nothing. DEC-060 confirms the direction DEC-040 already set and the plan already carried — FIF-024 fixes the date at import, FIF-038 forbids editing it, and neither is `done`. This is recorded as a line of its own because a changed specification must be checked against completed work out loud, not silently.
+* **In progress:** FIF-059, whose module is written and green but uncommitted (`crates/fifolio-core/src/manual_entry.rs`, untracked; `lib.rs` modified). It is not `done`: there is no commit to cite.
+* **Completed:** none this revision. **Newly blocked:** none. **Unblocked:** none.
+* Next to build: **FIF-008**, EUR valuation and the stored gross. Both dependencies, FIF-004 and FIF-056, are `done`; none of DOM-025 to DOM-029, DOM-084, DOM-085 or DOM-086 appears on a `Blocks:` line — the undecided part of that area, DOM-104, was already split into FIF-077. It is the first `todo` in plan order whose dependencies are all satisfied, FIF-059 above it now being `in-progress`. Commit FIF-059 first.
+
+**Revision 11.** A status reconciliation, not a replan. `design/` is unchanged since
+revision 8 (`8dbca69` is still the last commit to touch it), so the live set is still **328
+identifiers**, each named by exactly one item, and `open-questions.md` still names the same **32
+blocked ids** across OQ-001 to OQ-016. No item was added, split, re-scoped, renumbered or
+re-ordered, and no dependency moved.
+
+* **Completed:** FIF-057 (`c1c3d58`), the buy origin, which revision 10 named as next to build and which was committed but left `todo` in the plan. The full suite passes (`cargo test`, 143 tests across the workspace, 0 failures) and the working tree is clean.
+* **Newly blocked:** none. **Unblocked:** none. The twenty-three blocked items are those of revisions 8 to 10.
+* Next to build: **FIF-059**, the manual entry entity. Its only dependency, FIF-005, is `done`; DOM-097 to DOM-100 appear on no `Blocks:` line. It is the first `todo` in plan order whose dependencies are all satisfied — the two `todo` items before it in document order are none, and the ones after it (FIF-008, FIF-064) depend on items that are themselves `todo` or blocked.
 
 **Revision 10 (this run).** A status reconciliation, not a replan. `design/` is unchanged since
 revision 8 (`8dbca69` is still the last commit to touch it), so the live set is still **328
@@ -842,7 +929,7 @@ in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
 
-All 328 live requirement identifiers in `design/` are assigned to exactly one item. Nothing is
+All **333** live requirement identifiers in `design/` are assigned to exactly one item. Nothing is
 uncovered and nothing is deliberately deferred. The nine retired identifiers — DOM-009, DOM-014,
 DOM-015, DOM-021, DOM-041, DOM-050, DOM-051, DOM-052, DOM-053 — are assigned to nothing, by design.
 
@@ -888,3 +975,33 @@ Re-verified mechanically in revision 10: the `Requirements:` lines name 328 dist
 exactly once, and they are precisely the live ids in `design/`, the nine retired ones assigned to
 nothing. Every item carrying one of the thirty-two ids on a `Blocks:` line is `blocked` and no other
 item is — twenty-three items. Nothing is uncovered and nothing is deferred.
+
+Re-verified mechanically in revision 11: unchanged from revision 10 — the `Requirements:` lines name
+328 distinct ids, each exactly once, and they are precisely the live ids in `design/`. Every item
+carrying one of the thirty-two ids on a `Blocks:` line is `blocked` and no other item is — twenty-three
+items. Nothing is uncovered and nothing is deferred.
+
+Re-verified mechanically in revision 12 against a specification that had grown: the `Requirements:`
+lines name **329** distinct ids, each exactly once, and they are precisely the live ids in
+`design/`, the nine retired ones assigned to nothing. The single addition is DOM-122, on FIF-059.
+Revisions 10 and 11 reported 328 and claimed `design/` unchanged since `8dbca69`; that was wrong —
+`9d8c9b9` had already landed — and DOM-122 was uncovered for two revisions. The check now reads the
+identifiers out of `design/` rather than trusting the previous revision's count. Every item carrying
+one of the thirty-two ids on a `Blocks:` line is `blocked` and no other item is — twenty-three
+items. Nothing is uncovered and nothing is deferred.
+
+Re-verified mechanically in revision 13 by extracting the identifiers from `design/*.md` and
+comparing them against the `Requirements:` lines of this file: those lines name **330** distinct
+ids, each exactly once, and they are precisely the live ids in `design/`; the nine retired ids are
+assigned to nothing. The single addition since revision 12 is **DOM-123**, on the new FIF-091.
+Every item carrying one of the thirty-two ids on a `Blocks:` line is `blocked` and no other item is
+— twenty-three items, unchanged. Nothing is uncovered and nothing is deferred.
+
+Re-verified mechanically in revision 14 against a specification that had grown again: the
+`Requirements:` lines name **333** distinct ids, each exactly once, and they are precisely the live
+ids in `design/` — the check reads the ids out of `design/` and subtracts the nine retired ones
+`domain.md` lists, rather than trusting the previous revision's count. The three additions are
+DOM-124 on FIF-017, DOM-125 on FIF-014 and IMP-SAXO-036 on FIF-066; the one move is DOM-097 from
+FIF-059 to FIF-092, for the reason that item states. Every item carrying one of the thirty-two ids
+on a `Blocks:` line of `open-questions.md` is `blocked` and no other item is — twenty-three items.
+Nothing is uncovered and nothing is deferred.

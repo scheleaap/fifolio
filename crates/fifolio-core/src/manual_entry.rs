@@ -24,16 +24,20 @@
 //!
 //! # What "what was supplied" covers
 //!
-//! [`Supplied`] is the set [DOM-097] names, and DEC-060 states that set is closed: a share
-//! count, a stock-or-cash election, a target security with a ratio. An acquisition date is not
-//! among them [DOM-122] — a transferred parcel's date is fixed at import and never corrected
-//! (SRV-054, IMP-SAXO-016) — so `cli.md`'s listing of one among the manual shapes is the wording
-//! DEC-060 overrules, and there is no variant for it and no accessor that could set one.
+//! [`Supplied`] is the set [DOM-097] names, which is exactly what the completion queue asks for
+//! (CLI-020), one shape per row of its table: a stock-or-cash election, carrying the share count
+//! when the answer is stock (`Keuzedividend`, IMP-SAXO-018); a split's ratio on its own (`Stock
+//! split`); an exchange's target security and ratio (`Omwisseling`); and a disposed quantity with
+//! an *optional* target security, for a cash merger, tender or partial buyback (`Fusie`,
+//! `Terugkoopaanbod`, IMP-SAXO-031). The queue's remaining row, a transfer out, asks for nothing:
+//! it is approved like any disposal. DEC-062 withdrew DEC-060's claim that the set closed at three
+//! shapes, having found those pending rows with no shape to answer them.
 //!
-//! The completion queue in `cli.md` also asks for a split's ratio on its own, and for a disposed
-//! quantity with an *optional* target security. Neither shape is in the closed set, so neither is
-//! modeled here: inventing a variant would reopen a set DEC-060 shut, and widening DOM-097 is a
-//! decision for a person, not for this module. The queue item is FIF-046.
+//! The share count is a field of the stock election rather than a shape of its own, so a count
+//! with no election behind it cannot be constructed [DOM-097]. DEC-060 stands on its own subject:
+//! an acquisition date is not among these shapes [DOM-122] — a transferred parcel's date is fixed
+//! at import and never corrected (SRV-054, IMP-SAXO-016) — so there is no variant for it and no
+//! accessor that could set one.
 
 use std::num::NonZeroU32;
 
@@ -42,11 +46,18 @@ use crate::entities::{Account, Isin, RecordIdentity};
 
 /// Which of a stock-or-cash dividend the user elected [DOM-097].
 ///
+/// The share count belongs to the stock branch rather than standing beside the election, because
+/// DOM-097 asks for it only "if stock": a count with no election behind it is not a shape the
+/// queue offers, and making it a field is what stops one being recorded.
+///
 /// What each choice derives — stock a `buy` whose origin is a stock dividend, cash nothing at
 /// all — is the Saxo importer's rule (IMP-SAXO-018), not this type's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Election {
-    Stock,
+    /// Taken in shares, `shares` of them, because no column states the count.
+    Stock {
+        shares: Quantity,
+    },
     Cash,
 }
 
@@ -85,14 +96,22 @@ impl Ratio {
 }
 
 /// What the user supplied, because the export does not carry it [DOM-097].
+///
+/// One variant per completion-queue case that asks for something (CLI-020) and no others.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Supplied {
-    /// How many shares an event issued, where no column states them.
-    ShareCount(Quantity),
-    /// Whether a dividend was taken in stock or in cash.
+    /// Whether a dividend was taken in stock or in cash, and how many shares if stock.
     Election(Election),
+    /// The ratio a split applied, which no column states.
+    Split(Ratio),
     /// The security a holding was exchanged into, and at what ratio.
     Exchange { target: Isin, ratio: Ratio },
+    /// How much a cash merger, tender or partial buyback disposed of, and the security received
+    /// in return where there was one — a tender paid entirely in cash receives none.
+    Disposal {
+        quantity: Quantity,
+        target: Option<Isin>,
+    },
 }
 
 /// Information the user supplied, kept as traceably as imported information [DOM-048].
@@ -195,7 +214,9 @@ mod tests {
         let entry = ManualEntry::new(
             account(),
             isin(),
-            Supplied::ShareCount(Quantity::new(dec!(12.5))),
+            Supplied::Election(Election::Stock {
+                shares: Quantity::new(dec!(12.5)),
+            }),
             [record().identity().clone()],
         );
 
@@ -203,38 +224,137 @@ mod tests {
         assert_eq!(entry.security(), &isin());
         assert_eq!(
             entry.supplied(),
-            &Supplied::ShareCount(Quantity::new(dec!(12.5)))
+            &Supplied::Election(Election::Stock {
+                shares: Quantity::new(dec!(12.5)),
+            })
         );
         assert_eq!(entry.answers(), &[record().identity().clone()]);
     }
 
-    /// The supplied value is the set DOM-097 names, and each shape carries only its own fields
+    /// Completion queue, "Stock or cash dividend", answered stock (CLI-020, IMP-SAXO-018): the
+    /// election and the share count the `Keuzedividend` row does not state [DOM-097].
+    #[test]
+    fn a_stock_or_cash_dividend_taken_in_stock_supplies_the_election_and_the_count() {
+        let supplied = Supplied::Election(Election::Stock {
+            shares: Quantity::new(dec!(0.43)),
+        });
+
+        let Supplied::Election(Election::Stock { shares }) = supplied else {
+            panic!("a stock election")
+        };
+        assert_eq!(shares.get(), dec!(0.43));
+    }
+
+    /// Completion queue, "Stock or cash dividend", answered cash (CLI-020, IMP-SAXO-018): the
+    /// election alone, because a cash dividend issues no shares to count [DOM-097].
+    #[test]
+    fn a_stock_or_cash_dividend_taken_in_cash_supplies_the_election_alone() {
+        assert_eq!(
+            Supplied::Election(Election::Cash),
+            Supplied::Election(Election::Cash)
+        );
+        assert_ne!(
+            Supplied::Election(Election::Cash),
+            Supplied::Election(Election::Stock {
+                shares: Quantity::zero()
+            })
+        );
+    }
+
+    /// Completion queue, "Split" (CLI-020), the `Stock split` row the Saxo importer marks
+    /// pending: the ratio and nothing else [DOM-097].
+    #[test]
+    fn a_split_supplies_the_ratio_alone() {
+        let supplied = Supplied::Split(ratio(3, 1));
+
+        let Supplied::Split(applied) = supplied else {
+            panic!("a split ratio")
+        };
+        assert_eq!(applied, ratio(3, 1));
+    }
+
+    /// Completion queue, "Exchange or share-class swap" (CLI-020), the `Omwisseling` row: the
+    /// target security and the ratio [DOM-097].
+    #[test]
+    fn an_exchange_supplies_a_target_security_and_a_ratio() {
+        let supplied = Supplied::Exchange {
+            target: Isin::new("US8816242098"),
+            ratio: ratio(1, 3),
+        };
+
+        let Supplied::Exchange { target, ratio } = supplied else {
+            panic!("an exchange")
+        };
+        assert_eq!(target.as_str(), "US8816242098");
+        assert_eq!(ratio.numerator().get(), 1);
+    }
+
+    /// Completion queue, "Cash merger, tender, partial buyback" (CLI-020), the `Fusie` and
+    /// `Terugkoopaanbod` rows (IMP-SAXO-031): the quantity disposed, with a target security
+    /// where one was received and none where the payout was all cash [DOM-097].
+    #[test]
+    fn a_cash_merger_tender_or_buyback_supplies_a_quantity_and_an_optional_target() {
+        let all_cash = Supplied::Disposal {
+            quantity: Quantity::new(dec!(40)),
+            target: None,
+        };
+        let part_stock = Supplied::Disposal {
+            quantity: Quantity::new(dec!(40)),
+            target: Some(Isin::new("CA8935841014")),
+        };
+
+        assert_ne!(part_stock, all_cash);
+        let Supplied::Disposal { quantity, target } = all_cash else {
+            panic!("a disposal")
+        };
+        assert_eq!(quantity.get(), dec!(40));
+        assert_eq!(target, None);
+    }
+
+    /// The supplied value is the set DOM-097 names and no more: one shape per completion-queue
+    /// case that asks for something, with a share count reachable only through a stock election
     /// [DOM-097].
     #[test]
     fn the_supplied_value_is_the_specified_set() {
         let all = [
-            Supplied::ShareCount(Quantity::new(dec!(0.43))),
-            Supplied::Election(Election::Stock),
+            Supplied::Election(Election::Stock {
+                shares: Quantity::new(dec!(0.43)),
+            }),
+            Supplied::Election(Election::Cash),
+            Supplied::Split(ratio(3, 1)),
             Supplied::Exchange {
                 target: Isin::new("US8816242098"),
                 ratio: ratio(1, 3),
             },
+            Supplied::Disposal {
+                quantity: Quantity::new(dec!(40)),
+                target: None,
+            },
         ];
 
-        // Exhaustive by construction: a new variant makes this match fail to compile.
-        for supplied in &all {
-            match supplied {
-                Supplied::ShareCount(quantity) => assert!(!quantity.is_zero()),
-                Supplied::Election(election) => {
-                    assert!(matches!(election, Election::Stock | Election::Cash));
-                }
-                Supplied::Exchange { target, ratio } => {
-                    assert_eq!(target.as_str(), "US8816242098");
-                    assert_eq!(ratio.numerator().get(), 1);
-                }
-            }
-        }
-        assert_eq!(all.len(), 3);
+        // Exhaustive by construction: a new variant makes these matches fail to compile, and a
+        // share count outside a stock election has nowhere to appear.
+        let shapes: Vec<&str> = all
+            .iter()
+            .map(|supplied| match supplied {
+                Supplied::Election(Election::Stock { .. }) => "dividend elected in stock",
+                Supplied::Election(Election::Cash) => "dividend elected in cash",
+                Supplied::Split(_) => "split",
+                Supplied::Exchange { .. } => "exchange or share-class swap",
+                Supplied::Disposal { .. } => "cash merger, tender, partial buyback",
+            })
+            .collect();
+
+        assert_eq!(
+            shapes,
+            [
+                "dividend elected in stock",
+                "dividend elected in cash",
+                "split",
+                "exchange or share-class swap",
+                "cash merger, tender, partial buyback",
+            ]
+        );
     }
 
     fn ratio(numerator: u32, denominator: u32) -> Ratio {
@@ -264,7 +384,7 @@ mod tests {
         let entry = ManualEntry::new(
             account(),
             isin(),
-            Supplied::Election(Election::Stock),
+            Supplied::Election(Election::Cash),
             imported.iter().map(|row| row.identity().clone()),
         );
         let named: Vec<String> = entry
@@ -311,7 +431,7 @@ mod tests {
         let entry = ManualEntry::new(
             account(),
             isin(),
-            Supplied::ShareCount(Quantity::new(dec!(1))),
+            Supplied::Split(ratio(2, 1)),
             [record().identity().clone()],
         );
 
