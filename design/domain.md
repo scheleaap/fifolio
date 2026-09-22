@@ -67,6 +67,7 @@ Transaction
 
 * **Opening** variants are `buy` and `transfer_in`; **closing** variants are `sell`, `expiration` and `transfer_out`. `split` is neither [DOM-081]
 * A `buy`'s origin records how it arose: an ordinary purchase, or shares issued as a stock dividend, whose cost basis is their taxable value at issue [DOM-082]
+* For such a buy the taxable value **is** the EUR gross: one figure, not two that might disagree. The type stores it once, so that the rule that every calculation reads the gross cannot pick up a number other than the basis [DOM-123]
 * A `transfer_in` covers both a transfer from another broker and units arriving from a corporate action. Its `source` says which, and its date provenance records what its acquisition date is worth: `transfer_date` when the export gave no real acquisition date, `inherited` when it was carried from the parcel it replaced. **Neither is editable** [DOM-083]
 * `fees` is the sum of all incidental costs: commission, exchange fees, and transaction taxes such as the French FTT or stamp duty. [DOM-012] They receive identical treatment in the gain calculation, so they are not modeled separately
 * A transaction cites the source records it was derived from, so a multi-row event keeps its audit trail [DOM-016]

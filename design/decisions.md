@@ -377,3 +377,11 @@ correct it. The user settled it: no correction. `DOM-097`'s three shapes are the
 set, and the consequence is accepted — where a broker transfer carries a date that loses a parcel's
 grandfathered status, that status stays lost rather than being restorable by typing. A date the
 system did not derive is a date no audit trail supports.
+
+**DEC-061 — A stock dividend's taxable value and its EUR gross are one stored figure.** The model
+had held them as two independent fields, and a fixture made them differ, 78.30 against 81.00. Since
+every calculation reads the gross while the basis is the taxable value, the two diverging produces a
+cost basis that is wrong and silent about it. The user settled it: the value taxed at issue is the
+cost. Stored once rather than twice-and-asserted-equal, because a single field cannot drift. If a
+broker is ever seen to report a taxable value differing from the shares' value at issue, this is the
+entry to revisit.
