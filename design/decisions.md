@@ -385,3 +385,11 @@ cost basis that is wrong and silent about it. The user settled it: the value tax
 cost. Stored once rather than twice-and-asserted-equal, because a single field cannot drift. If a
 broker is ever seen to report a taxable value differing from the shares' value at issue, this is the
 entry to revisit.
+
+**DEC-062 — Corrects DEC-060's over-reach: DOM-097 carries five shapes, not three.** DEC-060
+recorded the user's decision that an acquisition date is never corrected by hand, and in writing it
+down also declared DOM-097's list closed at three shapes. That second part was not decided by
+anyone and was wrong: `cli.md`'s completion queue asks for a split's ratio alone and for a disposed
+quantity with an optional target security, and `importers.md` already marks exactly those rows
+pending. DOM-097 now lists what the queue asks for. DEC-060 stands on its own subject; only its
+claim of closure at three is withdrawn.

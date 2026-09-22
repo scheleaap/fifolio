@@ -43,7 +43,8 @@ Source record
 * Relations: belongs to: >= 1 import batches; consumed by: 0 or 1 transaction; cited by: >= 0 transactions
 
 Manual entry
-* Information the user supplied because no export contains it, and these three shapes only: a share count, a stock-or-cash election, a target security and ratio [DOM-097] An acquisition date is **not** among them: it is fixed at import and never corrected by hand [DOM-122]
+* Information the user supplied because no export contains it. The shapes are exactly those the completion queue asks for: a stock-or-cash election with a share count if stock; a ratio alone, for a split; a target security with a ratio, for an exchange; a quantity disposed with an optional target security, for a cash merger, tender or partial buyback [DOM-097]
+* An acquisition date is **not** among them: it is fixed at import and never corrected by hand [DOM-122]
 * Fields: account, security, what was supplied, and **the identities of the source records it answers** [DOM-098]
 * It references those records by their broker identity rather than by an internal key, so it survives their deletion and reconnects when the same rows are imported again [DOM-099]
 * Relations: belongs to: account; cited by: 0 or 1 transaction
