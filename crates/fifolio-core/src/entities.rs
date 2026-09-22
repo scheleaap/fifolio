@@ -203,8 +203,11 @@ impl Security {
 pub struct RecordIdentity(String);
 
 impl RecordIdentity {
+    /// Crate-visible on purpose: `identity::identify` is the only way to obtain one from
+    /// outside, so an importer cannot build an unscoped identity by hand [DOM-024]. Storage
+    /// reads one back through the same constructor.
     #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
+    pub(crate) fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
