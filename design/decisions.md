@@ -325,3 +325,48 @@ ECB fallback is bounded: nothing before the series begins in 1999, and a substit
 seven days stale is an error. Report formats are named `human`, `csv` and `json`. Only attributed
 disposals contribute to the income tax overview; an unattributed one is reported as outstanding
 rather than counted as zero.
+
+**DEC-054 — Saxo's native fee is rounded to the money scale before the native gross is derived.**
+Against the general rule that intermediates keep full precision and round only at the storage
+boundary. Carried at full precision the sample buy yields a native unit price of `5.750036` where
+the broker statement shows `5.75`, which the requirement that prices reconcile against a broker
+document forbids. The native figures exist to be reconciled; that is the whole of their job, and
+the EUR figures the tax reports compute from are exact either way. Chosen deliberately so it reads
+as policy rather than as a rounding bug.
+
+**DEC-055 — A transfer's ratio is an exact integer pair, not a decimal.** The same reasoning that
+made a split's ratio a pair: a one-for-three ratio has no finite decimal expansion, so rounding it
+leaves a residue that grows across applications, and the requirement that emitted quantities sum
+exactly to the transferred quantity times the ratio is only well defined when the ratio is exact.
+The importer reduces the two stated quantities rather than dividing them.
+
+**DEC-056 — `Terugboeking` is a suffix, and a reversal subtracts both cash and costs.** The exports
+carry no bare `Terugboeking`: the observed values are `Terugkoopaanbod - Terugboeking` and
+`Dividend - Terugboeking`, so a suffixed value classifies as its prefix, reversing. Its cash
+subtracts, which the DeVolksbank tender confirms (`3946.14` paid, `-1998.07` reversed). Its costs
+subtract too, which the data does **not** confirm: both reversal rows carry zero costs, so the rule
+was chosen for arithmetic consistency with the cash rather than from evidence, and is flagged in
+`importers.md` as the thing to check if a costed reversal ever arrives. Summation is on the EUR
+figures, since a group's rows may carry different conversion rates.
+
+**DEC-057 — A spreadsheet row's "verbatim" form is a defined canonical rendering.** A spreadsheet
+row is typed cells and has no verbatim text, so any stored string is the importer's construction.
+Rather than weaken the audit trail by making the field optional, or change the storage schema to
+hold typed cells, the rendering is specified — cells as the file holds them, keyed by column name,
+in sheet column order — so that two implementations and two imports agree.
+
+**DEC-058 — Outstanding disposals are a count column, not a separate block.** The report must never
+understate a year silently, but a second record shape would give the CSV and JSON outputs two
+schemas and complicate every consumer. A per-row count preserves one shape, and a sentence in the
+human format carries the warning where there is room for it.
+
+**DEC-059 — Supersedes DEC-054: no rounding exception; the derived price is authoritative.**
+DEC-054 rounded Saxo's converted native fee to the money scale so the stored native price would
+match the statement, citing the requirement that prices reconcile against a broker document. That
+reasoning was wrong, because a more specific rule already settles it in the other direction: the
+`Acties` label's 2-decimal price must never be used for money, and the sample sell is deliberately
+stored as `30.654` against a printed `30.65`. A stored price is what the booked amounts imply, and
+it may differ from a rounded display in the trailing decimals. Adding an exception to preserve a
+promise the specification had already broken elsewhere would have made the rule incoherent rather
+than the arithmetic correct. `DOM-039` is restated to promise reconciliation against the booked
+amounts, which are exact, rather than against the printed unit price.

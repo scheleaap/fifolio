@@ -77,6 +77,12 @@ file's own `Omrekeningskoers` — not the stored rate, which is its reciprocal:
 `native fees = EUR fees / Omrekeningskoers`, and `native gross = |Boekingsbedrag| − native fees` for
 a buy, `+` for a disposal. [IMP-SAXO-030]
 
+That subtraction keeps full precision, like every other intermediate. The stored native unit price
+therefore need not equal the figure the statement prints: the sample buy stores `5.750036` against
+a printed `5.75`, exactly as the sample sell stores `30.654` against a printed `30.65`. The printed
+price is a rounded display, the derived one is what the booked amounts imply, and the derived one is
+authoritative. [IMP-SAXO-032]
+
 `factor` is the security's quotation factor: 1 per unit, 0.01 percent of par. Dividing by it here is
 what makes `EUR price` the quoted price the statement shows, so that the domain's
 `quantity × unit_price × factor` reproduces the gross exactly and the factor is applied once rather
@@ -126,6 +132,25 @@ Quantity and direction are only present inside the free-text `Acties` string: `K
 | `Omwisseling` | `transfer_out` | pending: the target security and the ratio |
 | `Dividend`, `Keuzedividend`, `Herbeleggingsdividend` | `buy` or none | see Dividends |
 | `Rente`, `Service fee`, `ADR-kosten`, `Storting`, `Opname` | none | recognized as non-position, not stored |
+
+### Reversals
+
+`Terugboeking` is never an `Acties` value on its own. It appears as a **suffix** on the action it
+reverses, and the value must be matched as such: the exports carry `Terugkoopaanbod - Terugboeking`
+and `Dividend - Terugboeking`. A suffixed value classifies as its prefix, reversing. [IMP-SAXO-033]
+
+A reversal row's cash **subtracts** from its group's summed cash; it is a claw-back, not a second
+payment. The sample is the DeVolksbank tender: `3946.14` paid, `-1998.07` reversed, `1948.07` net.
+
+Its costs also subtract. Both reversal rows in five years of exports carry **zero** in
+`Totale kosten`, so the rule is untested by the data and is chosen to be arithmetically consistent
+with the cash: whatever the reversal undoes, it undoes whole. If a reversal ever arrives carrying a
+non-zero cost, that is the point to check against a statement rather than trust this
+sentence. [IMP-SAXO-034]
+
+Summation happens on the **EUR** figures the rows carry, not on the native ones before conversion,
+because a group's rows may hold different `Omrekeningskoers` values and only booked EUR totals
+compute. [IMP-SAXO-035]
 
 ### `Deponering`
 
@@ -191,7 +216,7 @@ CSV, quoted, comma-delimited, dot decimals, ASCII, single header row, 23 columns
 
 * `date` is the effective date and becomes the **trade date**. `datetime` is a booking timestamp, used as an ordering column after the date; it is not an execution time and should not be described as one [IMP-TR-002]
 * `shares` carries the quantity; `price` the unit price [IMP-TR-022]
-* Rows are ordered on `date`, then `datetime`, then file position. The 2025 export is not sorted by either, so file position alone would order it wrongly [IMP-TR-023]
+* Rows are ordered on `date`, then `datetime`, then file position. The 2022 to 2024 exports ascend by both. The 2025 export ascends by `date` but **descends** by `datetime` within a date, so file position alone would order it wrongly [IMP-TR-023]
 * The two are independent fields, not derivable from each other. Across four years they agree on every trade, diverge by a day on three dividends (two of which cross midnight UTC) and by **six days** on the corporate action, which is booked after it takes effect [IMP-TR-015]
 * `transaction_id` is a UUID: a stable broker reference, used directly as the identity [IMP-TR-003]
 * Sign convention is cash flow, so buys and fees are negative [IMP-TR-004]
@@ -240,8 +265,10 @@ is TR's and the reading is inference from absence. The user's Trade Republic tax
 settles it, and a different answer there means revisiting this.
 
 Pairing key: same account, same effective `date`, same absolute quantity, opposite signs. The ratio
-is `|target quantity| / |source quantity|`. An unpaired row, or more than two rows sharing a key,
-**rejects the import**. [IMP-TR-019]
+is the **integer pair** `|target quantity| : |source quantity|`, reduced by their greatest common
+divisor and never divided out, for the reason a split's ratio is a pair: a one-for-three ratio has
+no finite decimal expansion, and rounding it leaves a residue that grows across applications. An
+unpaired row, or more than two rows sharing a key, **rejects the import**. [IMP-TR-019]
 
 The quantity sign decides which security closes and which opens. This narrows rather than
 contradicts the rule against inferring from shape: for a **recognized** type the sign is stated

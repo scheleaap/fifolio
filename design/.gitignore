@@ -2,3 +2,6 @@
 *.xls
 *.xlsx
 example_reports/
+
+# LibreOffice lock files leak the editing user and machine name
+.~lock.*#

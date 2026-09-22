@@ -63,6 +63,13 @@ Blocks: `IMP-SAXO-013`
 The classification table lists the values observed. Nothing says what an unlisted one does — reject
 the file, as an unknown Trade Republic type does, or something else.
 
+There is a live instance, so this is not hypothetical. The 2025 export carries one
+`Overige Corporate Action` row — Saxo's own junk drawer — on Eco Wave Power Global AB, 5 December
+2025: quantity `-1.03`, cash `-1.20 USD`, and `Totale kosten` `-1.03`. The share change and the
+cost are the same number, so the row is either a small fee or a write-off of shares booked as a
+cost, and those attribute differently. It needs an answer from the broker, not from the
+specification. Roughly one euro is at stake.
+
 **OQ-009 — The direction of the corporate-action ordinal.**
 Blocks: `IMP-SAXO-008`, `IMP-SAXO-025`
 Identity uses a row's ordinal within its group "in file order", while the file is newest-first and
@@ -96,3 +103,29 @@ value, which orders them where the export puts them.
 
 The mechanism in `ordering.rs` is unaffected either way and currently sorts absent first. What is
 blocked is the Saxo importer's binding of it.
+
+**OQ-014 — A stock dividend's cost basis.**
+Blocks: `IMP-SAXO-013`
+A `Herbeleggingsdividend` row carries a cash amount and no share count: `0.43 EUR` of ING, `0.12` of
+KPN. The shares it bought are in no column of the export, and Saxo's separate corporate-action
+report does not carry them either — its `Gekozen aantal` is the position the election was made on,
+not the shares received. So both the quantity and the price of the acquired parcel are absent, and
+the specification says nothing about where either comes from. This is the **largest** block of
+manual work in the sample: 19 events across four years, against 12 for every other corporate action
+combined. Whether the user supplies the share count per event, or the amount is treated as cash and
+the shares picked up elsewhere, decides how much of the tool's use is data entry.
+
+**OQ-015 — Verifying the account id against a Trade Republic file.**
+Blocks: `IMP-003`, `SRV-056`
+An import is required to check that the file belongs to the account it is being imported into. The
+Trade Republic export carries no account identifier of any kind, so the check has nothing to read
+and cannot run. Either the requirement admits formats that cannot be checked, or Trade Republic
+files are matched some other way.
+
+**OQ-016 — Whether a transfer's own fee is basis or fees.**
+Blocks: `DOM-106`, `DOM-112`
+A transfer can itself cost money. Whether that fee joins the cost basis travelling to the new parcel,
+or is recorded as fees on the emitted record, is unstated, and the two produce different gains on the
+eventual disposal. Related to OQ-003, which asks the same of the *allocated* buy fee rather than the
+transfer's own.
+

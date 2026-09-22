@@ -38,6 +38,7 @@ Security
 
 Source record
 * One parsed row of a broker export, stored verbatim alongside its parsed fields. [DOM-007] Never edited after creation [DOM-008]
+* A delimited format has a verbatim line and stores it. A spreadsheet row has none — it is typed cells — so it stores a **canonical rendering**: each cell as the file holds it (an Excel serial date stays `45208`), keyed by column name, in sheet column order. This is a rendering, not the row, and it is defined here only so that re-importing the same file reproduces the same string [DOM-120]
 * Fields: raw content, parsed fields, identity (see Identity), order (see Ordering), consumed or not
 * Relations: belongs to: >= 1 import batches; consumed by: 0 or 1 transaction; cited by: >= 0 transactions
 
@@ -122,7 +123,7 @@ The quotation is a property of the security, defaulted from the broker's instrum
 
 **The factor is applied exactly once**, when a quoted price becomes a value. [DOM-087] A unit price derived by dividing a value by a quantity is already an effective price and the factor must not be applied to it again.
 
-Prices are stored exactly as the statement shows them, so a figure in the application can always be reconciled against a broker document. [DOM-039]
+Prices are **derived from the booked amounts**, not copied from the figure a statement prints. The two agree to the cent in the ordinary case and diverge in the trailing decimals when the broker's display rounds: a sell booked at 1833.24 over 60 units is `30.654`, printed as `30.65`. Reconciliation against a broker document is therefore on the **booked amounts**, which are exact, and not on the printed unit price. [DOM-039]
 
 # Ordering
 
@@ -241,7 +242,8 @@ Both reports accept an optional account filter and an optional tax year filter. 
 Income tax overview
 * Gain/loss per year, per account. The year is the year of the disposal [DOM-074]
 * Only attributed disposals contribute. An unattributed disposal is reported as outstanding rather than counted at zero, so a year is never understated silently [DOM-117]
-* Columns: year, account, proceeds, sell fees, cost, buy fees, gain/loss [DOM-075]
+* Columns: year, account, proceeds, sell fees, cost, buy fees, gain/loss, and a count of outstanding disposals [DOM-075]
+* The count is a column rather than a second block, so every output format keeps one record shape. A non-zero count means the year's figures are incomplete and the report says so in plain words wherever it has room for a sentence [DOM-121]
 * A `transfer_out` realizes nothing and contributes no row [DOM-095]
 
 Acquisition report

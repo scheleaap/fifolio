@@ -84,6 +84,16 @@ Anonymization replaces account ids, client ids, personal names, IBANs and instru
 * Saxo: XLSX container, Dutch headers, the non-breaking spaces and the leading space in header names, Excel serial dates, the per-currency account suffix, the free-text `Acties` strings with their rounded prices, multi-row corporate actions sharing a `Corporate action-Id`, reversal rows, and at least one row of every `Acties` value observed
 * Trade Republic: quoted CSV, the full column set, ISO-8601 timestamps with sub-second precision, UUID transaction ids, negative cash-flow amounts, and populated `original_*` columns
 
+Anonymization perturbs **amounts only**. Quantities and dates are left alone, because both are
+structural: a perturbed quantity breaks the share counts a corporate action is recognized by, and a
+perturbed date breaks the per-file calendar-year boundary and the ordering cases. [TST-028] Free
+text naming a security is rebuilt rather than stripped, since a `Acties` label carries an
+instrument name no column holds. [TST-029]
+
+A fixture writer cannot reproduce every byte of a broker's file, and need not. The one known
+divergence is that a Saxo blank cell round-trips as an empty cell rather than as a zero-length
+shared string; the reader must accept both, and a test says so. [TST-030]
+
 Fixtures test **parsing, classification and idempotency**. They do not test arithmetic, because anonymization perturbs the numbers. [TST-014]
 
 # Arithmetic
