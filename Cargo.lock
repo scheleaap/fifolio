@@ -970,6 +970,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "rust_decimal",
  "rust_decimal_macros",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "sha2 0.11.0",

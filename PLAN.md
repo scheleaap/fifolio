@@ -244,7 +244,7 @@ The one thing that landed in `design/` while that tree sat there is DEC-067 (`72
 Done in revision 20, commit `e5c2900`, which committed the tree revision 19 found uncommitted. Verified against the code rather than the message: `migrations/0001_initial.sql` is applied on connection from an embedded migrator, `./fifolio.db` is the default and `--database`'s override is a parameter of the open call [ARC-011 to ARC-014]; each transaction variant has a detail table of its own rather than one wide nullable table, so a row of one variant cannot be read as another; `Isin` is the securities primary key and trims and uppercases on construction, a second insert reporting `DuplicateIsin` [DOM-071]; `codec::at_scale` is the only path a decimal takes to a column and refuses an over-scaled figure with `StorageError::UnscaledValue`, asserted once per scale — money 2, unit price 6, FX rate 6, quantity 8 — which is the DEC-067 clause. No transaction-to-account, -security or -record relation was invented, as this item required. Twenty-two integration tests against a real temporary database [TST-004]; the workspace suite is 208 tests, 0 failures, on a clean tree.
 
 ## FIF-012 Storage-enforced invariants
-Status: todo
+Status: done
 Requirements: DOM-066, DOM-068, DOM-069, DOM-072, DOM-094, DOM-110, DOM-119
 Depends on: FIF-011
 Acceptance: each invariant is refused at the persistence/service boundary with a distinguishable error: a closing may only be attributed if every earlier closing of the same account and security is attributed; an attribution may only be deleted if no later attribution exists for that account and security; a transaction in an attribution cannot be edited, re-rated or deleted; a `transfer_in` emitted by a `transfer_out` cannot be deleted independently of it; a manual entry is never deleted by an import undo; a batch may only be deleted if no transaction derived from it participates in an attribution, and if no record it owns is cited by a transaction the batch did not derive, the refusal naming those transactions. Integration tested against a real temporary database, one test per invariant.
@@ -255,6 +255,7 @@ What this item owns is refusal, not computation. Allocation *figures* are FIF-01
 Each refusal needs a distinguishable error in the FIF-011 style — `StorageError::UnscaledValue` is the precedent — and one integration test per invariant against a real temporary database [TST-004], using `fifolio-test-support`'s helper. Seven requirements, so seven refusals: DOM-066 order of attribution, DOM-068 deletion of an attribution, DOM-069 immutability of an attributed transaction, DOM-094 the emitted `transfer_in`, DOM-110 an import undo sparing a manual entry, DOM-072 and DOM-119 the two batch-deletion refusals, the second naming the transactions that block it.
 DOM-110 is stated here while the undo behavior it protects is FIF-062's; assert it as the storage-level refusal, not by running an undo.
 Revision 24 re-confirmed this item as next and confirmed it was **not started**: revision 23 named it, the session then stopped, and the tree carries no untracked source file. The base is `6db99f1`, suite green at 237 tests. Nothing about the scope above changed.
+Done in revision 25, commit `3136a8a`: migration `0003_invariants.sql` adds the relations the invariants read (attribution keyed on account and security with its allocations, a transaction's account and security, a record's owning batch, the `transfer_out`-to-`transfer_in` emission link) and no more; each refusal is its own `StorageError` variant — `EarlierClosingUnattributed`, `LaterAttributionExists`, `TransactionAttributed`, `EmittedTransferIn`, `BatchTransactionAttributed`, `BatchRecordsCited` — and `crates/fifolio-core/tests/invariants.rs` covers all seven requirements against a real temporary database. Two things the implementation pinned that later items inherit: `approve(closing, &[])` stores an attribution with no allocation rows and that closing then unblocks later ones (FIF-078 must refuse it under DOM-065, and that is a change to a test written here), and an emitted `transfer_in` belongs to no batch, so an undo reaches it only through the group its `transfer_out` heads.
 
 ## FIF-078 Allocation quantity invariants
 Status: blocked
@@ -339,6 +340,7 @@ Status: todo
 Requirements: DOM-002, DOM-042, DOM-044, DOM-045, DOM-046, DOM-048, DOM-120, DOM-124, ARC-023
 Depends on: FIF-007, FIF-011
 Acceptance: an importer trait over a source file that yields source records; rows where every field the variant needs is present and unambiguous are derived automatically; rows that affect holdings but lack something only the user knows become pending, which is the completion queue; **cash** dividends, interest, deposits, withdrawals and account fees are recognized as non-position, counted and not stored, while a dividend that issues shares is a position event whose rows are stored and whose buy carries a stock-dividend origin; everything the user supplies becomes a manual entry. XLSX reading via `calamine` and CSV via `csv` sit behind the same reader abstraction; a delimited row stores its verbatim line while a spreadsheet row, having none, stores the canonical rendering `domain.md` defines — each cell as the file holds it, an Excel serial date staying `45208`, keyed by column name in sheet column order — so that re-reading the same file reproduces the same string.
+Named next to build in revision 25: the first `todo` in document order whose dependencies, FIF-007 and FIF-011, are both `done`, and none of whose nine requirements is on a `Blocks:` line. Everything ahead of it in the plan is either `done`, `blocked`, or waits on a `blocked` item — FIF-060 on FIF-058, FIF-013 on FIF-076 — so the import framework, not the FIFO engine, is where decided work continues.
 Notes: DOM-120 is new in revision 7 (DEC-057) and sits here because the reader abstraction is what constructs the stored raw content; FIF-005, which owns the `SourceRecord` type, is `done` and its field is untyped as to how it was rendered. DOM-043, the classification taxonomy these three outcomes belong to, moved to FIF-064 in revision 2. Revision 3 moves DOM-047, "nothing is invented", to FIF-081, it being undecided; the three outcomes stand without it.
 DOM-124 is new in revision 14 (DEC-063) and sits here rather than in FIF-025 because it is the exception clause on DOM-002 and DOM-046, which this item owns; it is format-agnostic, and the Saxo heuristic that recognizes such a dividend is FIF-025's, which already derives the buy. Nothing completed is invalidated: the classification is not built yet.
 
@@ -760,7 +762,26 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 24 (this run).** A resumption check after the previous session was stopped mid-run.
+**Revision 25 (this run).** A resumption after the session was stopped to shut the machine down.
+The stop came *after* the work, not before it: `HEAD` is now `3136a8a`, which carries revision 24's
+own plan entry and the whole of FIF-012 in one commit, so the plan said `todo` about an item that
+was already built. **FIF-012 is `done`.** Verified rather than assumed: the seven requirements each
+have a distinguishable `StorageError` variant and an integration test against a real temporary
+database, `cargo test -p fifolio-core --test invariants` gives 17 passed, and
+`cargo test --workspace` on the clean tree gives **254 passed, 0 failed** — up from 237 at revision
+24, the 17 new tests being exactly this item's. `design/` is still unchanged since `d160fee`, so no
+completed work is invalidated and no requirement moved. Re-verified mechanically: **333** live
+identifiers in `design/`, each named by exactly one item, the nine retired ones assigned to nothing;
+**32** blocked ids across OQ-001 to OQ-016; **23** items `blocked` and no item blocked on anything
+else; 91 items, now 19 `done`, 49 `todo`.
+
+* **Added / split / dropped / re-scoped / renumbered:** none. No dependency moved. **Uncovered:** none.
+* **Completed:** FIF-012. **Newly blocked:** none. **Unblocked:** none.
+* Next to build is **FIF-017**, the import and derivation framework. FIF-012's own successor
+  FIF-060 waits on FIF-058 and the FIFO chain waits on FIF-076, both `blocked`, so the first
+  `todo` whose dependencies are all `done` is the importer trait and the reader abstraction.
+
+**Revision 24.** A resumption check after the previous session was stopped mid-run.
 Nothing moved since revision 23: `HEAD` is still `6db99f1`, `design/` is unchanged since `d160fee`,
 the only modified file is this plan (revision 23's own entry, never committed), and no source file
 is untracked, so **FIF-012 was not started** before the stop. Re-verified mechanically: **333**
@@ -1092,6 +1113,11 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Re-verified again in revision 25 by the same script, against a `design/` unchanged since `d160fee`:
+**333** ids, each named by exactly one item, none uncovered, none deferred; the twenty-three items
+carrying one of the thirty-two blocked ids are `blocked` and no others are. FIF-012 moving to `done`
+changed no assignment.
 
 Re-verified again in revision 24 by the same script, against an unchanged `design/`: **333** ids,
 each named by exactly one item, none uncovered, none deferred; the twenty-three items carrying one

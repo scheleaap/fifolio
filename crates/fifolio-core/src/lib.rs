@@ -7,6 +7,7 @@ pub mod ecb;
 pub mod entities;
 pub mod fx;
 pub mod identity;
+pub mod import;
 pub mod manual_entry;
 pub mod ordering;
 pub mod precision;
