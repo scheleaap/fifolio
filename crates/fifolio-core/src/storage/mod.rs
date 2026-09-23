@@ -43,6 +43,10 @@
 //! [`StorageError`], so a caller can tell which rule it met. A manual entry has no relation to an
 //! import at all, which is what makes DOM-110 a property of the schema rather than a check.
 //!
+//! What an entry does have is the lifecycle that invariant protects: it is listed as waiting
+//! while the records it names are absent and reconnected to them when an import brings them back
+//! [DOM-108], [DOM-109]. Both are [`ManualEntryRepository`]'s.
+//!
 //! What is *not* here is computation: which openings a closing should consume is the FIFO
 //! engine's, the allocated figures are derived on demand, and both are other items'. A
 //! repository stores the allocation a caller approved and refuses the ones the invariants
@@ -64,7 +68,7 @@ pub use attributions::{Allocation, Attribution, AttributionId, AttributionReposi
 pub use entities::{
     AccountRepository, BatchId, ImportBatchRepository, SecurityRepository, SourceRecordRepository,
 };
-pub use manual_entries::{ManualEntryId, ManualEntryRepository};
+pub use manual_entries::{ManualEntryId, ManualEntryRepository, ReconnectedEntry, WaitingEntry};
 pub use rates::{CachedRates, RateRepository};
 pub use transactions::{Placement, TransactionId, TransactionRepository};
 

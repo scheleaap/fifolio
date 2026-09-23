@@ -355,7 +355,7 @@ Blocked by: DOM-047 is on the undecided list, as is its server-side counterpart 
 Notes: Split out of FIF-017 in revision 3.
 
 ## FIF-064 Import classification taxonomy
-Status: todo
+Status: done
 Requirements: DOM-043
 Depends on: FIF-017
 Acceptance: the classification a source record receives at import is a closed, stated set, and every importer maps into it exhaustively.
@@ -363,6 +363,7 @@ Notes: Split out of FIF-017 in revision 2 and blocked then; DOM-043 left the und
 Named next to build in revision 26. FIF-017 is `done` (`bb09bb0`), DOM-043 is on no `Blocks:` line, and it is the first `todo` in document order whose dependency is `done` — everything ahead of it is `done`, `blocked`, or waiting on a `blocked` item (FIF-060 on FIF-058, FIF-013 and FIF-014 on FIF-076 and FIF-061).
 Read this before starting: **most of the type this item asks for already exists.** FIF-017 shipped `RowClassification` — `DerivedAutomatically`, `Pending`, `NonPosition(NonPositionKind)` — and made `Importer::classify` a required trait method returning it, so the set is closed by the enum and no format can answer outside it. The honest residual increment is therefore small and is these three things, not a new type: (a) the set is *stated* as the taxonomy of DOM-043, in one place, with the rule that a new classification is an amendment to `domain.md` and never a format's invention; (b) exhaustiveness is guaranteed mechanically against importers that do not exist yet — no catch-all variant, no `Default`, no path that returns a classification without deciding one; (c) a test that names DOM-043 and fails if the set grows a variant nothing maps to.
 If review finds all three already true of `bb09bb0`, say so and close the item against that commit rather than inventing work to justify it; an item whose substance landed inside its predecessor is a real outcome and belongs in the record. What it must **not** do is grow into the per-format classifiers — Saxo's is FIF-023 and blocked (OQ-005, OQ-008, OQ-014), Trade Republic's is FIF-029.
+Done in revision 27, commit `3e9fe46`. It went the way the note allowed for: mostly a review that closed DOM-043 against what FIF-017 had already shipped, plus the three residual things, and no new type. (a) `RowClassification`'s documentation now states the set as *the* taxonomy of DOM-043 and says a new classification is an amendment to `domain.md` first and never a format's invention; the module header points at it as the only statement. (b) The closure is mechanical, not asserted: no catch-all variant, no `Default`, and `Importer::classify` must answer one of the three per row, so a row a format cannot place is a `RowError` rather than a fourth outcome. (c) `the_classification_taxonomy_is_the_three_outcomes_of_dom_043` pins the set with `strum::EnumCount` against the outcomes an import actually reaches, and asserts each outcome is reached by a row, so a variant nothing maps to fails rather than passes unnoticed. `cargo test --workspace` on the clean tree: **300 passed, 0 failed**, up from 299.
 
 ## FIF-062 Manual entry lifecycle across undo and re-import
 Status: todo
@@ -370,6 +371,11 @@ Requirements: DOM-108, DOM-109
 Depends on: FIF-059, FIF-017
 Acceptance: undoing an import removes its source records and the transactions derived from them and leaves every manual entry standing; re-importing the same rows reconnects each entry by the record identities it names and restores its transaction automatically, so an undo followed by a re-import returns the account exactly where it was; an entry whose records are absent is listed as waiting, naming what it expects.
 Notes: New in this revision (DEC-038). This is the behavior the separate manual-entry entity exists for, and TST-010's last property asserts it.
+Named next to build in revision 27. Its two dependencies are `done` — FIF-059 (`4af8667`, widened by FIF-092 in `cd09f97`) and FIF-017 (`bb09bb0`) — neither DOM-108 nor DOM-109 is on a `Blocks:` line, and everything ahead of it in document order is `done`, `blocked`, or waiting on a `blocked` item: FIF-060 on FIF-058, FIF-013 on FIF-076, FIF-014 and FIF-015 on FIF-061 and FIF-013, FIF-016 on FIF-061 and FIF-063.
+What it can build on and what it must not assume: FIF-011 (`e5c2900`) persists `ManualEntry` with its `Vec<RecordIdentity>` references, which is what a reconnection reads, and FIF-012 (`3136a8a`) already refuses to delete a manual entry on an import undo [DOM-110] as a storage invariant. This item is the *behavior* that invariant protects — the undo itself, the reconnection on re-import, and the waiting listing — not a second copy of the refusal.
+Two things earlier items pinned that bear on the undo path. FIF-012's note records that an emitted `transfer_in` belongs to no batch, so an undo reaches it only through the group its `transfer_out` heads; that path is FIF-063's and blocked, so scope this item to records and transactions a batch owns and say so where the code would otherwise look incomplete. And a transaction's relation to the source records it was derived from is still DOM-013 in the blocked FIF-076, so "the transactions derived from them" must be read through the `derived_by_batch` relation FIF-011 and FIF-012 actually store, not through a record-level relation this item would have to invent.
+The re-import half is testable end to end against the framework FIF-017 shipped, since identity [DOM-022 to DOM-024, FIF-007] is what a reconnection matches on and is `done`; TST-010's last property ("an undo followed by a re-import restores exactly the transactions that existed before") is **FIF-016's** to assert as a property test and must not be pulled forward here.
+Where DOM-108 is split, recorded in review: what this item ships is the *pairing* — `reconnected(batch)` hands back each entry the import completed with the records it answers, which is everything a derivation needs and is what makes the restoration ask the user nothing. The clause "its transaction is restored automatically" also needs a caller that derives and stores, and no derivation path from records to a `Transaction` exists in the workspace yet; that wiring is **SRV-055, FIF-072's**, whose acceptance already carries it word for word and which depends on this item. Two things FIF-072 inherits, both stated on `reconnected`: the listing is presence-based, so a *first* import of an entry's rows reports it exactly as a re-import does and the caller owns the idempotency check that keeps SRV-055 from storing a second copy of a transaction that already exists; and a record an approval emitted belongs to no batch, so that path stays FIF-063's.
 
 ## FIF-065 Import guard: one calendar year per file
 Status: todo
@@ -767,7 +773,32 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 26 (this run).** A resumption after the machine was shut down, and the same shape as
+**Revision 27 (this run).** A resumption after the machine was shut down, and the third consecutive
+revision of that shape: the stop came *after* the work, not before it. `HEAD` is now `3e9fe46`,
+which carries revision 26's own plan entry and the whole of FIF-064 in one commit, so the plan again
+said `todo` about an item that was already built. **FIF-064 is `done`.** Verified against the code
+rather than the commit message: `RowClassification` states DOM-043's set in one place with the
+amendment rule, there is no catch-all variant and no `Default`, and the new test pins the set with
+`strum::EnumCount` against the outcomes an import reaches and asserts every outcome is reached.
+`cargo test --workspace` on the clean tree gives **300 passed, 0 failed**, up from 299. `design/` is
+unchanged since `d160fee`, so no completed work is invalidated and no requirement moved.
+Re-verified mechanically: **333** live identifiers in `design/`, each named by exactly one item, the
+nine retired ones assigned to nothing; **32** blocked ids across OQ-001 to OQ-016; **23** items
+`blocked` and no item blocked on anything else; 91 items, now 21 `done`, 47 `todo`.
+
+* **Added / split / dropped / re-scoped / renumbered:** none. No dependency moved. **Uncovered:** none.
+* **Completed:** FIF-064. **Newly blocked:** none. **Unblocked:** none.
+* Next to build is **FIF-062**, the manual-entry lifecycle across undo and re-import. It is the
+  first item to exercise an undo, and the first behavioral item outside the importers whose two
+  dependencies are both `done`.
+* Worth saying plainly, since it is now a pattern rather than an incident: three revisions running
+  have found the previous session's work committed and the plan one revision behind, because the
+  plan entry and the code land in the same commit and the run that would flip the status is the one
+  that gets interrupted. Nothing is lost — the commit is the record — but a reviewer reading
+  `PLAN.md` at `HEAD` sees a stale status. If a fourth revision finds the same, the fix is to the
+  hand-off order, not to any item.
+
+**Revision 26.** A resumption after the machine was shut down, and the same shape as
 revision 25: the stop came *after* the work. `HEAD` is now `bb09bb0`, which carries revision 25's
 plan entry and the whole of FIF-017 in one commit, so the plan again said `todo` about an item that
 was already built. **FIF-017 is `done`.** Verified against the code rather than the commit message —
@@ -1138,6 +1169,11 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Re-verified again in revision 27 by the same script, against a `design/` unchanged since `d160fee`:
+**333** ids, each named by exactly one item, none uncovered, none deferred; the twenty-three items
+carrying one of the thirty-two blocked ids are `blocked` and no others are. FIF-064 moving to `done`
+changed no assignment.
 
 Re-verified again in revision 25 by the same script, against a `design/` unchanged since `d160fee`:
 **333** ids, each named by exactly one item, none uncovered, none deferred; the twenty-three items
