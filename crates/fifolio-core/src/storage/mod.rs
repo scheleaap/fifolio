@@ -10,10 +10,11 @@
 //! The types built so far: [`Account`], [`Security`], [`SourceRecord`], [`ImportBatch`], the six
 //! [`Transaction`] variants with their [`Valued`] pairs and [`Conversion`], and [`ManualEntry`]
 //! with its [`Supplied`] shapes, plus the ECB daily reference rates the imports resolve against
-//! [ARC-015]. No column exists for a rule that is still undecided — a
-//! transaction has no relation to an account, a security or a source record, that being DOM-013
-//! and FIF-076's — because a guessed column is a schema that must be unpicked rather than
-//! extended.
+//! [ARC-015], the approved attributions with their allocations, and the relations the invariants
+//! below read: a transaction's account and security and the import that derived it, a source
+//! record's owning batch, and the `transfer_in` a `transfer_out` emitted. No column exists for a
+//! rule that is still undecided — which source record a transaction *consumes* is DOM-013 and
+//! FIF-076's — because a guessed column is a schema that must be unpicked rather than extended.
 //!
 //! [`Account`]: crate::entities::Account
 //! [`Security`]: crate::entities::Security
@@ -33,12 +34,21 @@
 //! column, so a rounding the caller never performed cannot be attributed to it afterwards. See
 //! [`codec::at_scale`].
 //!
-//! # Why every repository is insert-and-read-back
+//! # The invariants, and where they are refused
 //!
-//! Deletion, listing and the invariants that refuse a write are FIF-012's and later; this item
-//! owns the file, the migrations and the mapping. Adding a method here that no requirement asks
-//! for would be guessing at the query the service layer will want.
+//! The lifecycle invariants are enforced here rather than trusted to a caller: attribution in
+//! canonical order [DOM-066], deletion of an attribution [DOM-068], the immutability of an
+//! attributed transaction [DOM-069], the emitted `transfer_in` [DOM-094], and the two refusals a
+//! batch deletion answers to [DOM-072], [DOM-119]. Each has an error of its own on
+//! [`StorageError`], so a caller can tell which rule it met. A manual entry has no relation to an
+//! import at all, which is what makes DOM-110 a property of the schema rather than a check.
+//!
+//! What is *not* here is computation: which openings a closing should consume is the FIFO
+//! engine's, the allocated figures are derived on demand, and both are other items'. A
+//! repository stores the allocation a caller approved and refuses the ones the invariants
+//! forbid.
 
+mod attributions;
 mod codec;
 mod entities;
 mod manual_entries;
@@ -50,12 +60,13 @@ use std::path::Path;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 
+pub use attributions::{Allocation, Attribution, AttributionId, AttributionRepository};
 pub use entities::{
     AccountRepository, BatchId, ImportBatchRepository, SecurityRepository, SourceRecordRepository,
 };
 pub use manual_entries::{ManualEntryId, ManualEntryRepository};
 pub use rates::{CachedRates, RateRepository};
-pub use transactions::{TransactionId, TransactionRepository};
+pub use transactions::{Placement, TransactionId, TransactionRepository};
 
 /// The database file used when nothing names another [ARC-013].
 ///
@@ -84,10 +95,91 @@ pub enum StorageError {
     /// code written by a version that is no longer this one.
     #[error("the stored {field} {value:?} cannot be read back")]
     CorruptValue { field: &'static str, value: String },
+    /// No transaction with this id is stored, so nothing can be said about it.
+    #[error("no transaction {transaction} is stored")]
+    UnknownTransaction { transaction: TransactionId },
+    /// Both attribution invariants are stated over closings, so an opening cannot be attributed
+    /// [DOM-066], [DOM-068].
+    #[error("transaction {transaction} is a {kind} and not a closing")]
+    NotAClosing {
+        transaction: TransactionId,
+        kind: String,
+    },
+    /// A relation stated over two kinds refuses a transaction of any other: the emission link is
+    /// between a `transfer_out` and the `transfer_in` it emitted, and freezing an unrelated
+    /// transaction under it would make it deletable only through a transaction it has nothing to
+    /// do with [DOM-094].
+    #[error("transaction {transaction} is a {kind} and not a {expected}")]
+    NotOfKind {
+        transaction: TransactionId,
+        expected: &'static str,
+        kind: String,
+    },
+    /// A closing is attributed once; re-approving it is a second attribution of the same closing
+    /// [DOM-066].
+    #[error("closing {closing} already carries attribution {attribution}")]
+    ClosingAlreadyAttributed {
+        closing: TransactionId,
+        attribution: AttributionId,
+    },
+    /// Closings are attributed in canonical order per account and security [DOM-066].
+    #[error(
+        "closing {closing} cannot be attributed while the earlier closing {earlier} of the same \
+         account and security is unattributed"
+    )]
+    EarlierClosingUnattributed {
+        closing: TransactionId,
+        earlier: TransactionId,
+    },
+    /// An attribution may only be deleted if no later one exists for that pair [DOM-068].
+    #[error(
+        "attribution {attribution} cannot be deleted while the later attribution {later} of the \
+         same account and security exists"
+    )]
+    LaterAttributionExists {
+        attribution: AttributionId,
+        later: AttributionId,
+    },
+    /// A transaction that participates in an attribution is immutable [DOM-069].
+    #[error("transaction {transaction} participates in attribution {attribution}")]
+    TransactionAttributed {
+        transaction: TransactionId,
+        attribution: AttributionId,
+    },
+    /// An emitted `transfer_in` is deleted with the `transfer_out` that emitted it, never on its
+    /// own [DOM-094].
+    #[error("transfer_in {transfer_in} was emitted by transfer_out {transfer_out}")]
+    EmittedTransferIn {
+        transfer_in: TransactionId,
+        transfer_out: TransactionId,
+    },
+    /// A batch whose transactions are attributed stays [DOM-072].
+    #[error("batch {batch} derived transactions that participate in an attribution: {}", ids(.transactions))]
+    BatchTransactionAttributed {
+        batch: BatchId,
+        transactions: Vec<TransactionId>,
+    },
+    /// A batch whose records another import's transactions cite stays, and the refusal names
+    /// those transactions [DOM-119].
+    #[error("batch {batch} owns records cited by transactions it did not derive: {}", ids(.transactions))]
+    BatchRecordsCited {
+        batch: BatchId,
+        transactions: Vec<TransactionId>,
+    },
     #[error(transparent)]
     Database(#[from] sqlx::Error),
     #[error(transparent)]
     Migration(#[from] sqlx::migrate::MigrateError),
+}
+
+/// Row ids as an error message names them: a refusal that names nothing a caller can look up is
+/// a refusal they cannot act on [DOM-119].
+fn ids(transactions: &[TransactionId]) -> String {
+    transactions
+        .iter()
+        .map(|id| id.get().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// An open database: a connection pool whose schema is already current.
@@ -143,6 +235,12 @@ impl Database {
         TransactionRepository::new(&self.pool)
     }
 
+    /// The approved attributions and their allocations [DOM-054], [DOM-058].
+    #[must_use]
+    pub fn attributions(&self) -> AttributionRepository<'_> {
+        AttributionRepository::new(&self.pool)
+    }
+
     #[must_use]
     pub fn manual_entries(&self) -> ManualEntryRepository<'_> {
         ManualEntryRepository::new(&self.pool)
@@ -174,6 +272,13 @@ macro_rules! row_id {
             #[must_use]
             pub fn get(self) -> i64 {
                 self.0
+            }
+        }
+
+        /// So a refusal can name the row it is about [DOM-119].
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
             }
         }
     };

@@ -16,7 +16,7 @@ use fifolio_core::entities::{
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use fifolio_core::storage::{
-    BatchId, DEFAULT_DATABASE_PATH, Database, ManualEntryId, StorageError, TransactionId,
+    BatchId, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, StorageError, TransactionId,
 };
 use fifolio_core::transaction::{
     Buy, BuyOrigin, DateProvenance, Derivation, Expiration, Sell, Split, Transaction, TransferIn,
@@ -74,6 +74,35 @@ async fn open() -> (TempDb, Database) {
     (db, database)
 }
 
+/// The account, the security and the import a transaction or a source record refers to.
+///
+/// A placement carries foreign keys to all three [DOM-066], [DOM-072], [DOM-119], so the rows
+/// must be there before anything is placed against them; the security is written first, which is
+/// the order the initial schema left to this item.
+async fn place(database: &Database) -> (Placement, BatchId) {
+    database
+        .accounts()
+        .insert(&account())
+        .await
+        .expect("the account");
+    database
+        .securities()
+        .insert(&Security::auto_created(
+            isin(),
+            "NN Group",
+            SecurityType::Stock,
+            Quotation::PerUnit,
+        ))
+        .await
+        .expect("the security");
+    let batch = database
+        .import_batches()
+        .insert(&batch(SourceFormat::SaxoNlXlsx))
+        .await
+        .expect("the batch");
+    (Placement::derived(account(), isin(), batch), batch)
+}
+
 /// The tables a migration from empty must create, by name.
 async fn table_names(path: &std::path::Path) -> Vec<String> {
     let pool = SqlitePool::connect(&format!("sqlite://{}", path.display()))
@@ -118,6 +147,10 @@ async fn opening_an_absent_file_creates_it_and_migrates_from_empty() {
         "manual_entry",
         "manual_entry_answer",
         "fx_rate",
+        "transaction_placement",
+        "attribution",
+        "attribution_allocation",
+        "emitted_transfer_in",
         "_sqlx_migrations",
     ] {
         assert!(
@@ -295,9 +328,10 @@ async fn a_source_record_round_trips_with_its_parsed_fields() {
         ]),
     );
 
+    let (_placement, batch) = place(&database).await;
     database
         .source_records()
-        .insert(&record)
+        .insert(batch, &record)
         .await
         .expect("insert");
 
@@ -457,10 +491,11 @@ async fn every_transaction_variant_round_trips() {
         Split::new(Derivation::new(date(), [cite("4100200302")])).into(),
     ];
 
+    let (placement, _batch) = place(&database).await;
     for transaction in variants {
         let id = database
             .transactions()
-            .insert(&transaction)
+            .insert(&placement, &transaction)
             .await
             .expect("insert");
 
@@ -480,9 +515,10 @@ async fn citations_keep_their_order() {
     let cites = [cite("c"), cite("a"), cite("b")];
     let transaction: Transaction = Split::new(Derivation::new(date(), cites.clone())).into();
 
+    let (placement, _batch) = place(&database).await;
     let id = database
         .transactions()
-        .insert(&transaction)
+        .insert(&placement, &transaction)
         .await
         .expect("insert");
     let stored = database
@@ -499,9 +535,10 @@ async fn citations_keep_their_order() {
 #[tokio::test]
 async fn an_absent_transaction_reads_back_as_none() {
     let (_db, database) = open().await;
+    let (placement, _batch) = place(&database).await;
     let id = database
         .transactions()
-        .insert(&Split::new(derivation()).into())
+        .insert(&placement, &Split::new(derivation()).into())
         .await
         .expect("insert");
     let absent = TransactionId::new(id.get() + 1);
@@ -588,7 +625,8 @@ async fn a_value_not_at_its_scale_is_refused_rather_than_truncated() {
     )
     .into();
 
-    match database.transactions().insert(&unscaled).await {
+    let (placement, _batch) = place(&database).await;
+    match database.transactions().insert(&placement, &unscaled).await {
         Err(StorageError::UnscaledValue {
             field,
             value,
@@ -661,7 +699,12 @@ async fn a_unit_price_beyond_six_decimals_is_refused() {
     )
     .into();
 
-    match database.transactions().insert(&transaction).await {
+    let (placement, _batch) = place(&database).await;
+    match database
+        .transactions()
+        .insert(&placement, &transaction)
+        .await
+    {
         Err(StorageError::UnscaledValue { field, scale, .. }) => {
             assert_eq!(field, "unit_price");
             assert_eq!(scale, 6);
@@ -689,7 +732,12 @@ async fn an_fx_rate_beyond_six_decimals_is_refused() {
     )
     .into();
 
-    match database.transactions().insert(&transaction).await {
+    let (placement, _batch) = place(&database).await;
+    match database
+        .transactions()
+        .insert(&placement, &transaction)
+        .await
+    {
         Err(StorageError::UnscaledValue { field, scale, .. }) => {
             assert_eq!(field, "conversion_rate");
             assert_eq!(scale, 6);
@@ -711,9 +759,10 @@ async fn a_short_money_figure_is_stored_padded() {
     )
     .into();
 
+    let (placement, _batch) = place(&database).await;
     database
         .transactions()
-        .insert(&transaction)
+        .insert(&placement, &transaction)
         .await
         .expect("insert");
 
@@ -794,7 +843,10 @@ async fn a_stored_code_this_version_cannot_read_is_reported() {
         .expect("insert");
     let transaction = database
         .transactions()
-        .insert(&Split::new(derivation()).into())
+        .insert(
+            &Placement::emitted(account(), isin()),
+            &Split::new(derivation()).into(),
+        )
         .await
         .expect("insert");
     let entry = database
@@ -848,9 +900,11 @@ async fn a_stored_code_this_version_cannot_read_is_reported() {
 #[tokio::test]
 async fn a_stored_figure_that_is_not_a_decimal_is_reported() {
     let (db, database) = open().await;
+    let (placement, _batch) = place(&database).await;
     let id = database
         .transactions()
         .insert(
+            &placement,
             &Sell::new(
                 derivation(),
                 Quantity::new(dec!(55)),
@@ -886,11 +940,7 @@ async fn a_stored_figure_that_is_not_a_decimal_is_reported() {
 #[tokio::test]
 async fn a_hand_edited_nullable_or_structured_column_is_reported() {
     let (db, database) = open().await;
-    database
-        .accounts()
-        .insert(&account())
-        .await
-        .expect("insert");
+    let (_placement, batch) = place(&database).await;
 
     let entry =
         |supplied, reference| ManualEntry::new(account(), isin(), supplied, [cite(reference)]);
@@ -923,7 +973,7 @@ async fn a_hand_edited_nullable_or_structured_column_is_reported() {
     );
     database
         .source_records()
-        .insert(&record)
+        .insert(batch, &record)
         .await
         .expect("insert");
 

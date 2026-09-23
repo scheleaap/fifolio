@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use sqlx::sqlite::{SqlitePool, SqliteRow};
+use sqlx::sqlite::{SqliteConnection, SqlitePool, SqliteRow};
 use sqlx::{Row, query};
 
 use crate::entities::{
@@ -12,6 +12,7 @@ use crate::entities::{
 use crate::storage::codec::{
     quotation, quotation_code, security_type, security_type_code, source_format, source_format_code,
 };
+use crate::storage::transactions::{TransactionId, delete_transactions, participating_attribution};
 use crate::storage::{StorageError, row_id};
 
 row_id!(
@@ -132,20 +133,26 @@ impl<'a> SourceRecordRepository<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, record: &SourceRecord) -> Result<(), StorageError> {
+    /// Stores `record` as owned by `batch`, which is what "the records it owns" means when a
+    /// deletion of that batch is refused [DOM-119] or carried out.
+    pub async fn insert(&self, batch: BatchId, record: &SourceRecord) -> Result<(), StorageError> {
         let parsed =
             serde_json::to_string(record.parsed()).map_err(|_| StorageError::CorruptValue {
                 field: "parsed",
                 value: String::new(),
             })?;
 
-        query("insert into source_record (identity, ordering, raw, parsed) values (?, ?, ?, ?)")
-            .bind(record.identity().as_str())
-            .bind(i64::from(record.order().get()))
-            .bind(record.raw())
-            .bind(parsed)
-            .execute(self.pool)
-            .await?;
+        query(
+            "insert into source_record (identity, ordering, raw, parsed, batch_id)
+             values (?, ?, ?, ?, ?)",
+        )
+        .bind(record.identity().as_str())
+        .bind(i64::from(record.order().get()))
+        .bind(record.raw())
+        .bind(parsed)
+        .bind(batch.get())
+        .execute(self.pool)
+        .await?;
         Ok(())
     }
 
@@ -211,6 +218,52 @@ impl<'a> ImportBatchRepository<'a> {
         Ok(BatchId::new(inserted.last_insert_rowid()))
     }
 
+    /// Deletes a batch with the records it owns and the transactions it derived, refusing it in
+    /// two cases.
+    ///
+    /// Refused while any transaction the batch derived participates in an attribution [DOM-072],
+    /// and while any record it owns is cited by a transaction it did not derive, the refusal
+    /// naming those transactions so that the user can see what holds the batch in place
+    /// [DOM-119].
+    ///
+    /// What it does **not** touch is a manual entry: none belongs to a batch, and the records an
+    /// entry answers are broker identities rather than foreign keys, so an undo has nothing of it
+    /// to remove [DOM-110], [DOM-099]. That is a property of the schema, not a case below.
+    pub async fn delete(&self, batch: BatchId) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+
+        let derived = derived_transactions(&mut tx, batch).await?;
+
+        let attributed = attributed_of(&mut tx, &derived).await?;
+        if !attributed.is_empty() {
+            return Err(StorageError::BatchTransactionAttributed {
+                batch,
+                transactions: attributed,
+            });
+        }
+
+        let citing = foreign_citations(&mut tx, batch).await?;
+        if !citing.is_empty() {
+            return Err(StorageError::BatchRecordsCited {
+                batch,
+                transactions: citing,
+            });
+        }
+
+        delete_transactions(&mut tx, &derived).await?;
+        query("delete from source_record where batch_id = ?")
+            .bind(batch.get())
+            .execute(&mut *tx)
+            .await?;
+        query("delete from import_batch where id = ?")
+            .bind(batch.get())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn find(&self, id: BatchId) -> Result<Option<ImportBatch>, StorageError> {
         let Some(row) = query(
             "select account_broker, account_id, filename, format, imported_at,
@@ -239,4 +292,63 @@ impl<'a> ImportBatchRepository<'a> {
             counts,
         )))
     }
+}
+
+/// The transactions `batch` derived [DOM-072].
+async fn derived_transactions(
+    connection: &mut SqliteConnection,
+    batch: BatchId,
+) -> Result<Vec<TransactionId>, StorageError> {
+    Ok(query(
+        "select transaction_id from transaction_placement
+         where derived_by_batch = ? order by transaction_id",
+    )
+    .bind(batch.get())
+    .fetch_all(connection)
+    .await?
+    .iter()
+    .map(|row| TransactionId::new(row.get("transaction_id")))
+    .collect())
+}
+
+/// Those of `transactions` that participate in an attribution [DOM-072].
+async fn attributed_of(
+    connection: &mut SqliteConnection,
+    transactions: &[TransactionId],
+) -> Result<Vec<TransactionId>, StorageError> {
+    let mut attributed = Vec::new();
+    for &transaction in transactions {
+        if participating_attribution(connection, transaction)
+            .await?
+            .is_some()
+        {
+            attributed.push(transaction);
+        }
+    }
+    Ok(attributed)
+}
+
+/// The transactions that cite a record `batch` owns without having been derived by it [DOM-119].
+///
+/// A transaction citing another import's record is the audit trail of a multi-file event, and
+/// deleting the record underneath it would leave it citing nothing.
+async fn foreign_citations(
+    connection: &mut SqliteConnection,
+    batch: BatchId,
+) -> Result<Vec<TransactionId>, StorageError> {
+    Ok(query(
+        "select distinct c.transaction_id from transaction_citation c
+              join source_record r on r.identity = c.record_identity
+              left join transaction_placement p on p.transaction_id = c.transaction_id
+         where r.batch_id = ?
+           and (p.derived_by_batch is null or p.derived_by_batch <> ?)
+         order by c.transaction_id",
+    )
+    .bind(batch.get())
+    .bind(batch.get())
+    .fetch_all(connection)
+    .await?
+    .iter()
+    .map(|row| TransactionId::new(row.get("transaction_id")))
+    .collect())
 }

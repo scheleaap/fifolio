@@ -7,16 +7,16 @@
 //! never half stored.
 
 use chrono::NaiveDate;
-use sqlx::sqlite::{SqlitePool, SqliteRow};
+use sqlx::sqlite::{SqliteConnection, SqlitePool, SqliteRow};
 use sqlx::{Row, query};
 
-use crate::entities::RecordIdentity;
+use crate::entities::{Account, Isin, RecordIdentity};
 use crate::storage::codec::{
     at_scale, buy_origin, buy_origin_code, date_provenance, date_provenance_code, money_pair,
     pair_at_scale, price_pair, quantity as read_quantity, rate, rate_source, rate_source_code,
     transfer_in_source, transfer_in_source_code,
 };
-use crate::storage::{StorageError, row_id};
+use crate::storage::{AttributionId, BatchId, StorageError, row_id};
 use crate::transaction::{
     Buy, Closing, Derivation, Expiration, Opening, Sell, Split, Transaction, TransferIn,
     TransferOut,
@@ -37,6 +37,53 @@ const EXPIRATION: &str = "expiration";
 const TRANSFER_OUT: &str = "transfer_out";
 const SPLIT: &str = "split";
 
+/// Whether a stored kind is one of the three that close parcels [DOM-081].
+///
+/// The invariants DOM-066 and DOM-068 are stated over closings, so the attribution repository
+/// asks this before it stores or orders anything; the codes live here, with the inserts that
+/// write them.
+pub(super) fn is_closing(kind: &str) -> bool {
+    matches!(kind, SELL | EXPIRATION | TRANSFER_OUT)
+}
+
+/// Where a transaction belongs: the account and security it is a transaction of, and the import
+/// that derived it.
+///
+/// A parameter of the insert rather than a field of [`Transaction`], because the type carries no
+/// relations — DOM-013 is undecided (OQ-002) and belongs to FIF-076. What is stored here is only
+/// what the invariants read: the pair DOM-066 and DOM-068 key on, and the batch DOM-072 and
+/// DOM-119 ask about. It is deliberately *not* a record-level derivation: which source record a
+/// transaction consumes is DOM-101 and undecided.
+#[derive(Debug, Clone)]
+pub struct Placement {
+    account: Account,
+    security: Isin,
+    derived_by: Option<BatchId>,
+}
+
+impl Placement {
+    /// A transaction an import derived.
+    #[must_use]
+    pub fn derived(account: Account, security: Isin, batch: BatchId) -> Self {
+        Self {
+            account,
+            security,
+            derived_by: Some(batch),
+        }
+    }
+
+    /// A transaction no import derived: a `transfer_in` emitted on approval comes from no row at
+    /// all [DOM-090], so it belongs to no batch and no batch deletion reaches it.
+    #[must_use]
+    pub fn emitted(account: Account, security: Isin) -> Self {
+        Self {
+            account,
+            security,
+            derived_by: None,
+        }
+    }
+}
+
 pub struct TransactionRepository<'a> {
     pool: &'a SqlitePool,
 }
@@ -46,7 +93,13 @@ impl<'a> TransactionRepository<'a> {
         Self { pool }
     }
 
-    pub async fn insert(&self, transaction: &Transaction) -> Result<TransactionId, StorageError> {
+    /// Stores `transaction` at `placement`, header, detail, citations and placement in one
+    /// SQLite transaction, so a stored transaction is never half stored and never unplaced.
+    pub async fn insert(
+        &self,
+        placement: &Placement,
+        transaction: &Transaction,
+    ) -> Result<TransactionId, StorageError> {
         let mut tx = self.pool.begin().await?;
 
         let kind = match transaction {
@@ -192,6 +245,19 @@ impl<'a> TransactionRepository<'a> {
             .await?;
         }
 
+        query(
+            "insert into transaction_placement
+                 (transaction_id, account_broker, account_id, security_isin, derived_by_batch)
+             values (?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(placement.account.broker())
+        .bind(placement.account.id())
+        .bind(placement.security.as_str())
+        .bind(placement.derived_by.map(BatchId::get))
+        .execute(&mut *tx)
+        .await?;
+
         tx.commit().await?;
         Ok(TransactionId::new(id))
     }
@@ -331,6 +397,124 @@ impl<'a> TransactionRepository<'a> {
         Ok(Some(transaction))
     }
 
+    /// Records that `transfer_out` emitted `transfer_in` on approval, one such record per parcel
+    /// consumed [DOM-090]. The link is what DOM-094 refuses to let a deletion break.
+    ///
+    /// Both kinds are checked first: the link makes its `transfer_in` deletable only through its
+    /// emitter, so recording it over a pair of any other kinds would freeze a transaction behind
+    /// one it has nothing to do with. Check and write share one SQLite transaction.
+    pub async fn record_emission(
+        &self,
+        transfer_out: TransactionId,
+        transfer_in: TransactionId,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+
+        for (transaction, expected) in [(transfer_out, TRANSFER_OUT), (transfer_in, TRANSFER_IN)] {
+            let kind = kind_of(&mut tx, transaction).await?;
+            if kind != expected {
+                return Err(StorageError::NotOfKind {
+                    transaction,
+                    expected,
+                    kind,
+                });
+            }
+        }
+
+        query("insert into emitted_transfer_in (transfer_in_id, transfer_out_id) values (?, ?)")
+            .bind(transfer_in.get())
+            .bind(transfer_out.get())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Restates the conversion a transaction was valued at, refusing while it participates in an
+    /// attribution [DOM-069]: the allocation figures the user approved are derived from this rate,
+    /// so re-rating underneath them would change figures nobody approved.
+    pub async fn re_rate(
+        &self,
+        transaction: TransactionId,
+        conversion: &Conversion,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+
+        if let Some(attribution) = participating_attribution(&mut tx, transaction).await? {
+            return Err(StorageError::TransactionAttributed {
+                transaction,
+                attribution,
+            });
+        }
+
+        let kind = kind_of(&mut tx, transaction).await?;
+
+        // A statement per variant, because SQLite binds values and never identifiers. A split
+        // carries no money and so no conversion [DOM-105]: there is nothing to re-rate.
+        let statement = match kind.as_str() {
+            BUY => Some(
+                "update transaction_buy set conversion_currency = ?, conversion_rate = ?,
+                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
+            ),
+            TRANSFER_IN => Some(
+                "update transaction_transfer_in set conversion_currency = ?, conversion_rate = ?,
+                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
+            ),
+            SELL => Some(
+                "update transaction_sell set conversion_currency = ?, conversion_rate = ?,
+                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
+            ),
+            EXPIRATION => Some(
+                "update transaction_expiration set conversion_currency = ?, conversion_rate = ?,
+                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
+            ),
+            TRANSFER_OUT => Some(
+                "update transaction_transfer_out set conversion_currency = ?, conversion_rate = ?,
+                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
+            ),
+            SPLIT => None,
+            other => {
+                return Err(StorageError::CorruptValue {
+                    field: "kind",
+                    value: other.to_owned(),
+                });
+            }
+        };
+
+        if let Some(statement) = statement {
+            query(statement)
+                .bind_conversion(conversion)?
+                .bind(transaction.get())
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Deletes a transaction, refusing while it participates in an attribution [DOM-069] and
+    /// refusing a `transfer_in` that a `transfer_out` emitted [DOM-094].
+    ///
+    /// Deleting the `transfer_out` takes its emitted records with it, which is what "not
+    /// independently of it" leaves allowed.
+    pub async fn delete(&self, transaction: TransactionId) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+
+        if let Some(transfer_out) = emitting_transfer_out(&mut tx, transaction).await? {
+            return Err(StorageError::EmittedTransferIn {
+                transfer_in: transaction,
+                transfer_out,
+            });
+        }
+
+        delete_transactions(&mut tx, &[transaction]).await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The variant's own row. Its absence means a header without its detail, which the insert
     /// above cannot produce.
     async fn detail(
@@ -349,6 +533,103 @@ impl<'a> TransactionRepository<'a> {
                 value: id.get().to_string(),
             })
     }
+}
+
+/// The stored kind of `transaction`, or a refusal if no such transaction is stored.
+async fn kind_of(
+    connection: &mut SqliteConnection,
+    transaction: TransactionId,
+) -> Result<String, StorageError> {
+    Ok(query("select kind from transaction_record where id = ?")
+        .bind(transaction.get())
+        .fetch_optional(connection)
+        .await?
+        .ok_or(StorageError::UnknownTransaction { transaction })?
+        .get::<String, _>("kind"))
+}
+
+/// The attribution a transaction takes part in, as closing or as the opening of an allocation
+/// [DOM-069].
+pub(super) async fn participating_attribution(
+    connection: &mut SqliteConnection,
+    transaction: TransactionId,
+) -> Result<Option<AttributionId>, StorageError> {
+    Ok(query(
+        "select a.id from attribution a
+         where a.closing_transaction_id = ?
+            or exists (select 1 from attribution_allocation al
+                       where al.attribution_id = a.id and al.opening_transaction_id = ?)
+         order by a.id
+         limit 1",
+    )
+    .bind(transaction.get())
+    .bind(transaction.get())
+    .fetch_optional(connection)
+    .await?
+    .map(|row| AttributionId::new(row.get("id"))))
+}
+
+/// The `transfer_out` that emitted `transaction`, if it is an emitted record [DOM-094].
+async fn emitting_transfer_out(
+    connection: &mut SqliteConnection,
+    transaction: TransactionId,
+) -> Result<Option<TransactionId>, StorageError> {
+    Ok(
+        query("select transfer_out_id from emitted_transfer_in where transfer_in_id = ?")
+            .bind(transaction.get())
+            .fetch_optional(connection)
+            .await?
+            .map(|row| TransactionId::new(row.get("transfer_out_id"))),
+    )
+}
+
+/// The `transfer_in` records a `transfer_out` emitted [DOM-090].
+async fn emitted_by(
+    connection: &mut SqliteConnection,
+    transfer_out: TransactionId,
+) -> Result<Vec<TransactionId>, StorageError> {
+    Ok(
+        query("select transfer_in_id from emitted_transfer_in where transfer_out_id = ?")
+            .bind(transfer_out.get())
+            .fetch_all(connection)
+            .await?
+            .iter()
+            .map(|row| TransactionId::new(row.get("transfer_in_id")))
+            .collect(),
+    )
+}
+
+/// Deletes each transaction together with the records it emitted, refusing the whole group if any
+/// member participates in an attribution [DOM-069], [DOM-094].
+///
+/// Shared with the batch deletion, so an import undo cannot reach round the invariant a single
+/// deletion meets. The caller owns the SQLite transaction, so a refusal rolls the group back.
+pub(super) async fn delete_transactions(
+    connection: &mut SqliteConnection,
+    transactions: &[TransactionId],
+) -> Result<(), StorageError> {
+    for &transaction in transactions {
+        let mut group = vec![transaction];
+        group.extend(emitted_by(connection, transaction).await?);
+
+        for &member in &group {
+            if let Some(attribution) = participating_attribution(connection, member).await? {
+                return Err(StorageError::TransactionAttributed {
+                    transaction: member,
+                    attribution,
+                });
+            }
+        }
+
+        for member in group {
+            // The detail row, the citations, the placement and the emission link all cascade.
+            query("delete from transaction_record where id = ?")
+                .bind(member.get())
+                .execute(&mut *connection)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 fn text(row: &SqliteRow, column: &str) -> String {

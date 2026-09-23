@@ -162,6 +162,7 @@ Depends on: FIF-006, FIF-056
 Acceptance: the canonical order over an account and security is (trade date, `order`, batch age), so two records from different files sharing a date are settled by the age of the owning batch; every transaction variant carries the `order` of the source record it consumes and relations to account, security and one or more source records.
 Blocked by: DOM-011, DOM-013 and DOM-111 are on the undecided list.
 Notes: Split out of FIF-006 and FIF-056 in revision 3; DOM-011 and DOM-013 are one sentence of `domain.md` and belong together. Everything that reads the canonical order — FIF-013, FIF-061, FIF-014, FIF-015 — depends on this rather than on FIF-006 alone.
+FIF-012 built DOM-066 and DOM-068 over the stand-in **(trade date, row id)**, the canonical order being unavailable, and DOM-072 over a single `derived_by_batch` per transaction rather than over the records a transaction was derived from. Both are this item's to replace: the two comparisons in `storage/attributions.rs` and their note, and `derived_transactions` in `storage/entities.rs`, which must be re-keyed on the transaction-to-source-record relation so DOM-072 answers for every batch whose records a transaction was derived from. Its acceptance therefore reads DOM-066, DOM-068 and DOM-072 through, and their integration tests move with the comparison.
 
 ## FIF-007 Source record identity and idempotency
 Status: done
@@ -248,6 +249,12 @@ Requirements: DOM-066, DOM-068, DOM-069, DOM-072, DOM-094, DOM-110, DOM-119
 Depends on: FIF-011
 Acceptance: each invariant is refused at the persistence/service boundary with a distinguishable error: a closing may only be attributed if every earlier closing of the same account and security is attributed; an attribution may only be deleted if no later attribution exists for that account and security; a transaction in an attribution cannot be edited, re-rated or deleted; a `transfer_in` emitted by a `transfer_out` cannot be deleted independently of it; a manual entry is never deleted by an import undo; a batch may only be deleted if no transaction derived from it participates in an attribution, and if no record it owns is cited by a transaction the batch did not derive, the refusal naming those transactions. Integration tested against a real temporary database, one test per invariant.
 Notes: DOM-049, DOM-067 and DOM-070 moved to FIF-060 in revision 2. Revision 3 moves the two quantity invariants, DOM-064 and DOM-065, to FIF-078; what remains here is the lifecycle set — ordering of attribution, immutability, deletion refusals — which is decided and needs no effective-quantity arithmetic, so this item no longer depends on FIF-061.
+Named next to build in revision 23. FIF-011 is `done` (`e5c2900`), none of the seven requirements is on a `Blocks:` line, it is the first `todo` in document order, and the working tree is clean, so this item starts from a committed base.
+It is the first item to need a schema FIF-011 deliberately did not write. FIF-011 persisted the entities and the six transaction variants and **no relations**, so this item must add what its own invariants read and no more: an attribution keyed on account and security with its allocations, the transaction's relation to account and security, and a record's owning batch. The emitted-`transfer_in`-to-`transfer_out` link DOM-094 refuses to break is a relation between two transactions and is within scope; the wider "relation to >= 1 source records" of DOM-013 is **blocked** (OQ-002) and belongs to FIF-076, so nothing here may be read as closing it. Where an invariant needs a record relation it does not yet have — DOM-119's citation check — persist the relation the invariant needs and leave the ordering question alone.
+What this item owns is refusal, not computation. Allocation *figures* are FIF-014's and the attribution *service* is FIF-015's, both `todo`; the rows this item stores are the ones the invariants are stated over, and their derivation stays where it is. The quantity invariants that would need effective quantity are FIF-078's and blocked.
+Each refusal needs a distinguishable error in the FIF-011 style — `StorageError::UnscaledValue` is the precedent — and one integration test per invariant against a real temporary database [TST-004], using `fifolio-test-support`'s helper. Seven requirements, so seven refusals: DOM-066 order of attribution, DOM-068 deletion of an attribution, DOM-069 immutability of an attributed transaction, DOM-094 the emitted `transfer_in`, DOM-110 an import undo sparing a manual entry, DOM-072 and DOM-119 the two batch-deletion refusals, the second naming the transactions that block it.
+DOM-110 is stated here while the undo behavior it protects is FIF-062's; assert it as the storage-level refusal, not by running an undo.
+Revision 24 re-confirmed this item as next and confirmed it was **not started**: revision 23 named it, the session then stopped, and the tree carries no untracked source file. The base is `6db99f1`, suite green at 237 tests. Nothing about the scope above changed.
 
 ## FIF-078 Allocation quantity invariants
 Status: blocked
@@ -256,6 +263,7 @@ Depends on: FIF-012, FIF-061
 Acceptance: allocated quantities against an opening, each scaled to a common position in the canonical order, never exceed its effective quantity at that position, and a closing's allocations sum exactly to its quantity; both refused at the persistence/service boundary with a distinguishable error, integration tested against a real temporary database.
 Blocked by: DOM-064 and DOM-065 are on the undecided list.
 Notes: Split out of FIF-012 in revision 3. DOM-064 compares effective quantities at a common position, which is why this half, and not FIF-012, carries the FIF-061 dependency.
+The boundary DOM-065's refusal must cover is the **empty** allocation set: FIF-012 stores `approve(closing, &[])` as an attribution with no allocation rows, and that closing then counts as attributed and unblocks every later closing under DOM-066 while consuming nothing. The behavior is pinned by a test of FIF-012's, so refusing it here is a change to that test rather than a silent one.
 
 ## FIF-060 Pending-record block and single consumption
 Status: todo
@@ -624,6 +632,7 @@ Requirements: SRV-028, SRV-029, SRV-031, SRV-032, SRV-033, SRV-054
 Depends on: FIF-037, FIF-072
 Acceptance: transactions readable and listable with filters on account, security, type and date range, including an unattributed-closings filter; a derive endpoint builds a transaction from one or more pending source records plus what the user supplied, storing the supplied part as a manual entry cited alongside the imported records; deleting a derived transaction returns its source records to pending; **no endpoint edits one** — a transferred parcel's acquisition date in particular is fixed at import and never corrected.
 Notes: Revision 3 splits SRV-034, that no endpoint creates a transaction from nothing, into FIF-087, it being undecided.
+DOM-069 forbids three operations on an attributed transaction — edited, re-rated, deleted. FIF-012 refuses two; the third has no surface anywhere in the workspace to refuse, and this item is where the acceptance says there is to be none (`no endpoint edits one`). Should an edit surface ever be added, here or elsewhere, DOM-069's edit clause is that item's to refuse and to test; it is carried here so the gap is tracked where it would be closed rather than only in a test comment.
 
 ## FIF-087 No endpoint creates a transaction from nothing
 Status: blocked
@@ -751,7 +760,38 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 21 (this run).** A status reconciliation with one specification change to absorb.
+**Revision 24 (this run).** A resumption check after the previous session was stopped mid-run.
+Nothing moved since revision 23: `HEAD` is still `6db99f1`, `design/` is unchanged since `d160fee`,
+the only modified file is this plan (revision 23's own entry, never committed), and no source file
+is untracked, so **FIF-012 was not started** before the stop. Re-verified mechanically: **333**
+identifiers in `design/`, each named by exactly one item; **32** blocked ids across OQ-001 to
+OQ-016; **23** items `blocked` and no item blocked on anything else; 91 items, 18 `done`, 50 `todo`.
+`cargo test --workspace` on the clean tree: **237 passed, 0 failed**.
+
+* **Added / split / dropped / re-scoped / renumbered:** none. No dependency moved. **Uncovered:** none.
+* **Completed:** none. **Newly blocked:** none. **Unblocked:** none.
+* Next to build is unchanged: **FIF-012**, storage-enforced invariants — the first `todo` in
+  document order, its one dependency FIF-011 `done` (`e5c2900`), none of its seven requirements on
+  a `Blocks:` line.
+
+**Revision 23.** A status reconciliation. `design/` is unchanged since `d160fee`, which
+revision 21 already absorbed, so the live set is still **333 identifiers**, each named by exactly
+one item; `open-questions.md` is untouched and still names the same **32 blocked ids** across
+OQ-001 to OQ-016, and the same twenty-three items are `blocked`. The working tree is clean and
+nothing sits uncommitted, which is the first revision since 14 that can say so. No item was added,
+split, dropped, re-scoped, renumbered or re-ordered, and no dependency moved.
+
+* **Completed:** none this run; FIF-010 was completed and reviewed in revision 22 (`bd7946b`, tightened in `6db99f1`).
+* **Newly blocked:** none. **Unblocked:** none. **Uncovered:** none.
+* **Bookkeeping fixed:** revision 22 marked FIF-010 `done` in that item's notes but wrote no history entry, and left revision 21 labelled "this run". Both are corrected here; the entry below reconstructs revision 22 from the item note and the commits, and is marked as such.
+* Next to build: **FIF-012**, storage-enforced invariants. Its one dependency FIF-011 is `done`, none of its seven requirements is on a `Blocks:` line, and it is the first `todo` in document order.
+
+**Revision 22 (reconstructed in revision 23 from FIF-010's note and commits `bd7946b`, `6db99f1`).**
+The review pass over the increment revision 21 found untracked. FIF-010 moved `todo` -> `done`;
+ARC-017 and ARC-018 stay open with FIF-041, as that item's acceptance scopes. No other status,
+placement or dependency changed, and `design/` gained no identifier.
+
+**Revision 21.** A status reconciliation with one specification change to absorb.
 `design/` changed in `d160fee` (DEC-068): a top-up of the rate cache adds days the cache lacks and
 never rewrites one it holds. The live set is still **333 identifiers**, each named by exactly one
 item — the new rule was cited as `[ARC-026]`, which `architecture.md` already uses for the
@@ -1052,6 +1092,18 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Re-verified again in revision 24 by the same script, against an unchanged `design/`: **333** ids,
+each named by exactly one item, none uncovered, none deferred; the twenty-three items carrying one
+of the thirty-two blocked ids are `blocked` and no others are.
+
+Re-verified mechanically in revision 23 by extracting the identifiers from `design/*.md` and
+comparing them against the `Requirements:` lines of this file: those lines name **333** distinct
+ids, each exactly once, and they are precisely the live ids in `design/` less the nine retired ones,
+which are assigned to nothing. `design/` gained no identifier since `d160fee`. Every item carrying
+one of the thirty-two ids on a `Blocks:` line of `open-questions.md` is `blocked` and no other item
+is — twenty-three items of ninety-one, checked by script. No placement changed. Nothing is
+uncovered and nothing is deferred.
 
 Re-verified mechanically in revision 21 by extracting the identifiers from `design/*.md` and
 comparing them against the `Requirements:` lines of this file: those lines name **333** distinct
