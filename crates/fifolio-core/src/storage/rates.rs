@@ -100,19 +100,6 @@ pub struct CachedRates {
     rates: BTreeMap<(Currency, NaiveDate), FxRate>,
 }
 
-impl CachedRates {
-    /// How many published rates the snapshot holds, over every currency and day.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.rates.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.rates.is_empty()
-    }
-}
-
 impl RateTable for CachedRates {
     /// A backward range scan over the composite key, which stops inside the currency asked for:
     /// a USD lookup never reaches a CAD publication, the key ordering currency first.

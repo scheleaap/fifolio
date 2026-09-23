@@ -234,8 +234,13 @@ fn observation(
     };
 
     let date = day.ok_or_else(|| malformed(&format!("a {currency} rate precedes any date")))?;
+    // Plain decimal notation only. `Decimal::from_str` also reads exponent form, which the ECB
+    // never publishes, and reading `1.1e2` as 110 would invent a magnitude two orders out of a
+    // document this parser refuses on lesser grounds elsewhere.
     let parsed = Decimal::from_str(&rate)
-        .map_err(|_| malformed(&format!("{rate:?} is not a {currency} rate")))?;
+        .ok()
+        .filter(|_| !rate.contains(['e', 'E']))
+        .ok_or_else(|| malformed(&format!("{rate:?} is not a {currency} rate")))?;
     // A rate is foreign units per EUR and a conversion divides by it [ARC-027], so zero and
     // negative are not rates. Refused here rather than stored: `fx::resolve` would hand such a
     // figure to a conversion that answers with nothing, which reads as an unvaluable leg with
@@ -385,16 +390,42 @@ mod tests {
         );
     }
 
-    /// A date that is not a date is refused for the same reason.
+    /// A rate in exponent form is refused rather than read: `Decimal::from_str` would take
+    /// `1.1e2` for 110, and a magnitude two orders out is a wrong conversion nothing later
+    /// catches, where the refusal names the value [ARC-015].
+    #[test]
+    fn a_rate_in_exponent_form_is_refused() {
+        for rate in ["1.1e2", "1.1E2", "11e-1"] {
+            let document = envelope(&format!(
+                r#"<Cube time="2024-04-02"><Cube currency="USD" rate="{rate}"/></Cube>"#
+            ));
+
+            let error = parse_reference_rates(&document)
+                .expect_err("the ECB publishes plain decimal notation");
+
+            let message = error.to_string();
+            assert!(message.contains(rate), "{message} does not name the value");
+        }
+    }
+
+    /// A date that is not a date is refused for the same reason, and names the value it could
+    /// not read.
     #[test]
     fn a_time_that_is_not_a_date_is_refused() {
         let document =
             envelope(r#"<Cube time="yesterday"><Cube currency="USD" rate="1.0749"/></Cube>"#);
 
-        assert!(matches!(
-            parse_reference_rates(&document),
-            Err(FeedError::Malformed { .. })
-        ));
+        let error = parse_reference_rates(&document).expect_err("yesterday is not a date");
+
+        assert!(
+            matches!(error, FeedError::Malformed { .. }),
+            "a date that is not a date is malformed, got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("yesterday"),
+            "{message} does not name the value"
+        );
     }
 
     /// A rate outside any dated cube has no day to belong to, and guessing one would date a
@@ -403,10 +434,17 @@ mod tests {
     fn a_rate_with_no_enclosing_day_is_refused() {
         let document = envelope(r#"<Cube currency="USD" rate="1.0749"/>"#);
 
-        assert!(matches!(
-            parse_reference_rates(&document),
-            Err(FeedError::Malformed { .. })
-        ));
+        let error = parse_reference_rates(&document).expect_err("a rate before any date");
+
+        assert!(
+            matches!(error, FeedError::Malformed { .. }),
+            "a dateless rate is malformed, got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("USD"),
+            "{message} does not name the currency"
+        );
     }
 
     /// Half an attribution is refused rather than read as a day the ECB did not publish that
@@ -446,10 +484,17 @@ mod tests {
         let truncated = r#"<gesmes:Envelope><Cube><Cube time="2024-04-02">
             <Cube currency="USD" rate="1.0749"/>"#;
 
-        assert!(matches!(
-            parse_reference_rates(truncated),
-            Err(FeedError::Malformed { .. })
-        ));
+        let error = parse_reference_rates(truncated).expect_err("a half-downloaded document");
+
+        assert!(
+            matches!(error, FeedError::Malformed { .. }),
+            "a truncated document is malformed, got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("ends inside"),
+            "{message} does not say where the document stops"
+        );
     }
 
     /// A body that is not the envelope is refused rather than read as an empty series [ARC-017].
@@ -496,6 +541,42 @@ mod tests {
         assert!(
             message.contains("CAD"),
             "{message} does not name the currency"
+        );
+    }
+
+    /// The mirror of the case above for a self-closing dated cube: it encloses nothing, so the
+    /// day it states applies to no element beyond itself and the currency cube that follows is a
+    /// sibling. Filing that rate under the date beside it would be a wrong conversion that no
+    /// later error surfaces, where the refusal names the currency [ARC-015].
+    #[test]
+    fn a_rate_beside_a_self_closing_day_is_refused() {
+        let document = envelope(r#"<Cube time="2024-03-28"/><Cube currency="USD" rate="1.0811"/>"#);
+
+        let error = parse_reference_rates(&document).expect_err("a rate outside any dated cube");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("USD"),
+            "{message} does not name the currency"
+        );
+    }
+
+    /// A cube stating `time`, `currency` and `rate` at once takes its own day rather than the
+    /// enclosing one: the date nearest the rate is the one the document attributes it to
+    /// [ARC-015].
+    #[test]
+    fn a_cube_stating_its_own_day_takes_it_over_the_enclosing_one() {
+        let document = envelope(
+            r#"<Cube time="2024-04-02"><Cube time="2024-03-28" currency="USD" rate="1.0811"/></Cube>"#,
+        );
+
+        assert_eq!(
+            parse_reference_rates(&document).expect("a well-formed envelope"),
+            vec![Observation {
+                currency: Currency::new("USD"),
+                date: day(2024, 3, 28),
+                rate: FxRate::new(dec!(1.0811)),
+            }]
         );
     }
 

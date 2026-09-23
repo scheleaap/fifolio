@@ -93,11 +93,31 @@ async fn open() -> (TempDb, Database) {
     (db, database)
 }
 
+/// A second connection to the same file, for the assertions the port cannot make.
+async fn raw(db: &TempDb) -> SqlitePool {
+    SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+        .await
+        .expect("connect to the temporary database")
+}
+
+/// How many rows the cache holds, counted on the table. A row count is not part of the port
+/// `fx::resolve` reads [ARC-016], so it is asked of the database rather than of the snapshot.
+async fn cached_rows(db: &TempDb) -> i64 {
+    let pool = raw(db).await;
+    let count: i64 = query("select count(*) from fx_rate")
+        .fetch_one(&pool)
+        .await
+        .expect("count the cached rows")
+        .get(0);
+    pool.close().await;
+    count
+}
+
 /// Seeding ingests the historical series into a table keyed by currency and date [ARC-015],
 /// [ARC-017], [TST-004].
 #[tokio::test]
 async fn seeding_ingests_the_recorded_historical_series() {
-    let (_db, database) = open().await;
+    let (db, database) = open().await;
 
     let written = seed(&database, &RecordedFeed::new())
         .await
@@ -106,7 +126,7 @@ async fn seeding_ingests_the_recorded_historical_series() {
     assert_eq!(written, 4, "two currencies on each of the fragment's days");
 
     let cached = database.rates().snapshot().await.expect("read back");
-    assert_eq!(cached.len(), 4);
+    assert_eq!(cached_rows(&db).await, 4);
 
     // The series' first publication, and a currency the other day does not carry: the key is
     // the pair, so neither shadows the other.
@@ -135,23 +155,20 @@ async fn seeding_ingests_the_recorded_historical_series() {
 /// Seeding is done once; running it again writes nothing and disturbs nothing [ARC-017].
 #[tokio::test]
 async fn seeding_a_cache_that_is_already_seeded_writes_nothing() {
-    let (_db, database) = open().await;
+    let (db, database) = open().await;
     let feed = RecordedFeed::new();
 
     seed(&database, &feed).await.expect("first seeding");
     let again = seed(&database, &feed).await.expect("second seeding");
 
     assert_eq!(again, 0, "a published rate for a day is final");
-    assert_eq!(
-        database.rates().snapshot().await.expect("read back").len(),
-        4
-    );
+    assert_eq!(cached_rows(&db).await, 4);
 }
 
 /// The 90-day window adds the days published since and leaves the seeded ones alone [ARC-018].
 #[tokio::test]
 async fn topping_up_adds_only_the_days_the_cache_does_not_hold() {
-    let (_db, database) = open().await;
+    let (db, database) = open().await;
     let feed = RecordedFeed::new();
 
     seed(&database, &feed).await.expect("seeding");
@@ -163,7 +180,7 @@ async fn topping_up_adds_only_the_days_the_cache_does_not_hold() {
     );
 
     let cached = database.rates().snapshot().await.expect("read back");
-    assert_eq!(cached.len(), 5);
+    assert_eq!(cached_rows(&db).await, 5);
     assert_eq!(
         cached
             .latest_on_or_before(&Currency::new("USD"), day(2024, 4, 2))
@@ -208,7 +225,7 @@ async fn topping_up_leaves_a_cached_rate_as_it_was() {
 /// of a database created before seeding completes; a second top-up adds nothing [ARC-018].
 #[tokio::test]
 async fn topping_up_an_unseeded_cache_writes_the_whole_window() {
-    let (_db, database) = open().await;
+    let (db, database) = open().await;
     let feed = RecordedFeed::new();
 
     let added = top_up(&database, &feed).await.expect("top up");
@@ -216,7 +233,7 @@ async fn topping_up_an_unseeded_cache_writes_the_whole_window() {
     assert_eq!(added, 3, "one rate on 2024-04-02 and two on 2024-03-28");
 
     let cached = database.rates().snapshot().await.expect("read back");
-    assert_eq!(cached.len(), 3);
+    assert_eq!(cached_rows(&db).await, 3);
     assert_eq!(
         cached
             .latest_on_or_before(&Currency::new("CAD"), day(2024, 3, 28))
@@ -239,7 +256,7 @@ async fn topping_up_an_unseeded_cache_writes_the_whole_window() {
 /// 2024-03-28 at the same rates, so the rate read back cannot tell "kept" from "rewritten".
 #[tokio::test]
 async fn seeding_after_a_top_up_adds_the_older_days_alone() {
-    let (_db, database) = open().await;
+    let (db, database) = open().await;
     let feed = RecordedFeed::new();
 
     top_up(&database, &feed).await.expect("top up first");
@@ -251,7 +268,7 @@ async fn seeding_after_a_top_up_adds_the_older_days_alone() {
     );
 
     let cached = database.rates().snapshot().await.expect("read back");
-    assert_eq!(cached.len(), 5);
+    assert_eq!(cached_rows(&db).await, 5);
     assert_eq!(
         cached
             .latest_on_or_before(&Currency::new("USD"), day(2024, 3, 28))
@@ -323,7 +340,7 @@ async fn a_currency_the_cache_does_not_hold_fails_with_the_resolver_s_own_error(
 /// [ARC-007], [ARC-010].
 #[tokio::test]
 async fn a_rate_beyond_the_stored_scale_is_refused() {
-    let (_db, database) = open().await;
+    let (db, database) = open().await;
     // The good row precedes the refused one deliberately: ingestion is one transaction, so a
     // store that committed per row would leave 2024-03-28 CAD behind when the next row fails.
     let feed = RecordedFeed::of(
@@ -346,15 +363,68 @@ async fn a_rate_beyond_the_stored_scale_is_refused() {
         other => panic!("a seven-decimal rate must be refused, got {other:?}"),
     }
 
-    assert!(
-        database
-            .rates()
-            .snapshot()
-            .await
-            .expect("read back")
-            .is_empty(),
+    assert_eq!(
+        cached_rows(&db).await,
+        0,
         "the refused document leaves the cache empty, the row it stated first included"
     );
+}
+
+/// And the boundary itself: six decimals is exactly what the column holds, so it stores and reads
+/// back unchanged. Asserted beside the refusal above so that an off-by-one bound — `>=` where `>`
+/// was meant — cannot pass from the ECB path's side [ARC-007], [ARC-010].
+///
+/// `0.000001` is the other boundary, the smallest positive figure the column holds: it sits just
+/// above the parser's positivity refusal, and a rate that reached the column as zero would be a
+/// divisor of zero at valuation time [ARC-027], one unvaluable leg much later.
+#[tokio::test]
+async fn a_rate_at_the_stored_scale_is_kept_unchanged() {
+    for rate in [dec!(1.081111), dec!(0.000001)] {
+        let (_db, database) = open().await;
+        let feed = RecordedFeed::of(
+            &format!(
+                r#"<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01">
+                     <Cube><Cube time="2024-03-28">
+                       <Cube currency="USD" rate="{rate}"/>
+                     </Cube></Cube>
+                   </gesmes:Envelope>"#
+            ),
+            "",
+        );
+
+        assert_eq!(seed(&database, &feed).await.expect("a six-decimal rate"), 1);
+
+        let cached = database.rates().snapshot().await.expect("read back");
+        assert_eq!(
+            cached
+                .latest_on_or_before(&Currency::new("USD"), day(2024, 3, 28))
+                .expect("the six-decimal rate is cached")
+                .rate,
+            FxRate::new(rate)
+        );
+    }
+}
+
+/// A `rate` column a hand edit left holding something that is not a decimal is reported, not
+/// panicked on and not dropped from the snapshot: a silently missing row reads as a day the ECB
+/// did not publish, which is the state ARC-015 keeps the cache out of.
+#[tokio::test]
+async fn a_stored_rate_that_is_not_a_decimal_is_reported() {
+    let (db, database) = open().await;
+    let pool = raw(&db).await;
+    query("insert into fx_rate (currency, rate_date, rate) values (?, ?, ?)")
+        .bind("USD")
+        .bind("2024-03-28")
+        .bind("not a rate")
+        .execute(&pool)
+        .await
+        .expect("write a corrupt row");
+    pool.close().await;
+
+    match database.rates().snapshot().await {
+        Err(StorageError::CorruptValue { field, .. }) => assert_eq!(field, "rate"),
+        other => panic!("a corrupt rate column must be reported, got {other:?}"),
+    }
 }
 
 /// A document that is not the envelope leaves the cache as it was, rather than half filled — and
@@ -363,24 +433,17 @@ async fn a_rate_beyond_the_stored_scale_is_refused() {
 /// were the cache empty [ARC-017].
 #[tokio::test]
 async fn a_malformed_document_writes_nothing() {
-    let (_db, database) = open().await;
-    let malformed = RecordedFeed::of(
-        "<gesmes:Envelope><Cube time=\"2024-03-28\">",
-        "<gesmes:Envelope><Cube time=\"2024-03-28\">",
-    );
+    let (db, database) = open().await;
+    // An empty body on the seeding side and a truncated document on the top-up side: an empty
+    // response is the one a failed download most often leaves behind, and reading it as a series
+    // holding no day would report a cache that stayed empty as a seeding that succeeded.
+    let malformed = RecordedFeed::of("", "<gesmes:Envelope><Cube time=\"2024-03-28\">");
 
     assert!(matches!(
         seed(&database, &malformed).await,
         Err(IngestError::Feed(FeedError::Malformed { .. }))
     ));
-    assert!(
-        database
-            .rates()
-            .snapshot()
-            .await
-            .expect("read back")
-            .is_empty()
-    );
+    assert_eq!(cached_rows(&db).await, 0);
 
     seed(&database, &RecordedFeed::new())
         .await
@@ -393,7 +456,7 @@ async fn a_malformed_document_writes_nothing() {
 
     let cached = database.rates().snapshot().await.expect("read back");
     assert_eq!(
-        cached.len(),
+        cached_rows(&db).await,
         4,
         "the seeded series survives a failed top-up"
     );
@@ -403,27 +466,6 @@ async fn a_malformed_document_writes_nothing() {
             .expect("the seeded rows are still readable")
             .rate,
         FxRate::new(dec!(133.73))
-    );
-}
-
-/// An empty response body is refused rather than read as a series holding no day: an `Ok(0)`
-/// there would report a cache that stayed empty as a seeding that succeeded, which is the state
-/// ARC-017 exists to prevent.
-#[tokio::test]
-async fn an_empty_document_is_refused_rather_than_seeding_nothing() {
-    let (_db, database) = open().await;
-
-    assert!(matches!(
-        seed(&database, &RecordedFeed::of("", "")).await,
-        Err(IngestError::Feed(FeedError::Malformed { .. }))
-    ));
-    assert!(
-        database
-            .rates()
-            .snapshot()
-            .await
-            .expect("read back")
-            .is_empty()
     );
 }
 
