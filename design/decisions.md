@@ -432,3 +432,14 @@ carrying more decimals than its scale allows. Refusal wins, because a store that
 in cannot distinguish a figure that was meant to be rounded from one that arrived wrong, and the
 second is a bug worth surfacing at the point it occurs rather than absorbing silently. The wording
 now says before the boundary, and names the check.
+
+**DEC-068 — A restated day keeps the cached rate; the 90-day window never rewrites one.** ARC-018
+says the cache is topped up from the rolling window afterwards, but not what happens when that
+window restates a day the historical series [ARC-017] already deposited, at a different figure.
+The two readings are "last document wins" and "first document wins". First wins: the rate is
+stored on a conversion that was valued at it, and a transaction's EUR figures must stay
+reconcilable against the rate and date recorded beside them [DEC-002], which an overwrite breaks
+silently and retroactively. Insert-and-keep is the mechanical form of that. The cost is accepted
+and stated here rather than hidden: an ECB *correction* to an already-cached day will never reach
+the cache, and nothing reports the divergence. Re-rating a stored transaction is a deliberate act
+under DEC-002, so a correction that matters is applied that way rather than by a silent top-up. Ratified by the specification owner; the rule is stated in architecture.md as ARC-026.

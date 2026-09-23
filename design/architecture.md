@@ -37,6 +37,13 @@ ECB daily euro reference rates are cached in a local table, keyed by currency an
 
 The ECB publishes the current rates and a rolling 90-day window, which is not enough for a first import of several years of history. The cache is therefore seeded once from the ECB's complete historical series (all currencies back to 1999, a few megabytes) [ARC-017] and topped up from the 90-day feed afterwards. [ARC-018]
 
+A top-up adds days the cache does not hold and never rewrites one it does, even when the window
+restates that day at a different figure. A stored rate is the one a transaction's EUR figures were
+valued at and must stay reconcilable against the rate recorded beside them; an overwrite breaks that
+silently and retroactively. The cost is accepted: an ECB correction to an already-cached day does
+not reach the cache on its own, and re-rating is a deliberate act rather than a side effect of a
+top-up. [ARC-026]
+
 An import that needs a rate which is neither cached nor fetchable fails with a clear error naming the currency and date, rather than guessing. [ARC-019]
 
 The fallback to an earlier rate is bounded: no rate exists before the series begins in 1999, and a substitution more than seven days stale is an error rather than a silent approximation. [ARC-027]
