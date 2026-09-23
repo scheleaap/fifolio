@@ -22,9 +22,8 @@
 //! [DOM-124]. Which rows those are is a format's heuristic — Saxo's is IMP-SAXO-018 — and the
 //! framework only guarantees that a classification that is not non-position is kept.
 //!
-//! That the outcome set is closed and that every importer maps into it exhaustively is DOM-043,
-//! which belongs to its own item; this module offers the three outcomes the requirements above
-//! each name.
+//! Those three are the whole taxonomy [DOM-043], stated on [`RowClassification`] and nowhere
+//! else.
 //!
 //! # What the user supplies
 //!
@@ -55,7 +54,21 @@ use thiserror::Error;
 use crate::entities::Isin;
 
 /// What a row turned out to be [DOM-044], [DOM-045], [DOM-046].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// This enum *is* the classification taxonomy of DOM-043, and it is the only statement of it:
+/// the set is closed because [`Importer::classify`] can answer nothing outside these variants.
+/// There is deliberately no catch-all variant and no [`Default`], so a format cannot land a row
+/// somewhere without deciding what it is, and an importer written later has no escape hatch
+/// from the decision.
+///
+/// A new classification is an amendment to `domain.md` first and to this enum second. It is
+/// never a format's invention: a broker's own vocabulary maps *into* this set, and a row that
+/// does not map is a [`RowError`], not a fourth outcome.
+///
+/// [`EnumCount`](strum::EnumCount) is derived so the size of the set is readable at compile
+/// time: the test that pins DOM-043 counts the outcomes an import reaches against it, and a
+/// variant added here fails that count rather than passing unnoticed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumCount)]
 pub enum RowClassification {
     /// Every field the variant needs is present and unambiguous [DOM-044].
     DerivedAutomatically,
@@ -375,6 +388,7 @@ mod tests {
     use chrono::NaiveDate;
     use reader::DelimitedReader;
     use rust_decimal_macros::dec;
+    use strum::EnumCount;
 
     /// A stand-in for a real importer: a comma-delimited file whose `date` is the trade date,
     /// whose `id` is the broker reference and whose `kind` column states the classification, so
@@ -570,6 +584,57 @@ mod tests {
             .map(|stored| stored.record().raw())
             .collect();
         assert_eq!(stored, ["e,2024-02-02,stock dividend"]);
+    }
+
+    /// The taxonomy is the three outcomes of DOM-043, and an import reaches every one of them
+    /// [DOM-043].
+    ///
+    /// A fourth variant fails this test three ways: `RowClassification::COUNT` no longer
+    /// matches the outcomes an import counts, `slot` stops compiling until the variant is
+    /// named, and there is no fourth slot for it to take. A classification nothing reaches is
+    /// an unamended `domain.md`, not a new outcome.
+    #[test]
+    fn the_classification_taxonomy_is_the_three_outcomes_of_dom_043() {
+        let import = run(FILE);
+        // One slot per outcome of DOM-043, holding what the import path itself reached.
+        let reached = [
+            import.counts().derived,
+            import.counts().pending,
+            import.counts().non_position,
+        ];
+
+        assert_eq!(
+            RowClassification::COUNT,
+            reached.len(),
+            "the classification set has grown past the outcomes an import reaches"
+        );
+
+        // The only route from a classification into those slots, and exhaustive over the enum.
+        let slot = |classification: &RowClassification| match classification {
+            RowClassification::DerivedAutomatically => 0,
+            RowClassification::Pending => 1,
+            // The payload is irrelevant here; the five kinds are their own test [DOM-002].
+            RowClassification::NonPosition(_) => 2,
+        };
+
+        let importer = FakeImporter::new();
+        let rows = importer
+            .reader()
+            .rows(FILE.as_bytes())
+            .expect("the sample reads");
+        let mut answered = [0; 3];
+        for classification in importer.classify(&rows) {
+            answered[slot(&classification.expect("the sample classifies"))] += 1;
+        }
+
+        assert_eq!(
+            answered, reached,
+            "each classification an importer answers must reach its own outcome of the import"
+        );
+        assert!(
+            reached.iter().all(|count| *count > 0),
+            "an outcome no row reaches is a taxonomy member nothing maps to: {reached:?}"
+        );
     }
 
     /// The non-position kinds are the five `domain.md` names and no others [DOM-002].

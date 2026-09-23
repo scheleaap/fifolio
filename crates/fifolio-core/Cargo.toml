@@ -16,6 +16,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "sqlite", "migrate", "macros", "chrono"] }
+# `EnumCount` pins DOM-043's taxonomy to the enum that states it, so the set cannot grow
+# without the test that counts it failing.
+strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.20"
 tracing = "0.1.44"
 

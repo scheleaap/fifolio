@@ -336,13 +336,15 @@ Acceptance: `proptest` suites asserting every property in `testing.md`: no openi
 Notes: Blocked in revision 2; TST-010 left the undecided list in revision 3. Its dependencies FIF-061 and FIF-063 are still blocked, so it is not yet startable.
 
 ## FIF-017 Import and derivation framework
-Status: todo
+Status: done
 Requirements: DOM-002, DOM-042, DOM-044, DOM-045, DOM-046, DOM-048, DOM-120, DOM-124, ARC-023
 Depends on: FIF-007, FIF-011
 Acceptance: an importer trait over a source file that yields source records; rows where every field the variant needs is present and unambiguous are derived automatically; rows that affect holdings but lack something only the user knows become pending, which is the completion queue; **cash** dividends, interest, deposits, withdrawals and account fees are recognized as non-position, counted and not stored, while a dividend that issues shares is a position event whose rows are stored and whose buy carries a stock-dividend origin; everything the user supplies becomes a manual entry. XLSX reading via `calamine` and CSV via `csv` sit behind the same reader abstraction; a delimited row stores its verbatim line while a spreadsheet row, having none, stores the canonical rendering `domain.md` defines — each cell as the file holds it, an Excel serial date staying `45208`, keyed by column name in sheet column order — so that re-reading the same file reproduces the same string.
 Named next to build in revision 25: the first `todo` in document order whose dependencies, FIF-007 and FIF-011, are both `done`, and none of whose nine requirements is on a `Blocks:` line. Everything ahead of it in the plan is either `done`, `blocked`, or waits on a `blocked` item — FIF-060 on FIF-058, FIF-013 on FIF-076 — so the import framework, not the FIFO engine, is where decided work continues.
 Notes: DOM-120 is new in revision 7 (DEC-057) and sits here because the reader abstraction is what constructs the stored raw content; FIF-005, which owns the `SourceRecord` type, is `done` and its field is untyped as to how it was rendered. DOM-043, the classification taxonomy these three outcomes belong to, moved to FIF-064 in revision 2. Revision 3 moves DOM-047, "nothing is invented", to FIF-081, it being undecided; the three outcomes stand without it.
 DOM-124 is new in revision 14 (DEC-063) and sits here rather than in FIF-025 because it is the exception clause on DOM-002 and DOM-046, which this item owns; it is format-agnostic, and the Saxo heuristic that recognizes such a dividend is FIF-025's, which already derives the buy. Nothing completed is invalidated: the classification is not built yet.
+Done in revision 26, commit `bb09bb0`, which is the work revision 25 named and the session then stopped on. Verified against the code rather than the message: `import/reader.rs` puts `SpreadsheetReader` (calamine) and `DelimitedReader` (csv) behind one `RowReader` [ARC-023]; a delimited row keeps its verbatim line and a spreadsheet row the canonical JSON rendering — cell as the file holds it, an Excel serial staying the serial, keys in sheet column order — with a test that re-reading the same bytes reproduces the same string [DOM-120]. `import/mod.rs` carries the `Importer` trait and the `import` function that reads, orders and classifies; `RowClassification` is the three outcomes [DOM-044, DOM-045, DOM-046], `NonPositionKind` is the five cash kinds that are counted and not stored [DOM-002], a share-issuing dividend having no kind there because it is a position event [DOM-124]; `completion` is the only constructor of a `ManualEntry` on the import path [DOM-048]. Orders are assigned over every row the file holds, stored or not, so a row's `order` depends on the file alone. `cargo test --workspace` is green on the clean tree: **299 passed, 0 failed**, up from 254 at revision 25.
+Two things later items inherit. The trait's `classify` takes the whole row slice and answers one classification per row, because a Saxo corporate action is classified by its group and not by its row alone; an importer returning the wrong count is a refusal, not a silent truncation. And DOM-043's closed set shipped here as the `RowClassification` type, which is **FIF-064's** requirement, not this item's — FIF-064 is what must review it and say whether anything remains.
 
 ## FIF-081 Nothing is created from nothing
 Status: blocked
@@ -358,6 +360,9 @@ Requirements: DOM-043
 Depends on: FIF-017
 Acceptance: the classification a source record receives at import is a closed, stated set, and every importer maps into it exhaustively.
 Notes: Split out of FIF-017 in revision 2 and blocked then; DOM-043 left the undecided list in revision 3.
+Named next to build in revision 26. FIF-017 is `done` (`bb09bb0`), DOM-043 is on no `Blocks:` line, and it is the first `todo` in document order whose dependency is `done` — everything ahead of it is `done`, `blocked`, or waiting on a `blocked` item (FIF-060 on FIF-058, FIF-013 and FIF-014 on FIF-076 and FIF-061).
+Read this before starting: **most of the type this item asks for already exists.** FIF-017 shipped `RowClassification` — `DerivedAutomatically`, `Pending`, `NonPosition(NonPositionKind)` — and made `Importer::classify` a required trait method returning it, so the set is closed by the enum and no format can answer outside it. The honest residual increment is therefore small and is these three things, not a new type: (a) the set is *stated* as the taxonomy of DOM-043, in one place, with the rule that a new classification is an amendment to `domain.md` and never a format's invention; (b) exhaustiveness is guaranteed mechanically against importers that do not exist yet — no catch-all variant, no `Default`, no path that returns a classification without deciding one; (c) a test that names DOM-043 and fails if the set grows a variant nothing maps to.
+If review finds all three already true of `bb09bb0`, say so and close the item against that commit rather than inventing work to justify it; an item whose substance landed inside its predecessor is a real outcome and belongs in the record. What it must **not** do is grow into the per-format classifiers — Saxo's is FIF-023 and blocked (OQ-005, OQ-008, OQ-014), Trade Republic's is FIF-029.
 
 ## FIF-062 Manual entry lifecycle across undo and re-import
 Status: todo
@@ -762,7 +767,27 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 25 (this run).** A resumption after the session was stopped to shut the machine down.
+**Revision 26 (this run).** A resumption after the machine was shut down, and the same shape as
+revision 25: the stop came *after* the work. `HEAD` is now `bb09bb0`, which carries revision 25's
+plan entry and the whole of FIF-017 in one commit, so the plan again said `todo` about an item that
+was already built. **FIF-017 is `done`.** Verified against the code rather than the commit message —
+the reader abstraction, the canonical rendering and its re-read test, the three classifications, the
+five non-position kinds, and `completion` as the only manual-entry constructor on the import path —
+and `cargo test --workspace` on the clean tree gives **299 passed, 0 failed**, up from 254. `design/`
+is still unchanged since `d160fee`, so no completed work is invalidated and no requirement moved.
+Re-verified mechanically: **333** live identifiers in `design/`, each named by exactly one item, the
+nine retired ones assigned to nothing; **32** blocked ids across OQ-001 to OQ-016; **23** items
+`blocked` and no item blocked on anything else; 91 items, now 20 `done`, 48 `todo`.
+
+* **Added / split / dropped / re-scoped / renumbered:** none. No dependency moved. **Uncovered:** none.
+* **Completed:** FIF-017. **Newly blocked:** none. **Unblocked:** none.
+* Next to build is **FIF-064**, the import classification taxonomy. Recorded on that item and worth
+  repeating here: FIF-017's commit already ships `RowClassification` and the required `classify`
+  method, so FIF-064 may turn out to be a review that closes DOM-043 against `bb09bb0` rather than
+  new code. That is a legitimate outcome and is why the item is named rather than quietly merged
+  into its predecessor.
+
+**Revision 25.** A resumption after the session was stopped to shut the machine down.
 The stop came *after* the work, not before it: `HEAD` is now `3136a8a`, which carries revision 24's
 own plan entry and the whole of FIF-012 in one commit, so the plan said `todo` about an item that
 was already built. **FIF-012 is `done`.** Verified rather than assumed: the seven requirements each
