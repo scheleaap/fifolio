@@ -117,6 +117,7 @@ async fn opening_an_absent_file_creates_it_and_migrates_from_empty() {
         "transaction_transfer_out",
         "manual_entry",
         "manual_entry_answer",
+        "fx_rate",
         "_sqlx_migrations",
     ] {
         assert!(

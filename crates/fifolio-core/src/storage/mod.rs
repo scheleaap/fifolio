@@ -9,7 +9,8 @@
 //!
 //! The types built so far: [`Account`], [`Security`], [`SourceRecord`], [`ImportBatch`], the six
 //! [`Transaction`] variants with their [`Valued`] pairs and [`Conversion`], and [`ManualEntry`]
-//! with its [`Supplied`] shapes. No column exists for a rule that is still undecided — a
+//! with its [`Supplied`] shapes, plus the ECB daily reference rates the imports resolve against
+//! [ARC-015]. No column exists for a rule that is still undecided — a
 //! transaction has no relation to an account, a security or a source record, that being DOM-013
 //! and FIF-076's — because a guessed column is a schema that must be unpicked rather than
 //! extended.
@@ -41,6 +42,7 @@
 mod codec;
 mod entities;
 mod manual_entries;
+mod rates;
 mod transactions;
 
 use std::path::Path;
@@ -52,6 +54,7 @@ pub use entities::{
     AccountRepository, BatchId, ImportBatchRepository, SecurityRepository, SourceRecordRepository,
 };
 pub use manual_entries::{ManualEntryId, ManualEntryRepository};
+pub use rates::{CachedRates, RateRepository};
 pub use transactions::{TransactionId, TransactionRepository};
 
 /// The database file used when nothing names another [ARC-013].
@@ -127,6 +130,12 @@ impl Database {
     #[must_use]
     pub fn import_batches(&self) -> ImportBatchRepository<'_> {
         ImportBatchRepository::new(&self.pool)
+    }
+
+    /// The cached ECB rate table [ARC-015]; seeding it is [`crate::ecb`]'s.
+    #[must_use]
+    pub fn rates(&self) -> RateRepository<'_> {
+        RateRepository::new(&self.pool)
     }
 
     #[must_use]
