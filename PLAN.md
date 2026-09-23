@@ -366,7 +366,7 @@ If review finds all three already true of `bb09bb0`, say so and close the item a
 Done in revision 27, commit `3e9fe46`. It went the way the note allowed for: mostly a review that closed DOM-043 against what FIF-017 had already shipped, plus the three residual things, and no new type. (a) `RowClassification`'s documentation now states the set as *the* taxonomy of DOM-043 and says a new classification is an amendment to `domain.md` first and never a format's invention; the module header points at it as the only statement. (b) The closure is mechanical, not asserted: no catch-all variant, no `Default`, and `Importer::classify` must answer one of the three per row, so a row a format cannot place is a `RowError` rather than a fourth outcome. (c) `the_classification_taxonomy_is_the_three_outcomes_of_dom_043` pins the set with `strum::EnumCount` against the outcomes an import actually reaches, and asserts each outcome is reached by a row, so a variant nothing maps to fails rather than passes unnoticed. `cargo test --workspace` on the clean tree: **300 passed, 0 failed**, up from 299.
 
 ## FIF-062 Manual entry lifecycle across undo and re-import
-Status: todo
+Status: done
 Requirements: DOM-108, DOM-109
 Depends on: FIF-059, FIF-017
 Acceptance: undoing an import removes its source records and the transactions derived from them and leaves every manual entry standing; re-importing the same rows reconnects each entry by the record identities it names and restores its transaction automatically, so an undo followed by a re-import returns the account exactly where it was; an entry whose records are absent is listed as waiting, naming what it expects.
@@ -376,6 +376,21 @@ What it can build on and what it must not assume: FIF-011 (`e5c2900`) persists `
 Two things earlier items pinned that bear on the undo path. FIF-012's note records that an emitted `transfer_in` belongs to no batch, so an undo reaches it only through the group its `transfer_out` heads; that path is FIF-063's and blocked, so scope this item to records and transactions a batch owns and say so where the code would otherwise look incomplete. And a transaction's relation to the source records it was derived from is still DOM-013 in the blocked FIF-076, so "the transactions derived from them" must be read through the `derived_by_batch` relation FIF-011 and FIF-012 actually store, not through a record-level relation this item would have to invent.
 The re-import half is testable end to end against the framework FIF-017 shipped, since identity [DOM-022 to DOM-024, FIF-007] is what a reconnection matches on and is `done`; TST-010's last property ("an undo followed by a re-import restores exactly the transactions that existed before") is **FIF-016's** to assert as a property test and must not be pulled forward here.
 Where DOM-108 is split, recorded in review: what this item ships is the *pairing* — `reconnected(batch)` hands back each entry the import completed with the records it answers, which is everything a derivation needs and is what makes the restoration ask the user nothing. The clause "its transaction is restored automatically" also needs a caller that derives and stores, and no derivation path from records to a `Transaction` exists in the workspace yet; that wiring is **SRV-055, FIF-072's**, whose acceptance already carries it word for word and which depends on this item. Two things FIF-072 inherits, both stated on `reconnected`: the listing is presence-based, so a *first* import of an entry's rows reports it exactly as a re-import does and the caller owns the idempotency check that keeps SRV-055 from storing a second copy of a transaction that already exists; and a record an approval emitted belongs to no batch, so that path stays FIF-063's.
+Done in revision 28, commit `4b6c89d`, which is the work revision 27 named and the session then
+stopped on — the fourth consecutive revision of that shape. Verified against the code rather than
+the commit message: `storage/manual_entries.rs` carries `waiting`, which lists every entry no stored
+source record answers together with the identities it expects [DOM-109], and `reconnected(batch)`,
+which pairs each entry an import completed with the records it answers in the order the entry names
+them [DOM-108]; both read one presence predicate, so an entry cannot be reported waiting and
+reconnected at once. The undo half is the batch deletion FIF-011 and FIF-012 already store, with
+FIF-012's `ManualEntryDeletedByUndo` refusal standing over it [DOM-110]; this item adds no second
+copy of that refusal. `crates/fifolio-core/tests/manual_entry_lifecycle.rs` is the integration
+cover, at the layer these two requirements are observable in [TST-004]. `cargo test --workspace` on
+the clean tree: **310 passed, 0 failed**, up from 300.
+The two splits the commit message records stand and are inherited as written: the clause of DOM-108
+that says the restored transaction is derived and stored needs a records-to-`Transaction` path the
+workspace does not have, and that wiring is SRV-055's in **FIF-072**, whose acceptance already
+carries it; the emitted-`transfer_in` path is **FIF-063's** and blocked.
 
 ## FIF-065 Import guard: one calendar year per file
 Status: todo
@@ -383,6 +398,30 @@ Requirements: IMP-001, IMP-002
 Depends on: FIF-017
 Acceptance: a file whose rows carry trade dates in more than one calendar year is refused, on the trade date rather than a booking timestamp or the filename; the refusal names the years met. Tested against the Saxo and Trade Republic fixtures, each of which is confined to one year, plus a synthetic file spanning two.
 Notes: New in revision 2 (DEC-052) and blocked on IMP-003, which left the undecided list in revision 3. Revision 8 splits IMP-003, the account guard, into FIF-089: OQ-015 is new and blocks it. The year guard reads only trade dates and is decided, so it stays here and stays buildable. Renamed accordingly. The server-side half is SRV-051 in FIF-070.
+Named next to build in revision 28. Its dependency FIF-017 is `done` (`bb09bb0`), neither IMP-001
+nor IMP-002 is on a `Blocks:` line, and it is the first `todo` in document order whose dependencies
+are all `done` — everything ahead of it is `done`, `blocked`, or waiting on a `blocked` item
+(FIF-060 on FIF-058, FIF-013 on FIF-076, FIF-014 and FIF-015 behind them, FIF-016 on FIF-061 and
+FIF-063). The base is `4b6c89d`, the tree clean and the suite green at 310 tests.
+Where it goes: `import::import` already reads an `ordering_key` per row before anything is
+classified, and that key carries the trade date [DOM-040], so the years are in hand at exactly the
+point a whole-file refusal is still cheap. That makes this a guard inside `import`, not a per-format
+duty — the same reason identity scoping and order assignment live there and no format can forget
+them. A new `ImportError` variant naming the years met, in the style of `Unorderable`, is the shape;
+`ImportError::Unorderable` is also the precedent for refusing the file rather than dropping rows.
+The refusal must read the trade date and nothing else [IMP-002]: not the filename, which `import`
+never sees, and not a booking timestamp, which a format may also put in its ordering columns. A
+partial year passes — the first Saxo export runs 2021-11-29 to 2021-12-31 — so the test that a
+single-year file is accepted is as much the requirement as the refusal is.
+**The fixture half of the acceptance above cannot be met by this item and is deferred, deliberately
+rather than by omission.** Reading a Saxo or Trade Republic fixture for its trade dates needs that
+format's `ordering_key`, and both importers are `todo` (FIF-019, FIF-027); nothing in the workspace
+can turn fixture bytes into a dated row today. So this item's tests are integration-layer over a
+test-double importer plus a synthetic two-year file, and the assertion that each committed fixture
+is confined to one calendar year — which is a property of the fixtures [TST-011 to TST-014], already
+asserted structurally in `tools/anonymize-exports/tests/fixture_structure.rs` — is re-asserted
+through this guard by FIF-019 and FIF-027 when they can run it. Neither of those items' acceptance
+changes; this note is where the obligation is recorded so it is not rediscovered.
 
 ## FIF-089 Import guard: one account per file
 Status: blocked
@@ -773,7 +812,34 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 27 (this run).** A resumption after the machine was shut down, and the third consecutive
+**Revision 28 (this run).** A resumption after the machine was shut down, and the fourth consecutive
+revision of that shape, which revision 27 said would make the hand-off the thing to fix. `HEAD` is
+`4b6c89d`, which carries revision 27's own plan entry and the whole of FIF-062 in one commit, so the
+plan again said `todo` about an item that was already built and reviewed. **FIF-062 is `done`.**
+Verified against the code rather than the commit message: `waiting` and `reconnected(batch)` in
+`storage/manual_entries.rs`, both over one presence predicate, with `tests/manual_entry_lifecycle.rs`
+as the integration cover. `cargo test --workspace` on the clean tree gives **310 passed, 0 failed**,
+up from 300. `design/` is unchanged since `d160fee`, so no completed work is invalidated, no
+requirement moved and no item changed status but this one.
+Re-verified mechanically: **333** live identifiers in `design/`, each named by exactly one item, the
+nine retired ones assigned to nothing; **32** blocked ids across OQ-001 to OQ-016; **23** items
+`blocked` and no item blocked on anything else; 91 items, now 22 `done`, 46 `todo`.
+
+* **Added / split / dropped / re-scoped / renumbered:** none. No dependency moved. **Uncovered:** none.
+* **Completed:** FIF-062. **Newly blocked:** none. **Unblocked:** none.
+* Next to build is **FIF-065**, the one-calendar-year import guard. It is the first item to refuse a
+  whole file, and it sits inside `import` rather than in either format, for the reason its notes give.
+* One honest amendment recorded on FIF-065 rather than by editing its acceptance: the clause "tested
+  against the Saxo and Trade Republic fixtures" cannot be met yet, because reading a fixture for its
+  trade dates needs a format importer and both are `todo`. The obligation is written onto FIF-065 and
+  falls due in FIF-019 and FIF-027; it is deferred, not dropped.
+* On the stale-status pattern, now four revisions old: the cause is that the plan entry and the code
+  land in one commit, so the run that would flip the status is the run that gets interrupted, and the
+  record is never actually lost — `HEAD` always carries the truth. The cheap fix is a hand-off order
+  in which the status flip is its own commit before the session can be interrupted; that is a change
+  to the workflow, not to any item, so this plan only names it.
+
+**Revision 27.** A resumption after the machine was shut down, and the third consecutive
 revision of that shape: the stop came *after* the work, not before it. `HEAD` is now `3e9fe46`,
 which carries revision 26's own plan entry and the whole of FIF-064 in one commit, so the plan again
 said `todo` about an item that was already built. **FIF-064 is `done`.** Verified against the code
@@ -1169,6 +1235,11 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Re-verified again in revision 28 by the same script, against a `design/` unchanged since `d160fee`:
+**333** ids, each named by exactly one item, none uncovered, none deferred; the twenty-three items
+carrying one of the thirty-two blocked ids are `blocked` and no others are. FIF-062 moving to `done`
+changed no assignment.
 
 Re-verified again in revision 27 by the same script, against a `design/` unchanged since `d160fee`:
 **333** ids, each named by exactly one item, none uncovered, none deferred; the twenty-three items

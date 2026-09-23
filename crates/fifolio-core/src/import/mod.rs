@@ -43,6 +43,10 @@
 
 pub mod reader;
 
+use std::collections::BTreeSet;
+
+use chrono::Datelike;
+
 use crate::entities::{Account, ImportCounts, Order, SourceFormat, SourceRecord};
 use crate::identity::{IdentitySource, identify};
 use crate::manual_entry::{ManualEntry, Supplied};
@@ -166,6 +170,10 @@ pub enum ImportError {
     /// of every row after it, so this is a whole-file refusal [DOM-040].
     #[error("row {position} cannot be ordered: {reason}")]
     Unorderable { position: usize, reason: String },
+    /// Broker exports are taken a year at a time, so a file spanning two is refused whole
+    /// [IMP-001]. The years are those of the rows' **trade dates** [IMP-002], ascending.
+    #[error("the file carries trade dates in more than one calendar year: {}", years.iter().map(i32::to_string).collect::<Vec<_>>().join(", "))]
+    MultipleCalendarYears { years: Vec<i32> },
     /// An importer that answers a different number of rows than it was given has lost the
     /// correspondence between row and classification; pairing them anyway would file one row's
     /// outcome against another's record.
@@ -281,6 +289,16 @@ pub fn import(
                 })
         })
         .collect::<Result<Vec<RowOrderingKey>, _>>()?;
+    // The year guard reads the ordering keys' trade dates and nothing else [IMP-002]: not a
+    // booking timestamp, which a format may also put in its ordering columns, and not the
+    // filename, which `import` never sees. A partial year is a single year and passes.
+    let years: BTreeSet<i32> = keys.iter().map(|key| key.trade_date.year()).collect();
+    if years.len() > 1 {
+        return Err(ImportError::MultipleCalendarYears {
+            years: years.into_iter().collect(),
+        });
+    }
+
     let orders = assign_orders(&keys, importer.direction());
 
     let classifications = importer.classify(&rows);
