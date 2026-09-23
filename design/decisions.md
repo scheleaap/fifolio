@@ -442,4 +442,13 @@ reconcilable against the rate and date recorded beside them [DEC-002], which an 
 silently and retroactively. Insert-and-keep is the mechanical form of that. The cost is accepted
 and stated here rather than hidden: an ECB *correction* to an already-cached day will never reach
 the cache, and nothing reports the divergence. Re-rating a stored transaction is a deliberate act
-under DEC-002, so a correction that matters is applied that way rather than by a silent top-up. Ratified by the specification owner; the rule is stated in architecture.md as ARC-026.
+under DEC-002, so a correction that matters is applied that way rather than by a silent top-up. Ratified by the specification owner; the rule is stated in architecture.md as ARC-028.
+
+**DEC-069 — Corrects DEC-064: the Saxo same-day choice is made per date, not per pair of rows.**
+DEC-064 replaced the folded counter key with a pairwise rule — compare two rows by a counter when
+they share one, fall back to file position when they do not. That is not transitive and so is not a
+sort order at all: given `Bk 5`, `Booking 100` and `Bk 7`, the first and third compare by counter
+while each compares to the second by position, and no arrangement satisfies all three. The
+correction keeps DEC-064's reason and fixes its mechanism. Within one date: if every row populates
+the same counter column, that counter orders the date; otherwise the date is ordered by reversed
+file position and no counter is consulted. The decision is per date, so the comparison is total.

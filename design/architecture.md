@@ -23,7 +23,7 @@ Scales: [ARC-007]
 
 Trade value is `quantity × unit_price × factor`, where the factor comes from the security's quotation: 1 per unit, 0.01 for percent of par. [ARC-008] See `domain.md`.
 
-Intermediate arithmetic keeps full precision. [ARC-009] Rounding to the scales above happens **before** the storage and presentation boundaries, half away from zero, and is the caller's act rather than the boundary's: storage refuses a value that is not already at its scale instead of quietly rounding it. [ARC-010] A store that rounds on the way in cannot tell a figure that was meant to be rounded from one that arrived wrong, and the second is the case worth catching. [ARC-025] "Half-up" is ambiguous for negative amounts, and a realized loss is negative. The one place rounding is load-bearing is allocation shares, which follow the drift rule in `domain.md`.
+Intermediate arithmetic keeps full precision. [ARC-009] Rounding to the scales above happens **before** the storage and presentation boundaries, half away from zero, and is the caller's act rather than the boundary's: storage refuses a value that is not already at its scale instead of quietly rounding it. [ARC-010] A store that rounds on the way in cannot tell a figure that was meant to be rounded from one that arrived wrong, and the second is the case worth catching. [ARC-029] "Half-up" is ambiguous for negative amounts, and a realized loss is negative. The one place rounding is load-bearing is allocation shares, which follow the drift rule in `domain.md`.
 
 # Storage
 
@@ -42,7 +42,7 @@ restates that day at a different figure. A stored rate is the one a transaction'
 valued at and must stay reconcilable against the rate recorded beside them; an overwrite breaks that
 silently and retroactively. The cost is accepted: an ECB correction to an already-cached day does
 not reach the cache on its own, and re-rating is a deliberate act rather than a side effect of a
-top-up. [ARC-026]
+top-up. [ARC-028]
 
 An import that needs a rate which is neither cached nor fetchable fails with a clear error naming the currency and date, rather than guessing. [ARC-019]
 

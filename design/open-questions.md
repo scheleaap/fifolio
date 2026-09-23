@@ -129,3 +129,23 @@ or is recorded as fees on the emitted record, is unstated, and the two produce d
 eventual disposal. Related to OQ-003, which asks the same of the *allocated* buy fee rather than the
 transfer's own.
 
+**OQ-017 — A transfer's fee share when the basis total is zero.**
+Blocks: `DOM-107`
+The fee a transfer itself costs is divided across the emitted records in proportion to each one's
+basis. A parcel whose basis is zero, or a set of them summing to zero, makes that division
+undefined. A stock dividend whose taxable value was zero, or a fully written-down holding, produces
+exactly that.
+
+**OQ-018 — A transfer's emitted quantities must sum to a product that may not exist.**
+Blocks: `DOM-115`
+The emitted quantities must sum exactly to the transferred quantity times the ratio. With the ratio
+now an exact integer pair the product is exact, but it need not be representable at the 8-decimal
+quantity scale, and nothing says what the sum targets when it is not.
+
+**OQ-019 — Who fetches a rate an import needs and does not have.**
+Blocks: `ARC-019`
+The error names the currency and date when a rate is "neither cached nor fetchable", which assumes
+an import can fetch. No requirement assigns that path: seeding and top-up are separate acts, and
+whether an import reaches the network at all is unstated. It decides whether an import can fail for
+want of a network connection.
+

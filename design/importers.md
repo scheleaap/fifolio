@@ -34,10 +34,15 @@ Each of the three is a monotonic counter that ascends with date, but they are th
 counters and their magnitudes are unrelated — roughly 3.0e9, 4.0e10 and 7.0e9 in the fixtures — so
 folding them into one key would order a date carrying a mixture by which column a row happens to
 populate, which is arbitrary with respect to time. Ten dates in the fixtures carry such a mixture,
-and same-day order decides which parcel a same-day sell consumes, so it is a cost-basis input. Two
-rows sharing a counter are ordered by it; two rows populating different counters share no
-comparable value and fall through to file position. A row whose counter is absent is placed by the
-rule OQ-013 settles, and that rule governs this case too. [IMP-SAXO-036]
+and same-day order decides which parcel a same-day sell consumes, so it is a cost-basis input.
+
+The choice is therefore made **per date**, not per pair of rows, so that the result is a sort order
+at all. Within one `Transactiedatum`: if every row of that date populates the same one of the three
+columns, the date is ordered by that counter. Otherwise the whole date is ordered by file position
+taken in reverse, and no counter is consulted. A pairwise rule — compare two rows by a counter when
+they share one, fall back to file position when they do not — is **not** transitive and so is not a
+sort order: given `Bk 5`, `Booking 100` and `Bk 7`, the first and third compare by counter while
+each compares to the second by position, and the three cannot be laid in a line. [IMP-SAXO-036]
 
 `Corporate action-Id` is **not** monotonic with date and is never an ordering column. [IMP-SAXO-027]
 Across the sample the id columns separate every row on 32 of the 33 dates carrying more than one;
