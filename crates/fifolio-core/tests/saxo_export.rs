@@ -14,6 +14,7 @@ use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::saxo::identity::{account, check_identities, identity};
 use fifolio_core::import::saxo::money::Booked;
 use fifolio_core::import::saxo::quantity::{Label, StatedBy, traded};
+use fifolio_core::import::saxo::reversal::Reversible;
 use fifolio_core::import::saxo::{SaxoError, SaxoWorkbook, Sheet, date, field};
 
 /// Every committed Saxo fixture, with the year its filename names.
@@ -529,4 +530,35 @@ fn every_labelled_quantity_agrees_with_its_counterpart() {
     // The thirteen transfers, the buy and the sell: every clause-bearing label in the corpus
     // joins exactly one leg.
     assert_eq!(checked, 15);
+}
+
+/// Every `Terugboeking` in the corpus is a suffix on the action it reverses, and none of them is
+/// a bare `Acties` value [IMP-SAXO-033].
+///
+/// The corpus carries two, both in the 2023 export: the DeVolksbank tender's reversal and a
+/// dividend's. No amount is asserted — the fixtures' are perturbed [TST-014] — so the summation
+/// those rows feed is unit tested on the specification's own figures instead.
+#[test]
+fn every_reversal_in_the_corpus_is_a_suffixed_action() {
+    let mut reversals = Vec::new();
+    for (path, export) in exports() {
+        for index in 0..export.rows().len() {
+            let acties = action(&export, index);
+            let label = Label::parse(acties).expect("a fixture label reads");
+            let read = Reversible::read(label.action());
+
+            assert!(
+                read.reversing() || read.action() != "Terugboeking",
+                "{} row {} carries a bare Terugboeking",
+                path.display(),
+                index + 2
+            );
+            if read.reversing() {
+                reversals.push(read.action().to_owned());
+            }
+        }
+    }
+    reversals.sort();
+
+    assert_eq!(reversals, ["Dividend", "Terugkoopaanbod"]);
 }

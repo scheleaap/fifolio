@@ -658,21 +658,48 @@ showed this item as `todo` — the sixth time this has happened. The record is c
 than by rewriting the commit.
 
 ## FIF-022 Saxo: `Acties` label parsing
-Status: todo
+Status: done
 Requirements: IMP-SAXO-011, IMP-SAXO-012, IMP-SAXO-038
 Depends on: FIF-019
 Acceptance: quantity and direction come from `_Transacties` — `Traded Quantity`, signed, and `Trade Event Type` stating `Gekocht` or `Verkocht` — and parsing them out of the free-text label (`Koop 40 @ 5.75 USD`, `Verkoop -60 @ 30.65 EUR`, `Deponering 300 @ 51.40 EUR`) is the fallback for a row with no counterpart, not the normal path; a label whose parsed quantity disagrees with the column **refuses the file** rather than choosing one, and a test asserts that refusal; the label price is exposed only as a 2-decimal display value and is structurally unable to reach any money field, with **no** exception now that `Deponering` reads `Verhandelde waarde` (FIF-024); a test asserts the sell case where 30.65 in the label differs from 30.654 derived from the columns; an unparsable label is a parse failure, not a guess.
 Notes: Blocked in revision 2 on IMP-SAXO-012, which left the undecided list in revision 3.
 **Re-scoped in revision 29 by DEC-070**, which added IMP-SAXO-038 and restated IMP-SAXO-012: every figure now comes from a column, the quantity and the direction included, so the label is a cross-check and a fallback rather than the source. The item is not started, so nothing is invalidated; what changes is which way the disagreement test points — it used to prove the label's price wrong, and now it also refuses a file whose label and column disagree on the quantity.
 The one sanctioned exception this item carried, `Deponering`'s authoritative label price, is **gone**: IMP-SAXO-039 puts that basis on `Verhandelde waarde`. Nothing in the workspace may keep a path by which a label price reaches money.
+Done in revision 36, commit `1f38bc3`. Found built, committed and green with the plan still reading
+`todo` — the seventh consecutive occurrence, that commit having swept revision 35's plan edits in
+alongside `import/saxo/quantity.rs`. Nothing was rebuilt; the module was read against the three
+requirements and the status corrected. `cargo test --workspace` gives **425 passed, 0 failed**, up
+from 410.
+What is there: `traded(label, leg)` is the single precedence point [IMP-SAXO-038] — the column pair
+`Traded Quantity` / `Trade Event Type` first, the label only for a row with no counterpart, and a
+disagreement between the two refusing the file rather than choosing
+(`a_label_disagreeing_with_the_column_refuses_the_file`). The label price is a `LabelPrice` display
+type with no conversion into `Money`, so no path carries it to a money field [IMP-SAXO-011,
+IMP-SAXO-012], and the 30.65-against-30.654 sell divergence is asserted. An unparsable trade clause
+is a parse failure. `Deponering`'s event type is neither of the two IMP-SAXO-038 names, so
+`direction()` is an `Option` there and FIF-024 must supply the direction from the classification
+rather than from the column.
 
 ## FIF-088 Saxo: reversal rows and group summation
-Status: todo
+Status: done
 Requirements: IMP-SAXO-033, IMP-SAXO-034, IMP-SAXO-035
 Depends on: FIF-022, FIF-021
 Acceptance: `Terugboeking` is matched as a **suffix** and never as a bare `Acties` value, so `Terugkoopaanbod - Terugboeking` and `Dividend - Terugboeking` classify as their prefix, reversing; summing a `Corporate action-Id` group, a reversal's cash and its costs both **subtract**, reproducing the DeVolksbank tender: 3946.14 paid, −1998.07 reversed, 1948.07 net; summation is over the **EUR** figures the rows carry and never over the native ones, because a group's rows may hold different `Omrekeningskoers` values. Unit tested over the reversal rows of the Saxo fixture for the classification, and over synthetic figures for the summation, the fixture's amounts being perturbed.
 Notes: New in revision 7 (DEC-056). Cut as its own item rather than folded into FIF-023, which is blocked, so that a decided rule is not frozen behind an undecided one; the group summation it provides is what FIF-067 (cash merger, tender and buyback decomposition) and FIF-025 (dividend grouping) each call, and both are gated on FIF-023 anyway. Its `_Transacties` counterpart is **FIF-096** (revision 32): a reversal shows up as a leg as well as
 a labelled cash row, and the two halves are read by different rules. That reversal costs subtract is **chosen, not observed**: both reversal rows in five years of exports carry zero in `Totale kosten`. The code comment must say so and name the check to perform if a costed reversal ever arrives, because nothing in the tests can catch it being wrong.
+Done in revision 36, in the same commit as this status flip. `import/saxo/reversal.rs` carries both
+halves: `Reversible::read` takes `Terugboeking` off an action as a suffix, requiring the separator
+and a non-empty prefix so a bare value is not a reversal of nothing [IMP-SAXO-033]; `group_cash`
+sums one `Corporate action-Id` over the EUR figures alone [IMP-SAXO-035], each figure entering as
+its magnitude signed by whether its row reverses, so a reversal's cash and its costs both subtract
+[IMP-SAXO-034]. The module header states that the costs half is chosen rather than observed and
+names the check to perform if a costed reversal ever arrives. `Booked` gained `eur_movement` and
+`eur_costs`; the native side deliberately has no accessor. Classification stays IMP-SAXO-013's:
+this module answers what a prefix is, never what it means. Integration test
+`every_reversal_in_the_corpus_is_a_suffixed_action` asserts the corpus carries exactly the two
+suffixed reversals and no bare one; the summation is unit tested on the specification's figures,
+the fixture's being perturbed [TST-014]. `cargo test --workspace` gives **436 passed, 0 failed**,
+up from 425; patch coverage on `fifolio-core` is 100%.
 
 ## FIF-096 Saxo: a corporate action's legs, summed per side and cancelled in pairs
 Status: todo
@@ -1046,7 +1073,26 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 35 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
+**Revision 36 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
+design/` is empty), so no requirement was added, restated or retired and coverage is untouched at
+**345** ids, each named on exactly one `Requirements:` line. `HEAD` is `1f38bc3`; the working tree
+carries no tracked change (only the user's untracked `docs/` and `tmp/`); `cargo test --workspace`
+gives **425 passed, 0 failed**, up from revision 35's 410.
+
+* **Completed:** **FIF-022**, Saxo `Acties` label parsing, committed as `1f38bc3`, with the plan in
+  that same commit still reading `todo`. Seventh consecutive occurrence of that pattern; the
+  observation revision 35 recorded stands unchanged — the status flip needs to be its own commit —
+  and it remains a workflow matter, not an item.
+* No item added, split, retired or re-scoped. No status changed but FIF-022's.
+* **Next to build: FIF-088**, Saxo reversal rows and group summation. It is the first `todo` in
+  document order whose dependencies are both `done` (FIF-022, FIF-021) and none of whose
+  requirements — IMP-SAXO-033, IMP-SAXO-034, IMP-SAXO-035 — appears on a `Blocks:` line in
+  `open-questions.md`. Everything ahead of it is `done`, `blocked`, or waits on a `blocked` item:
+  FIF-060 on FIF-058 (DOM-101), FIF-013 on FIF-076 (DOM-011), FIF-014 and FIF-015 behind FIF-013 and
+  the blocked FIF-061, FIF-016 behind FIF-061 and FIF-063.
+* `open-questions.md` is byte-identical to revision 32's, so no item was blocked or unblocked.
+
+**Revision 35.** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
 design/` is empty), so no requirement was added, restated or retired and coverage is untouched at
 **345** ids, each named on exactly one `Requirements:` line and together precisely the live ids in
 `design/` less the nine retired ones. `HEAD` is `f34c466`; the working tree carries no tracked

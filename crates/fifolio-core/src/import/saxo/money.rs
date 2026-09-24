@@ -94,8 +94,9 @@ const ZERO_QUOTE: &str = "Omrekeningskoers is zero, so no rate and no native cos
 /// A price asked for over nothing: a zero quantity, or a zero quotation factor.
 const NO_DIVISOR: &str = "the quantity times the quotation factor is zero, so no unit price exists";
 
-/// A figure outside the range a decimal can hold [ARC-009].
-const OVERFLOW: &str = "the figure is outside the range of a decimal";
+/// A figure outside the range a decimal can hold [ARC-009]. Visible to [`super::reversal`], whose
+/// sums overflow the same way and report it the same way.
+pub(super) const OVERFLOW: &str = "the figure is outside the range of a decimal";
 
 /// Which way the cash moved, which decides whether the costs are inside the gross or outside it
 /// [IMP-SAXO-030].
@@ -193,6 +194,22 @@ impl Booked {
     #[must_use]
     pub fn currency(&self) -> &Currency {
         &self.currency
+    }
+
+    /// The EUR side of the movement, `Aantal`, as the file states it [IMP-SAXO-009].
+    ///
+    /// Answered because a `Corporate action-Id` group is summed over the EUR figures its rows
+    /// carry and never over the native ones [IMP-SAXO-035]; the native side has no accessor for
+    /// that reason.
+    #[must_use]
+    pub fn eur_movement(&self) -> Decimal {
+        self.eur_movement
+    }
+
+    /// The costs in EUR, `Totale kosten`, as the file states them: negative [IMP-SAXO-010].
+    #[must_use]
+    pub fn eur_costs(&self) -> Decimal {
+        self.eur_costs
     }
 
     /// The conversion the row's EUR figures were booked under [DOM-030], [IMP-SAXO-029].

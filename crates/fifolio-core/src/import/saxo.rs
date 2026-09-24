@@ -74,6 +74,7 @@ use super::reader::{ReadError, SheetRows, SourceRow, SpreadsheetReader};
 pub mod identity;
 pub mod money;
 pub mod quantity;
+pub mod reversal;
 
 /// One of the three sheets a Saxo export carries [IMP-SAXO-001].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
