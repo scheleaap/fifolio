@@ -4,11 +4,15 @@
 //! that the rules hold on the files an import will actually meet [TST-011], [TST-013], [TST-031].
 //! Nothing here asserts an amount: the fixtures' amounts are perturbed [TST-014].
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{Datelike as _, NaiveDate};
-use fifolio_core::import::saxo::{SaxoWorkbook, Sheet, date, field};
+use fifolio_core::entities::{Account, RecordIdentity};
+use fifolio_core::identity::{IdentitySource, identify};
+use fifolio_core::import::saxo::identity::{account, check_identities, identity};
+use fifolio_core::import::saxo::{SaxoError, SaxoWorkbook, Sheet, date, field};
 
 /// Every committed Saxo fixture, with the year its filename names.
 fn exports() -> Vec<(PathBuf, SaxoWorkbook)> {
@@ -33,6 +37,15 @@ fn exports() -> Vec<(PathBuf, SaxoWorkbook)> {
                 .unwrap_or_else(|error| panic!("{} does not read: {error}", path.display()));
             (path, export)
         })
+        .collect()
+}
+
+/// The fixtures an import can get past the identity check today: every one but the 2023 file,
+/// whose corporate action collides on its `Corporate action-Id` [IMP-SAXO-024].
+fn importable() -> Vec<(PathBuf, SaxoWorkbook)> {
+    exports()
+        .into_iter()
+        .filter(|(_, export)| check_identities(export.rows()).is_ok())
         .collect()
 }
 
@@ -268,4 +281,141 @@ fn a_cash_movement_resolves_its_components() {
 
     // The sample's 171 bookings that decompose; the remaining 17 rows are position-only.
     assert_eq!(joined, 171);
+}
+
+/// Every row of every fixture names the one Depot, its per-currency sub-accounts collapsed
+/// [DOM-003], [IMP-SAXO-005].
+///
+/// The fixtures carry all three suffixes on one base account, so the collapse is what the
+/// assertion rests on and not an accident of a single-currency file.
+#[test]
+fn the_per_currency_sub_accounts_collapse_onto_one_depot() {
+    for (path, export) in exports() {
+        let sub_accounts: BTreeSet<&str> = export
+            .rows()
+            .iter()
+            .filter_map(|row| field(row, "Rekening-ID"))
+            .collect();
+        let depots: BTreeSet<&str> = export
+            .rows()
+            .iter()
+            .map(|row| account(row).expect("every fixture row names an account"))
+            .collect();
+
+        assert_eq!(
+            sub_accounts.len(),
+            3,
+            "{} carries the EUR, USD and CAD sub-accounts",
+            path.display()
+        );
+        assert_eq!(depots.len(), 1, "{} is one Depot", path.display());
+    }
+}
+
+/// `Klant-id` is the client and is never the account [IMP-SAXO-006].
+///
+/// Observable because the fixtures' client id is not any account id: were it read as the
+/// account, the Depot above would be the client's number instead.
+#[test]
+fn the_client_id_is_not_the_account() {
+    for (path, export) in exports() {
+        for row in export.rows() {
+            let client = field(row, "Klant-id").expect("Transacties carries Klant-id");
+            let depot = account(row).expect("every fixture row names an account");
+
+            assert_ne!(
+                client,
+                depot,
+                "{} names its client as its account",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Every row of the sample carries at least one of the four identity columns [IMP-SAXO-007].
+#[test]
+fn every_fixture_row_is_identified_by_one_of_the_four_columns() {
+    for (path, export) in exports() {
+        for (index, row) in export.rows().iter().enumerate() {
+            let found = identity(row)
+                .unwrap_or_else(|error| panic!("{} row {}: {error}", path.display(), index + 2));
+
+            assert!(!found.is_empty());
+        }
+    }
+}
+
+/// Reading a fixture twice yields the same identities, which is what makes a re-import create no
+/// new records: a source record is keyed by its identity [DOM-022], [DOM-023], [IMP-SAXO-007].
+///
+/// The 2023 fixture is not among these — it is refused outright, which the next test states.
+#[test]
+fn re_reading_a_fixture_identifies_the_same_records() {
+    for (path, export) in importable() {
+        let account = Account::new("saxo", account(&export.rows()[0]).expect("an account"));
+        let identities = |export: &SaxoWorkbook| -> BTreeSet<RecordIdentity> {
+            export
+                .rows()
+                .iter()
+                .map(|row| {
+                    identify(
+                        &account,
+                        &IdentitySource::BrokerReference(identity(row).expect("an identity")),
+                    )
+                })
+                .collect()
+        };
+
+        let first = identities(&export);
+        let content = fs::read(&path).expect("a fixture is readable");
+        let second = identities(&SaxoWorkbook::read(&content).expect("the fixture reads"));
+
+        assert_eq!(
+            first,
+            second,
+            "{} identifies differently twice",
+            path.display()
+        );
+        assert_eq!(
+            first.len(),
+            export.rows().len(),
+            "{} has one identity per row",
+            path.display()
+        );
+    }
+}
+
+/// A file whose rows do not all identify differently is refused rather than deduplicated
+/// [IMP-SAXO-024].
+///
+/// The 2023 fixture carries a `Terugkoopaanbod` and its `Terugboeking` under one
+/// `Corporate action-Id` and no other id column, so both fall through to that id and produce one
+/// identity. Deduplicating them would drop the reversal and leave the event's money wrong, so the
+/// file is refused. The composite identity that will tell such rows apart is IMP-SAXO-008, which
+/// is undecided and is FIF-084's; until it lands this refusal is the safe failure, and this test
+/// is what will change when it does.
+#[test]
+fn a_file_with_two_rows_of_one_identity_is_refused() {
+    let refused: Vec<(PathBuf, SaxoError)> = exports()
+        .into_iter()
+        .filter_map(|(path, export)| {
+            check_identities(export.rows())
+                .err()
+                .map(|error| (path, error))
+        })
+        .collect();
+
+    let [(path, error)] = refused.as_slice() else {
+        panic!("one fixture is refused, not {}", refused.len());
+    };
+    assert!(path.ends_with("Transactions_10000000_2023-01-01_2023-12-31.xlsx"));
+    assert_eq!(
+        *error,
+        SaxoError::DuplicateIdentity {
+            identity: "5000135".to_owned(),
+            first: 11,
+            second: 12,
+        }
+    );
 }

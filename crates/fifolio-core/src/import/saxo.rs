@@ -1,7 +1,8 @@
 //! Reading a Saxo NL export: its three sheets, their headers, their dates and their joins.
 //!
-//! This module is the container half of the Saxo importer. What a column *means* — the account
-//! suffix, the identity, the ordering key, the `Acties` classification — is not here.
+//! This module is the container half of the Saxo importer. What a column *means* — the ordering
+//! key, the `Acties` classification, the money — is not here; the one part of it that is, in the
+//! [`identity`] submodule, is the account and the row identity.
 //!
 //! # Three sheets, or no import
 //!
@@ -44,6 +45,12 @@
 //! not its expected one is refused naming what is missing and what is unexpected, which is what
 //! an export in another language produces: only Dutch is supported [IMP-SAXO-004].
 //!
+//! # Why identity is a submodule
+//!
+//! [`identity`] sits under this module rather than beside it because both questions it answers —
+//! which Depot a row belongs to and which row it is — are read off the `Transacties` sheet, whose
+//! columns and blank-cell rules are defined here and nowhere else.
+//!
 //! # Blank cells
 //!
 //! A blank cell arrives in two shapes — a zero-length shared string, as Saxo writes it, and an
@@ -60,6 +67,8 @@ use rust_decimal::prelude::ToPrimitive as _;
 use thiserror::Error;
 
 use super::reader::{ReadError, SheetRows, SourceRow, SpreadsheetReader};
+
+pub mod identity;
 
 /// One of the three sheets a Saxo export carries [IMP-SAXO-001].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -236,6 +245,28 @@ pub enum SaxoError {
     /// A date column holding something that is not an Excel serial number [IMP-SAXO-003].
     #[error("the column {header} holds {value:?}, which is not an Excel serial date")]
     NotADate { header: String, value: String },
+    /// A row carrying no `Rekening-ID`, so naming no account [IMP-SAXO-005].
+    #[error("the row carries a blank Rekening-ID, so it names no account")]
+    NoAccount,
+    /// A row populating none of the four identity columns [IMP-SAXO-007]. It is a failed row
+    /// and not a refusal of the file: every row of the sample carries one of the four.
+    #[error(
+        "the row populates none of Transactie-ID, Bk Record Id, Booking Id and \
+         Corporate action-Id, so it cannot be identified"
+    )]
+    NoIdentity,
+    /// Two rows producing one identity. The file is refused rather than deduplicated
+    /// [IMP-SAXO-024]: deduplicating would keep one row of the pair and drop whatever the other
+    /// carried, which for a corporate action paid over several rows is money.
+    #[error(
+        "rows {first} and {second} of the Saxo export both identify as {identity}; \
+         the file is refused rather than deduplicated"
+    )]
+    DuplicateIdentity {
+        identity: String,
+        first: usize,
+        second: usize,
+    },
     /// A column asked for that the row does not carry, which a header check makes unreachable
     /// for a column of the sheet and reachable for a caller naming the wrong sheet's.
     #[error("the row carries no column {header}")]

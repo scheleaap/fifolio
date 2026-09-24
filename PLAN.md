@@ -532,7 +532,7 @@ Blocked by: IMP-003 is on the undecided list (OQ-015).
 Notes: Split out of FIF-065 in revision 8. OQ-015 observes that the Trade Republic export carries no account identifier at all, so the check has nothing to read there; whether the requirement admits uncheckable formats or Trade Republic files are matched some other way decides the shape of this item, not merely a detail of it. Its server-side counterpart is SRV-056 in FIF-090, blocked by the same question.
 
 ## FIF-019 Saxo: file reading and header normalization
-Status: todo
+Status: done
 Requirements: IMP-SAXO-001, IMP-SAXO-002, IMP-SAXO-003, IMP-SAXO-004, IMP-SAXO-037, TST-030
 Depends on: FIF-017, FIF-093
 Acceptance: reads **all three sheets** — `Transacties` (31 columns), `_Transacties` (24) and `Bookings` (21) — each with its one header row, and refuses a workbook missing any of them rather than importing the cash ledger alone; joins them as `importers.md` states, a `Transacties` row to its `_Transacties` counterpart on `Transactie-ID` else `Corporate action-Id`, and to its `Bookings` components on `Bk Record Id` / `Booking Id` else `Corporate action-Id`, with a corporate action's legs being **its `_Transacties` rows under one `Corporate action-Id`, however many there are** — one, two or three in the sample — all of which the join answers; matches headers after whitespace normalization, so `Bk\xa0Record\xa0Id`, `Booking\xa0Id` and ` Positie-ID` resolve; converts Excel serial numbers to dates; rejects a non-Dutch header set with a clear error rather than mis-mapping; a blank cell is accepted in both the shapes it arrives in — a zero-length shared string as Saxo writes it and an empty cell as the fixture writer produces it — and a test says so. Tested against the rebuilt Saxo fixtures, including that every position-affecting row resolves a `_Transacties` counterpart and that an unjoinable row is a refusal and not a silent absence.
@@ -561,6 +561,15 @@ DEC-071 (`786cfd2`) withdrew. The join itself is right and needs no change; the 
 count is now false — the sample carries one-leg, two-leg and three-leg groups — and must be restated
 before it is committed, or the next reader takes it for the rule. Summing the sides and cancelling
 opposing legs is **not** this item's work; it is FIF-096.
+Revision 33: **committed as `a97004e` and done.** The tree revision 32 found uncommitted was
+reviewed and landed: `crates/fifolio-core/src/import/saxo.rs`, `import/test_workbook.rs` and
+`crates/fifolio-core/tests/saxo_export.rs`, with `cargo test --workspace` green. The correction
+revision 32 demanded was made before the commit — the `detail_of` documentation now states a group's
+legs are its `_Transacties` rows "however many there are", naming the two-`Gekocht` Philips dividend
+and the three-leg DeVolksbank tender, and the DEC-070 "both its legs" phrasing is gone. The settled
+reading stands as recorded: one source record per `Transacties` row, the detail sheets being joined
+inputs to a derivation; FIF-020, FIF-024, FIF-025, FIF-067 and FIF-094 inherit it.
+
 
 ## FIF-083 Saxo: newest-first row direction
 Status: blocked
@@ -1001,6 +1010,22 @@ Ids are never reused.
 * **FIF-018 — Corporate action engine.** Dropped in this revision. `domain.md` replaced the separate corporate-action entity with transaction variants (DEC-024, DEC-025), retiring DOM-014, DOM-015 and DOM-050 to DOM-053. Its two halves became FIF-061 (splits and effective quantity) and FIF-063 (transfer out emission, basis and decomposition); DOM-016, the citation rule, moved to FIF-056.
 
 # Revision history
+
+**Revision 33 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
+design/` is empty), so no requirement was added, restated or retired and coverage is untouched at
+**345** ids. `HEAD` is `a97004e`; `cargo test --workspace` is green.
+
+* **Completed:** **FIF-019**, Saxo file reading and header normalization. Revision 32 found it built
+  and uncommitted and kept it `todo` on the rule that completion is recorded against a commit; it is
+  now committed, the leg-count correction that revision demanded was made first, and it is `done`.
+* No item added, split, retired or re-scoped. No status changed but FIF-019's.
+* `design/open-questions.md` is unchanged: thirty-four blocked requirements, twenty-four `blocked`
+  items, and no item blocked in an earlier revision has been released.
+* **Next ready item: FIF-020**, Saxo account normalization and row identity — FIF-019 completing is
+  exactly what released it, its other dependency FIF-007 having been `done` since revision 21. Its
+  four Saxo identifiers are all decided; the undecided part of that area, the corporate-action
+  composite identity IMP-SAXO-008, is already split out into the blocked FIF-084, so the item is
+  reviewable on its own.
 
 **Revision 32 (this run).** `design/` changed in `786cfd2` (DEC-071), which corrects DEC-070 one
 revision after it landed. `HEAD` is `786cfd2`; the working tree carries **FIF-019 built and
@@ -1539,6 +1564,8 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Unchanged in revision 33: `design/` did not change, so the figures below stand as verified.
 
 Re-verified in revision 32 against `design/` at `786cfd2`: **345** ids on the `Requirements:` lines,
 each exactly once, precisely the live ids in `design/` less the nine retired ones. The two ids added
