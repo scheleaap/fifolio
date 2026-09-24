@@ -42,6 +42,9 @@
 //! than being made here.
 
 pub mod reader;
+pub mod saxo;
+#[cfg(test)]
+mod test_workbook;
 
 use std::collections::BTreeSet;
 

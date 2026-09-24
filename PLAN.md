@@ -60,7 +60,7 @@ Republic half is untouched, as is everything about identity substitution and amo
 FIF-093 extends that machinery to two more sheets rather than replacing it.
 
 ## FIF-093 Saxo fixtures carry all three sheets
-Status: todo
+Status: done
 Requirements: TST-031
 Depends on: FIF-003
 Acceptance: the anonymizer reads and writes `Transacties`, `_Transacties` and `Bookings`, each with
@@ -107,6 +107,10 @@ assertions in `fixture_structure.rs` (`every_position_affecting_row_has_a_detail
 (`the_components_of_a_booking_still_sum_to_it`, `a_traded_value_is_still_its_quantity_at_its_price`);
 quantities and dates untouched; and byte-reproducibility
 (`a_written_fixture_reads_back_as_it_was_written_and_is_byte_reproducible`).
+Done in revision 31, commit `7a0d64f`, which is the work revision 30 found in the tree. The tree is
+clean, `cargo test --workspace` gives **344 passed, 0 failed** — four more than the uncommitted state
+revision 30 measured — and each named assertion above exists and runs. The three sheets are present
+in all five committed fixtures.
 
 ## FIF-004 Money scales and rounding mode
 Status: done
@@ -531,10 +535,32 @@ Notes: Split out of FIF-065 in revision 8. OQ-015 observes that the Trade Republ
 Status: todo
 Requirements: IMP-SAXO-001, IMP-SAXO-002, IMP-SAXO-003, IMP-SAXO-004, IMP-SAXO-037, TST-030
 Depends on: FIF-017, FIF-093
-Acceptance: reads **all three sheets** — `Transacties` (31 columns), `_Transacties` (24) and `Bookings` (21) — each with its one header row, and refuses a workbook missing any of them rather than importing the cash ledger alone; joins them as `importers.md` states, a `Transacties` row to its `_Transacties` counterpart on `Transactie-ID` else `Corporate action-Id`, and to its `Bookings` components on `Bk Record Id` / `Booking Id` else `Corporate action-Id`, with a corporate action's two legs being two `_Transacties` rows under one `Corporate action-Id` distinguished by `Trade Event Type` (`Gekocht` / `Verkocht`); matches headers after whitespace normalization, so `Bk\xa0Record\xa0Id`, `Booking\xa0Id` and ` Positie-ID` resolve; converts Excel serial numbers to dates; rejects a non-Dutch header set with a clear error rather than mis-mapping; a blank cell is accepted in both the shapes it arrives in — a zero-length shared string as Saxo writes it and an empty cell as the fixture writer produces it — and a test says so. Tested against the rebuilt Saxo fixtures, including that every position-affecting row resolves a `_Transacties` counterpart and that an unjoinable row is a refusal and not a silent absence.
+Acceptance: reads **all three sheets** — `Transacties` (31 columns), `_Transacties` (24) and `Bookings` (21) — each with its one header row, and refuses a workbook missing any of them rather than importing the cash ledger alone; joins them as `importers.md` states, a `Transacties` row to its `_Transacties` counterpart on `Transactie-ID` else `Corporate action-Id`, and to its `Bookings` components on `Bk Record Id` / `Booking Id` else `Corporate action-Id`, with a corporate action's legs being **its `_Transacties` rows under one `Corporate action-Id`, however many there are** — one, two or three in the sample — all of which the join answers; matches headers after whitespace normalization, so `Bk\xa0Record\xa0Id`, `Booking\xa0Id` and ` Positie-ID` resolve; converts Excel serial numbers to dates; rejects a non-Dutch header set with a clear error rather than mis-mapping; a blank cell is accepted in both the shapes it arrives in — a zero-length shared string as Saxo writes it and an empty cell as the fixture writer produces it — and a test says so. Tested against the rebuilt Saxo fixtures, including that every position-affecting row resolves a `_Transacties` counterpart and that an unjoinable row is a refusal and not a silent absence.
 Notes: Revision 3 splits IMP-SAXO-025, the newest-first direction rule, into FIF-083. TST-030 is new in revision 7: it is a known divergence of the fixtures (FIF-003) but its assertion is on this reader, which is why it is owned here.
 **Re-scoped in revision 29 by DEC-070 (`c04362c`), which restated IMP-SAXO-001 and added IMP-SAXO-037.** The file is three sheets, not one, and the two that were never opened carry the quantities, the traded values and the tax figures. Nothing built is invalidated — this item has never been started — but two things follow. The dependency moves from FIF-003 to **FIF-093**: the committed fixtures reproduce one sheet, so this item cannot be tested until they are rebuilt, and DEC-070 says so in as many words. And `SpreadsheetReader` (FIF-017, `done`) takes the **first** sheet and checks nothing about it, which its own documentation records as the format's business; reading three named sheets is therefore this item's increment and not a defect in FIF-017.
 One thing this item must settle in code and say out loud: what a Saxo **source record** is now. DOM-120 renders one spreadsheet row, and a Saxo event is up to three rows across three sheets. Whether the record is the `Transacties` row with its counterparts folded into the rendering, or one record per physical row with the join re-derived later, is not stated in `design/` and bears on identity (FIF-020, FIF-084), on consumption (FIF-058, blocked) and on what an undo removes. Record the reading chosen and its consequences here; if it cannot be chosen from `importers.md`, that is a `spec-auditor` finding and not an implementer's judgement call.
+Revision 32 finds this item **built in the working tree and uncommitted**:
+`crates/fifolio-core/src/import/saxo.rs` (903 lines), `import/test_workbook.rs` (372) and
+`crates/fifolio-core/tests/saxo_export.rs` (270) are untracked, `import/mod.rs`, `import/reader.rs`
+and `Cargo.toml` are modified, and `cargo test --workspace` gives **371 passed, 0 failed**, up from
+344. It stays `todo` for the reason revisions 13, 15 and 30 kept FIF-059, FIF-008 and FIF-093 at
+`todo`: completion is recorded against a commit, never against a working tree, and uncommitted is
+unreviewed. The outstanding work is review against the acceptance above and a commit, not a rebuild.
+The open reading the note above demanded **is settled in that tree and stated**: one source record
+per `Transacties` row, the detail sheets being joined inputs to a derivation rather than records of
+their own, argued from DOM-007 / DOM-120 (a record's rendering is one row's cells), from
+IMP-SAXO-026 (neither detail sheet carries `Transactiedatum`) and from IMP-SAXO-007 (a detail row
+shares the ledger row's identity columns, so per-row records would collide). The review should
+confirm that argument holds rather than re-open it; its consequence — a detail column is reachable
+only while the workbook is open — is what FIF-024, FIF-025, FIF-094 and FIF-067 inherit.
+**One correction the review must make**, and it is the reason the acceptance above changed this
+revision: the tree's `detail_of` documentation and its test
+`a_corporate_action_joins_both_its_legs_on_its_group_id` assert a corporate action is "**both** its
+legs ... two rows ... distinguished by `Trade Event Type`", which is the DEC-070 phrasing that
+DEC-071 (`786cfd2`) withdrew. The join itself is right and needs no change; the claim about leg
+count is now false — the sample carries one-leg, two-leg and three-leg groups — and must be restated
+before it is committed, or the next reader takes it for the rule. Summing the sides and cancelling
+opposing legs is **not** this item's work; it is FIF-096.
 
 ## FIF-083 Saxo: newest-first row direction
 Status: blocked
@@ -607,7 +633,41 @@ Status: todo
 Requirements: IMP-SAXO-033, IMP-SAXO-034, IMP-SAXO-035
 Depends on: FIF-022, FIF-021
 Acceptance: `Terugboeking` is matched as a **suffix** and never as a bare `Acties` value, so `Terugkoopaanbod - Terugboeking` and `Dividend - Terugboeking` classify as their prefix, reversing; summing a `Corporate action-Id` group, a reversal's cash and its costs both **subtract**, reproducing the DeVolksbank tender: 3946.14 paid, −1998.07 reversed, 1948.07 net; summation is over the **EUR** figures the rows carry and never over the native ones, because a group's rows may hold different `Omrekeningskoers` values. Unit tested over the reversal rows of the Saxo fixture for the classification, and over synthetic figures for the summation, the fixture's amounts being perturbed.
-Notes: New in revision 7 (DEC-056). Cut as its own item rather than folded into FIF-023, which is blocked, so that a decided rule is not frozen behind an undecided one; the group summation it provides is what FIF-067 (cash merger, tender and buyback decomposition) and FIF-025 (dividend grouping) each call, and both are gated on FIF-023 anyway. That reversal costs subtract is **chosen, not observed**: both reversal rows in five years of exports carry zero in `Totale kosten`. The code comment must say so and name the check to perform if a costed reversal ever arrives, because nothing in the tests can catch it being wrong.
+Notes: New in revision 7 (DEC-056). Cut as its own item rather than folded into FIF-023, which is blocked, so that a decided rule is not frozen behind an undecided one; the group summation it provides is what FIF-067 (cash merger, tender and buyback decomposition) and FIF-025 (dividend grouping) each call, and both are gated on FIF-023 anyway. Its `_Transacties` counterpart is **FIF-096** (revision 32): a reversal shows up as a leg as well as
+a labelled cash row, and the two halves are read by different rules. That reversal costs subtract is **chosen, not observed**: both reversal rows in five years of exports carry zero in `Totale kosten`. The code comment must say so and name the check to perform if a costed reversal ever arrives, because nothing in the tests can catch it being wrong.
+
+## FIF-096 Saxo: a corporate action's legs, summed per side and cancelled in pairs
+Status: todo
+Requirements: IMP-SAXO-044, IMP-SAXO-045
+Depends on: FIF-019
+Acceptance: given the `_Transacties` legs of one `Corporate action-Id`, two rules applied in this
+order and nowhere else: **first**, a leg whose quantity, price and traded value are the exact
+negatives of another leg in the same group cancels with it, both removed, reproducing the
+DeVolksbank tender — `Verkocht 2000 @ 999.03`, `Gekocht 2000 @ 999.03`, `Verkocht 2000 @ 99.90`
+leaves one disposal of 2000 at 99.90 for 1998.07, the figure `Bookings` and the cash ledger both
+show; **second**, each side's quantity is the **sum** of that side's remaining legs and is never
+taken by indexing one of them, reproducing the 2023 Philips dividend as **2** shares at 34.74 and
+not 1. No caller may read "the `Gekocht` leg": the shape returned offers a summed side and no way to
+ask for a single leg, so the error DEC-071 closes is unreachable rather than merely tested for. Unit
+tests cover every leg shape the table in `importers.md` lists — one `Gekocht`, one `Verkocht` plus
+one `Gekocht`, one `Verkocht`, two `Gekocht`, two `Verkocht` plus one `Gekocht`, one `Deponering`
+whose event type is neither — and a test asserts that a near-miss pair, equal in quantity and
+opposite in price, does **not** cancel.
+Notes: New in revision 32, carrying the two identifiers `importers.md` gained in `786cfd2`
+(DEC-071). Cut as its own item rather than folded into FIF-067, FIF-094 or FIF-025 because all three
+read it — the split ratio is a summed `Gekocht` over a summed `Verkocht`, the tender's disposal is a
+summed side after cancellation, the stock election's share count is a summed `Gekocht` — and two of
+them are gated on the blocked FIF-023 while this rule is decided and reviewable on its own against
+the Legs table.
+It is the `_Transacties` counterpart of **FIF-088**, which sums a group's *cash* on `Transacties`
+and matches `Terugboeking` as an `Acties` suffix. The two are deliberately separate: FIF-088 reads a
+label and subtracts money, this item reads quantities and removes rows, and a reversal shows up in
+both places. Whoever builds the second of the two should say in the code which half it is.
+Cancellation is exact-negation on three figures and not on quantity alone, because a legitimate
+`Verkocht 2000` against a `Gekocht 2000` at a different price is an exchange and not a reversal.
+This item does not classify, derive or emit anything: it answers what a group's sides are. What is
+done with them is FIF-067's, FIF-094's and FIF-025's, and their acceptance lines now read the sides
+from here.
 
 ## FIF-023 Saxo: row classification
 Status: blocked
@@ -630,7 +690,7 @@ Notes: Changed in this revision: DEC-040 reverses DEC-011's editable acquisition
 Status: todo
 Requirements: IMP-SAXO-018, IMP-SAXO-019, IMP-SAXO-042, IMP-SAXO-043
 Depends on: FIF-023, FIF-057
-Acceptance: dividend-type rows (`Dividend`, `Keuzedividend`, `Herbeleggingsdividend`) are grouped by `Corporate action-Id` *before* evaluation; if any row in a group carries a `Positie-ID`, the whole group becomes one pending entry requiring an explicit stock-or-cash decision with stock pre-selected; a group is read against its `Bookings` components rather than against the label, so a `Herbeleggingsdividend` decomposing into `Corporate actions - Fracties` and `Corporate actions - Voorheffing` and no share amount is ordinary cash and issues nothing, while a `Keuzedividend` carrying a `Corporate Actions - Share Amount` component issues shares and derives a `buy` with origin `stock_dividend`, its share count from the `Gekocht` leg's `Traded Quantity` and its taxable value from that component — the 2025 Philips case being 1 share at 20.09 against 28.05 on 33 eligible shares; neither figure is asked of the user. A regression test reproduces the two-row Philips shape — position-marked row carrying zero, cash row carrying the money with no marker — and asserts that row-by-row evaluation would drop the money while grouping does not; a second asserts that all nineteen `Herbeleggingsdividend` events issue no shares and leave the eligible position unchanged.
+Acceptance: dividend-type rows (`Dividend`, `Keuzedividend`, `Herbeleggingsdividend`) are grouped by `Corporate action-Id` *before* evaluation; if any row in a group carries a `Positie-ID`, the whole group becomes one pending entry requiring an explicit stock-or-cash decision with stock pre-selected; a group is read against its `Bookings` components rather than against the label, so a `Herbeleggingsdividend` decomposing into `Corporate actions - Fracties` and `Corporate actions - Voorheffing` and no share amount is ordinary cash and issues nothing, while a `Keuzedividend` carrying a `Corporate Actions - Share Amount` component issues shares and derives a `buy` with origin `stock_dividend`, its share count from the **summed** `Gekocht` side's `Traded Quantity` (FIF-096) and its taxable value from that component — the 2025 Philips case being 1 share at 20.09 against 28.05 on 33 eligible shares; neither figure is asked of the user. A regression test reproduces the two-row Philips shape — position-marked row carrying zero, cash row carrying the money with no marker — and asserts that row-by-row evaluation would drop the money while grouping does not; a second asserts that all nineteen `Herbeleggingsdividend` events issue no shares and leave the eligible position unchanged.
 Notes: Calibrated heuristic; its failure mode is a blocked attribution with a named shortfall, not a wrong figure. Keep that reasoning in the code comment. Blocked in revision 2 on IMP-SAXO-018, which left the undecided list in revision 3; the cost basis of the derived buy (FIF-057) is decided too. Still gated on FIF-023.
 **Widened in revision 29 by DEC-070**, which added IMP-SAXO-042 and IMP-SAXO-043. Both are readings of the two sheets nobody had opened, and together they remove what the plan had recorded as the largest block of manual data entry: the share count and the taxable value of a stock election are in the export, and the nineteen reinvestment dividends issue no shares at all. This item has never been started, so nothing is invalidated. What it does change is the heuristic's standing — `Bookings` answers directly what `Positie-ID` was being used to infer — so the code must say which of the two it is trusting where they disagree, and the answer stated by `importers.md` is `Bookings`.
 This is also the substance of **OQ-014**, which `open-questions.md` marks answered but keeps on its `Blocks:` line until the rule is written into `domain.md`. Until that entry is deleted, IMP-SAXO-013 is still blocked and **FIF-023** with it, so this item is still gated even though its own requirements are decided. That is a `spec-auditor` matter, not an implementer's.
@@ -645,18 +705,26 @@ Notes: The bond assertion is a factor assertion — 4183.80 and not 418,380 — 
 ## FIF-067 Saxo: cash merger, tender and buyback decomposition
 Status: todo
 Requirements: IMP-SAXO-031
-Depends on: FIF-023, FIF-063
-Acceptance: a `Fusie` or `Terugkoopaanbod` group, reversals included, derives both legs from `_Transacties` — the `Verkocht` leg disposing and the `Gekocht` leg opening, under the one `Corporate action-Id` — rather than asking the user for the quantity disposed and the target security, and produces a `sell` and/or a `transfer_out` with the cash and all of the costs on the sell leg; a group whose legs are absent or ambiguous falls back to a pending entry rather than guessing, and a test says which of the two each sample group takes.
+Depends on: FIF-023, FIF-063, FIF-096
+Acceptance: a `Fusie` or `Terugkoopaanbod` group, reversals included, derives both sides from `_Transacties` — the `Verkocht` side disposing and the `Gekocht` side opening, each summed after cancellation as FIF-096 answers them, under the one `Corporate action-Id` — rather than asking the user for the quantity disposed and the target security, and produces a `sell` and/or a `transfer_out` with the cash and all of the costs on the sell leg; a group whose legs are absent or ambiguous falls back to a pending entry rather than guessing, and a test says which of the two each sample group takes.
 Notes: Split out of FIF-023 in revision 2; IMP-SAXO-031 left the undecided list in revision 3. Still gated on FIF-063, whose transfer rules it derives against, and on FIF-023.
 **Restated in revision 29 by DEC-070**, which rewrote IMP-SAXO-031's row of the classification table from `pending` to `derived`. The item is not started, so nothing is invalidated; what changes is that the completion-queue shape this was to raise — a disposed quantity with an optional target, which **FIF-092** shipped as `Supplied::Disposal` — is now the fallback rather than the normal path. FIF-092 is `done` and that variant stays: DOM-097 still lists the shape, and a group whose legs cannot be read still needs it.
+Restated again in revision 32 by DEC-071: the DeVolksbank tender this item's own sample contains is
+three legs with a reversal among them, so "the `Verkocht` leg" was never a thing to read. Sides are
+summed after cancellation and that work is **FIF-096**, a new dependency. Still unstarted, so
+nothing is invalidated.
 
 ## FIF-094 Saxo: split and exchange ratios from the position sheet
 Status: todo
 Requirements: IMP-SAXO-040, IMP-SAXO-041
-Depends on: FIF-019, FIF-023, FIF-061
-Acceptance: a `Stock split` group derives its ratio as the `Gekocht` quantity over the `Verkocht` quantity of its two `_Transacties` legs, kept as the exact integer pair the sheet states rather than reduced or divided — Tesla `45 : 15`, OBAM `20 : 4` — and an `Omwisseling` group derives both quantities the same way, hence its ratio, with the target security taken from the `Gekocht` leg's instrument; neither asks the user for anything; a group with one leg, three legs, or a zero `Verkocht` quantity is a refusal or a pending entry and never a guessed ratio, and a test says which for each shape.
+Depends on: FIF-019, FIF-023, FIF-061, FIF-096
+Acceptance: a `Stock split` group derives its ratio as the **summed** `Gekocht` quantity over the **summed** `Verkocht` quantity of its `_Transacties` legs (FIF-096), kept as the exact integer pair the sheet states rather than reduced or divided — Tesla `45 : 15`, OBAM `20 : 4` — and an `Omwisseling` group derives both quantities the same way, hence its ratio, with the target security taken from the `Gekocht` legs' instrument, which must be a single instrument or the file is refused; neither asks the user for anything; a group with an empty side, or a zero summed `Verkocht` quantity, is a refusal or a pending entry and never a guessed ratio, and a test says which for each shape.
 Notes: New in revision 29, carrying the two identifiers `importers.md` gained in `c04362c` for rows the classification table used to mark `pending`. Cut as its own item rather than folded into FIF-023, which is blocked, for the same reason FIF-088 was: the derivation is decided and reviewable on its own once the classification that routes rows to it exists.
 The ratio's *representation* is FIF-061's (DOM-113, blocked by OQ-004), and this item must not settle it: what it owns is that the pair comes off the sheet as two integers, which is what makes FIF-061's exact-rational question answerable at all. FIF-092's `Supplied::Split` — a bare ratio for a split — stays in the manual-entry set as the fallback shape; DOM-097 still lists it.
+Restated in revision 32 by DEC-071 (`786cfd2`), which also restated IMP-SAXO-041's own sentence: the
+sides are summed, not indexed, and "a group with three legs" is no longer a refusal shape — the
+DeVolksbank tender is three legs and legitimate. The item is unstarted, so nothing is invalidated.
+The summing and cancelling themselves moved to **FIF-096**, which this item now depends on.
 Tesla 45:15 is 3:1 and OBAM 20:4 is 5:1, but the sheet states the quantities and not the reduced form; reducing early is where a 45:15 that is really a 3:1 on a partial position would be lost, so the pair is carried and the reduction, if any, is FIF-061's.
 
 ## FIF-027 Trade Republic: CSV reading, identity, ordering and sign convention
@@ -934,7 +1002,73 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 30 (this run).** `design/` is unchanged since `c04362c`, so nothing completed is
+**Revision 32 (this run).** `design/` changed in `786cfd2` (DEC-071), which corrects DEC-070 one
+revision after it landed. `HEAD` is `786cfd2`; the working tree carries **FIF-019 built and
+uncommitted** plus the user's untracked `docs/` and `tmp/`, and `cargo test --workspace` gives
+**371 passed, 0 failed**, up from revision 31's 344.
+
+* **Added:** **FIF-096**, a corporate action's legs summed per side and cancelled in pairs, carrying
+  the two identifiers `importers.md` gained — **IMP-SAXO-044** and **IMP-SAXO-045**. They were the
+  only uncovered ids; coverage is again complete. Cut as its own item, not folded into FIF-067,
+  FIF-094 or FIF-025, because all three read the rule and two of them are gated on the blocked
+  FIF-023 while this rule is decided.
+* **Restated, none of it invalidating built work:** **FIF-019**'s acceptance — a corporate action's
+  legs are its `_Transacties` rows under one id, *however many*, not two told apart by
+  `Trade Event Type`, which is the DEC-070 phrasing DEC-071 withdrew; **FIF-067** and **FIF-094**,
+  whose acceptance read "the `Gekocht` leg" and, in FIF-094's case, counted three legs as a refusal
+  shape — the DeVolksbank tender is three legs and legitimate; **FIF-025**, whose share count is the
+  summed side. All three are unstarted. Each gains FIF-096 as a dependency.
+* **FIF-093 is `done` and stays `done`.** Its fixture assertion is `rows.len() >= 2` with both event
+  types present, which is true of the sample and assumes no leg count, so DEC-071 does not reach it.
+  The Philips two-`Gekocht` and DeVolksbank three-leg groups are real rows of the committed
+  fixtures, which is how DEC-071 was found at all.
+* **Completed:** none. **Newly blocked:** none. **Unblocked:** none. **Uncovered:** none.
+* **345** ids on `Requirements:` lines, each exactly once, precisely the live ids in `design/` less
+  the nine retired ones; **34** blocked ids across OQ-001 to OQ-019, unchanged — `open-questions.md`
+  is untouched by `786cfd2`; **24** items `blocked`, every one carrying a blocked id and no other
+  item doing so. 95 items: **24 `done`, 47 `todo`, 24 `blocked`**.
+* **Next to build is FIF-019 again**, and the outstanding work is **review and a commit, not a
+  rebuild**: the reader, its three sheets, its joins and 27 new tests are in the tree untracked. Two
+  things the review owes. The open reading FIF-019 was told to settle — what a Saxo source record is
+  when an event spans three sheets — *is* settled there and argued from DOM-007, DOM-120,
+  IMP-SAXO-026 and IMP-SAXO-007: one record per `Transacties` row. And the tree still carries
+  DEC-070's withdrawn claim about two legs, in `detail_of`'s documentation and in the test
+  `a_corporate_action_joins_both_its_legs_on_its_group_id`; the join is right, the claim about leg
+  count is not, and it must be restated before it is committed.
+* A fourth consecutive revision has now found substantial work built and uncommitted (FIF-059,
+  FIF-008 thrice, FIF-093, now FIF-019). The plan cannot fix that, and records it: if a revision
+  finds FIF-019 uncommitted again, what needs attention is the hand-off, not the item.
+
+**Revision 31.** `design/` is unchanged since `c04362c`, so nothing completed is
+invalidated, no requirement moved and no item was added, split or dropped. `HEAD` is `7a0d64f`, the
+tree is clean apart from the user's untracked `docs/` and `tmp/`, and `cargo test --workspace` gives
+**344 passed, 0 failed**.
+
+* **Completed:** **FIF-093** (`7a0d64f`), the Saxo fixtures across all three sheets. This is the
+  work revision 30 found built and uncommitted and therefore left at `todo`; the commit is what
+  this plan counts, so the status flips now. The suite gained 29 tests since revision 29's 315.
+* **Added / split / dropped / re-scoped / renumbered:** none. No dependency moved.
+* **Newly blocked:** none. **Unblocked:** none. **Uncovered:** none.
+* Re-verified mechanically: **343** ids on `Requirements:` lines, each exactly once, precisely the
+  live ids in `design/` less the nine retired ones; **34** blocked ids across OQ-001 to OQ-019
+  (OQ-020 blocks nothing); **24** items `blocked`, every one of them carrying a blocked id and no
+  other item doing so. 94 items: **24 `done`, 46 `todo`, 24 `blocked`**.
+* **A correction to revisions 29 and 30**, which both wrote that "every other unblocked `todo` waits
+  on a blocked item". That was wrong. Three items are ready this revision — FIF-019, **FIF-027**
+  (Trade Republic CSV reading) and **FIF-032** (server binary and OpenAPI) — and FIF-027 and FIF-032
+  were equally ready then, their dependencies having been `done` since revision 29. Nothing was
+  mis-ordered by it, since FIF-093 genuinely came first, but the claim was false and is recorded
+  rather than quietly dropped.
+* **Next to build is FIF-019**, Saxo file reading and header normalization: first in plan order of
+  the three ready items, and the one that unblocks the largest amount of downstream Saxo work.
+  Its unstarted re-scope by DEC-070 stands — three named sheets and their joins, not the first
+  sheet — and it now has the fixtures to be tested against. The open reading it must settle and
+  state, per its Notes, is what a Saxo source record is when one event spans three rows on three
+  sheets; if `importers.md` does not decide it, that is a `spec-auditor` finding, not an
+  implementer's choice.
+* `docs/` is untracked and is the user's own; no item covers it and none should.
+
+**Revision 30.** `design/` is unchanged since `c04362c`, so nothing completed is
 invalidated, no requirement moved and no item changed status. What changed is the working tree:
 **FIF-093 is built there and not committed**, and `cargo test --workspace` gives **340 passed,
 0 failed**, up from revision 29's 315. The five Saxo fixtures now carry all three sheets, verified
@@ -1405,6 +1539,20 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Re-verified in revision 32 against `design/` at `786cfd2`: **345** ids on the `Requirements:` lines,
+each exactly once, precisely the live ids in `design/` less the nine retired ones. The two ids added
+by DEC-071 — **IMP-SAXO-044** (a leg count is never assumed; sides are summed) and **IMP-SAXO-045**
+(an exactly opposing pair cancels first) — were uncovered when this revision began and are now
+carried by the new **FIF-096**. Nothing is uncovered and nothing is deferred. `open-questions.md` is
+unchanged, so the thirty-four blocked ids and the twenty-four `blocked` items carrying them stand as
+revision 31 recorded them, of ninety-five items.
+
+Re-verified in revision 31 by the same script, against a `design/` unchanged since `c04362c`: **343**
+ids on the `Requirements:` lines, each exactly once, precisely the live ids in `design/` less the
+nine retired ones, which are assigned to nothing. Every item carrying one of the thirty-four ids on
+a `Blocks:` line of `open-questions.md` is `blocked` and no other item is — twenty-four items of
+ninety-four. No placement changed. Nothing is uncovered and nothing is deferred.
 
 Re-verified in revision 30 by the same script, against a `design/` unchanged since `c04362c`: **343**
 ids, each named by exactly one item, none uncovered, none deferred; the twenty-four items carrying

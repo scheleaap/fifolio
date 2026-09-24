@@ -105,6 +105,10 @@ pub enum ReadError {
     NotUtf8 { reason: String },
     #[error("the workbook holds no sheet")]
     NoSheet,
+    /// A sheet a format names is not in the workbook. Saxo's three are IMP-SAXO-001, and a
+    /// workbook carrying only the cash ledger is refused rather than imported as one.
+    #[error("the workbook holds no sheet named {name}")]
+    MissingSheet { name: String },
     #[error("the file holds no header row")]
     NoHeaderRow,
     /// Two columns sharing a name: `field` would answer the first and the parsed fields the
@@ -231,54 +235,111 @@ fn check_unique(headers: &[String]) -> Result<(), ReadError> {
 /// An XLSX workbook, whose first sheet holds a header row and one row per record.
 ///
 /// Which sheet a format reads, and what its header row must contain, is that format's rule:
-/// Saxo's single sheet and its 31 Dutch headers are IMP-SAXO-001 and IMP-SAXO-002. This reader
-/// takes the first sheet and the first row of it, and checks neither.
+/// Saxo's three sheets and their Dutch headers are IMP-SAXO-001 and IMP-SAXO-002, and
+/// [`crate::import::saxo`] is where they are named. This reader takes a sheet and the first row
+/// of it, and checks neither.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpreadsheetReader;
 
+/// One sheet as read: its header row, and its data rows.
+///
+/// The headers are carried separately as well as on every row, because a sheet with no data row
+/// still has a header row and a format checks it: an export in the wrong language is refused on
+/// its headers whether or not it happens to carry rows [IMP-SAXO-004].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SheetRows {
+    /// The header row, as the file spells it, in sheet column order.
+    pub headers: Vec<String>,
+    /// The data rows, in file order.
+    pub rows: Vec<SourceRow>,
+}
+
+impl SpreadsheetReader {
+    /// Each named sheet, in the order named, the header rows consumed.
+    ///
+    /// The whole set is asked for at once because a format reading several sheets reads them
+    /// from one workbook: they are joined to each other, so a missing one is a refusal of the
+    /// file rather than a sheet read separately and found absent [IMP-SAXO-001].
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::MissingSheet`] when the workbook does not carry one of `names`, and
+    /// otherwise as [`RowReader::rows`].
+    pub fn sheets(&self, content: &[u8], names: &[&str]) -> Result<Vec<SheetRows>, ReadError> {
+        let mut workbook = open(content)?;
+        let present: BTreeSet<String> = workbook.sheet_names().into_iter().collect();
+        names
+            .iter()
+            .map(|name| {
+                if present.contains(*name) {
+                    rows_of(&mut workbook, name)
+                } else {
+                    Err(ReadError::MissingSheet {
+                        name: (*name).to_owned(),
+                    })
+                }
+            })
+            .collect()
+    }
+}
+
 impl RowReader for SpreadsheetReader {
     fn rows(&self, content: &[u8]) -> Result<Vec<SourceRow>, ReadError> {
-        let mut workbook: Xlsx<_> =
-            Xlsx::new(Cursor::new(content)).map_err(|error| ReadError::Malformed {
-                reason: error.to_string(),
-            })?;
+        let mut workbook = open(content)?;
         let sheet = workbook
             .sheet_names()
             .first()
             .cloned()
             .ok_or(ReadError::NoSheet)?;
-        let range = workbook
-            .worksheet_range(&sheet)
-            .map_err(|error| ReadError::Malformed {
-                reason: error.to_string(),
-            })?;
-
-        let mut rows = range.rows();
-        let header_row = rows.next().ok_or(ReadError::NoHeaderRow)?;
-        let headers = header_row
-            .iter()
-            .enumerate()
-            .map(|(column, cell)| cell_text(cell, 0, column))
-            .collect::<Result<Vec<_>, _>>()?;
-        check_unique(&headers)?;
-
-        rows.enumerate()
-            .map(|(index, cells)| {
-                let columns = headers
-                    .iter()
-                    .enumerate()
-                    // A column the row does not reach is absent, and an absent column is
-                    // omitted from the rendering [DOM-120].
-                    .filter_map(|(column, name)| cells.get(column).map(|cell| (column, name, cell)))
-                    .map(|(column, name, cell)| {
-                        cell_text(cell, index + 1, column).map(|text| (name.clone(), text))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let raw = canonical_rendering(&columns);
-                Ok(SourceRow::new(columns, raw))
-            })
-            .collect()
+        rows_of(&mut workbook, &sheet).map(|sheet| sheet.rows)
     }
+}
+
+fn open(content: &[u8]) -> Result<Xlsx<Cursor<&[u8]>>, ReadError> {
+    Xlsx::new(Cursor::new(content)).map_err(|error| ReadError::Malformed {
+        reason: error.to_string(),
+    })
+}
+
+/// One sheet of an opened workbook: its header row, and the data rows under it.
+fn rows_of(workbook: &mut Xlsx<Cursor<&[u8]>>, sheet: &str) -> Result<SheetRows, ReadError> {
+    let range = workbook
+        .worksheet_range(sheet)
+        .map_err(|error| ReadError::Malformed {
+            reason: error.to_string(),
+        })?;
+
+    let mut rows = range.rows();
+    let header_row = rows.next().ok_or(ReadError::NoHeaderRow)?;
+    let headers = header_row
+        .iter()
+        .enumerate()
+        .map(|(column, cell)| cell_text(cell, 0, column))
+        .collect::<Result<Vec<_>, _>>()?;
+    check_unique(&headers)?;
+
+    let data = rows
+        .enumerate()
+        .map(|(index, cells)| {
+            let columns = headers
+                .iter()
+                .enumerate()
+                // A column the row does not reach is absent, and an absent column is
+                // omitted from the rendering [DOM-120].
+                .filter_map(|(column, name)| cells.get(column).map(|cell| (column, name, cell)))
+                .map(|(column, name, cell)| {
+                    cell_text(cell, index + 1, column).map(|text| (name.clone(), text))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let raw = canonical_rendering(&columns);
+            Ok(SourceRow::new(columns, raw))
+        })
+        .collect::<Result<Vec<_>, ReadError>>()?;
+
+    Ok(SheetRows {
+        headers,
+        rows: data,
+    })
 }
 
 /// A cell as the file holds it [DOM-120].
