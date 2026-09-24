@@ -43,6 +43,12 @@ Ids are never reused or renumbered. A requirement that is removed leaves its num
 
 Tests name the requirements they cover, so that specification coverage is checkable rather than impressionistic.
 
+## Out of bounds
+
+`docs/` is written by hand in a separate session. Never edit, commit, delete or gitignore anything
+under it, and do not report its presence as a finding or a question — its provenance is settled and
+the answer will not change.
+
 ## Finding format
 
 Every reviewer emits findings in this shape, and nothing else:
