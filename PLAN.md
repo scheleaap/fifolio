@@ -605,11 +605,23 @@ per-date choice of which column to supply is this item's binding of it, not a ch
 mechanism.
 
 ## FIF-020 Saxo: account normalization and row identity
-Status: todo
+Status: done
 Requirements: DOM-003, IMP-SAXO-005, IMP-SAXO-006, IMP-SAXO-007, IMP-SAXO-024
 Depends on: FIF-019, FIF-007
 Acceptance: `Rekening-ID` currency suffix stripped, so `.../1000000EUR|USD|CAD` collapse onto one account; `Klant-id` never used as the account; identity is the first populated of `Transactie-ID`, `Bk Record Id`, `Booking Id`, `Corporate action-Id`; if two rows still produce one identity the file is rejected rather than deduplicated. Re-importing the fixture twice yields no new records.
 Notes: The collision rejection (IMP-SAXO-024) was new in revision 2. Revision 3 splits the `Corporate action-Id` composite identity (IMP-SAXO-008) into FIF-084, it being undecided; until that lands, the corporate-action fallback is the bare id, so the collision refusal will fire on the TransAlta shape rather than distinguishing its rows. That is the safe failure and the refusal test covers it.
+Done in revision 34, commit `95fac5e`, in `crates/fifolio-core/src/import/saxo/identity.rs` with
+its integration cases in `crates/fifolio-core/tests/saxo_export.rs`. `account` strips the currency
+suffix so the EUR, USD and CAD sub-accounts collapse onto one Depot [DOM-003, IMP-SAXO-005] and
+never reads `Klant-id` [IMP-SAXO-006]; `identity` takes the first populated of `Transactie-ID`,
+`Bk Record Id`, `Booking Id`, `Corporate action-Id` after the whitespace normalization FIF-019
+supplies [IMP-SAXO-007]; `check_identities` refuses a file whose rows collide rather than
+deduplicating, including one value appearing in two different columns [IMP-SAXO-024]. The safe
+failure this item's note predicted is asserted rather than assumed: the test named for the
+three-row TransAlta shape shows the refusal firing until FIF-084 lands. `cargo test --workspace`
+is green at **386 passed, 0 failed**, up from 371.
+That commit also carried revision 33's own PLAN.md edits, which is why the plan it committed still
+showed this item as `todo`; the record is corrected here rather than by rewriting that commit.
 
 ## FIF-084 Saxo: corporate action row identity
 Status: blocked
@@ -686,6 +698,12 @@ Acceptance: `Transactietype` plus `Acties` map to exactly the table in `importer
 Blocked by: IMP-SAXO-013 is on the undecided list, and it is the whole of the item — the classification table is its single requirement, so there is nothing to split off. Everything downstream of it (FIF-024, FIF-025, FIF-067) waits.
 Notes: Newly blocked in revision 3; it was `todo` in revision 2. **Three** open questions now reach it: OQ-005 (when an expiration of nothing is detected), OQ-008 (an `Acties` value outside the table, with a live `Overige Corporate Action` instance) and, new in revision 8, OQ-014 — where a `Herbeleggingsdividend`'s share count and price come from, the export carrying neither. All three must close. OQ-014 is the one with scope beyond this item: 19 events in the sample against 12 for every other corporate action combined, so its answer decides how much of the tool's use is data entry, and it bears on FIF-025 and FIF-057.
 Revision 29: **OQ-014 is answered but still blocks.** DEC-070 found the figures in the export — the share count on `_Transacties`, the taxable value in `Bookings`, and no shares at all on the nineteen `Herbeleggingsdividend` events — and `open-questions.md` marks the entry answered while keeping it in the file, and therefore on a `Blocks:` line, "until the rule is written into `domain.md` and the entry deleted". This plan takes the `Blocks:` lines literally, as it is required to, so IMP-SAXO-013 stays blocked and this item with it. OQ-005 and OQ-008 are untouched by DEC-070 and would keep it blocked anyway, so the practical cost is nil — but the classification table this item owns was substantially rewritten by DEC-070 (three rows moved from `pending` to `derived`), and the acceptance above still reads the old table. It is **not** rewritten here, because the item is blocked and an acceptance nobody can review is better left showing its age than quietly updated; the derivations themselves are covered by FIF-094, FIF-067 and FIF-025, whose acceptance lines are current.
+Carried in from FIF-021: `Booked::conversion` returns the reciprocal of `Omrekeningskoers` at full
+precision, which is the correct intermediate (ARC-009, DEC-027), but the *rounded to the FX scale*
+half of IMP-SAXO-029 belongs to whichever row-to-transaction mapping first persists a Saxo
+conversion. It must apply `conversion.rate().rounded()` at the storage boundary; storage refuses an
+unrounded rate outright (`UnscaledValue { field: "conversion_rate", scale: 6 }`), so skipping it is
+a failed insert rather than a wrong figure.
 
 ## FIF-024 Saxo: `Deponering` transfers in
 Status: todo
@@ -1010,6 +1028,28 @@ Ids are never reused.
 * **FIF-018 — Corporate action engine.** Dropped in this revision. `domain.md` replaced the separate corporate-action entity with transaction variants (DEC-024, DEC-025), retiring DOM-014, DOM-015 and DOM-050 to DOM-053. Its two halves became FIF-061 (splits and effective quantity) and FIF-063 (transfer out emission, basis and decomposition); DOM-016, the citation rule, moved to FIF-056.
 
 # Revision history
+
+**Revision 34 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
+design/` is empty), so no requirement was added, restated or retired and coverage is untouched at
+**345** ids, each named on exactly one `Requirements:` line and together precisely the live ids in
+`design/` less the nine retired ones. `HEAD` is `95fac5e`; the working tree carries no tracked
+change; `cargo test --workspace` gives **386 passed, 0 failed**.
+
+* **Completed:** **FIF-020**, Saxo account normalization and row identity, committed as `95fac5e`.
+  This revision found it already built, committed and green, with the plan still reading `todo` —
+  that commit swept revision 33's plan edits in alongside the implementation, so the status line was
+  written before the work it describes. Nothing was rebuilt; the module was read against the five
+  requirements and the status corrected.
+* No item added, split, retired or re-scoped. No status changed but FIF-020's.
+* `design/open-questions.md` is unchanged: thirty-four blocked requirements, twenty-four `blocked`
+  items, and no item blocked in an earlier revision has been released.
+* **Next ready item: FIF-021**, Saxo money derivation — both dependencies are `done` (FIF-019 in
+  `a97004e`, FIF-008 in `9a1e457`) and none of its six identifiers is on a `Blocks:` line. The three
+  `todo` items standing earlier in document order — FIF-013, FIF-014, FIF-015, FIF-016 and FIF-060 —
+  each still wait on a `blocked` dependency (FIF-076, FIF-061, FIF-058), so none of them is
+  selectable. The one caveat the implementer should carry: the factor in the EUR-price step is
+  FIF-075 and still blocked, so the bond worked example (3000 @ 139.46) lands with that item and not
+  here; the two EUR-quoted worked examples are fully reviewable now.
 
 **Revision 33 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
 design/` is empty), so no requirement was added, restated or retired and coverage is untouched at

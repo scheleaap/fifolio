@@ -12,6 +12,7 @@ use chrono::{Datelike as _, NaiveDate};
 use fifolio_core::entities::{Account, RecordIdentity};
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::saxo::identity::{account, check_identities, identity};
+use fifolio_core::import::saxo::money::Booked;
 use fifolio_core::import::saxo::{SaxoError, SaxoWorkbook, Sheet, date, field};
 
 /// Every committed Saxo fixture, with the year its filename names.
@@ -418,4 +419,34 @@ fn a_file_with_two_rows_of_one_identity_is_refused() {
             second: 12,
         }
     );
+}
+
+/// Every row of every fixture states its four money columns and its native currency, so the
+/// derivation reads a figure off each one rather than defaulting [IMP-SAXO-009], [IMP-SAXO-010].
+///
+/// Parsing only: no amount is asserted, the fixtures' amounts being perturbed [TST-014]. A
+/// non-EUR row is what makes `Omrekeningskoers` load-bearing, so the corpus is checked to carry
+/// one — without it a reader that ignored the column would pass this.
+#[test]
+fn every_fixture_row_states_the_money_it_booked() {
+    let mut foreign = 0_usize;
+    for (path, export) in exports() {
+        for (index, row) in export.rows().iter().enumerate() {
+            let booked = Booked::read(row).unwrap_or_else(|error| {
+                panic!(
+                    "{} row {} states no money: {error}",
+                    path.display(),
+                    index + 2
+                )
+            });
+            if !booked.currency().is_eur() {
+                foreign += 1;
+                booked
+                    .conversion(date(row, "Transactiedatum").expect("a row dates its booking"))
+                    .expect("a foreign row states an invertible quote");
+            }
+        }
+    }
+
+    assert!(foreign > 0, "the corpus carries foreign-currency rows");
 }
