@@ -35,9 +35,35 @@ Every position-affecting row of `Transacties` has a `_Transacties` counterpart: 
 both `Stock split`, all three `Fusie`, all three `Keuzedividend`, the `Koop`, the `Verkoop`, the
 `Omwisseling`, the `Terugkoopaanbod` with its reversal and the `Expiratie` — 32 rows in all. The
 remaining 156 are cash movements and appear in `Bookings` instead. A row may join on
-`Corporate action-Id` rather than on a transaction id, and a corporate action's two legs are two
-`_Transacties` rows under one `Corporate action-Id`, distinguished by `Trade Event Type`
-(`Gekocht` / `Verkocht`). [IMP-SAXO-037]
+`Corporate action-Id` rather than on a transaction id, and a corporate action's legs are its
+`_Transacties` rows under one `Corporate action-Id`. [IMP-SAXO-037]
+
+### Legs
+
+There are not always two. Every shape observed in the sample:
+
+| Legs | Count | Example |
+| --- | --- | --- |
+| one `Gekocht` | 4 | a stock election issuing one share |
+| one `Verkocht` + one `Gekocht` | 4 | both splits, the merger, the exchange |
+| one `Verkocht` | 3 | the expiration |
+| **two `Gekocht`** | 1 | the 2023 Philips dividend, **two** shares at 34.74 each |
+| **two `Verkocht` + one `Gekocht`** | 1 | the DeVolksbank tender, containing a reversal |
+| one `Deponering` | 13 | a transfer in; the event type is neither `Gekocht` nor `Verkocht` |
+
+Two rules follow, and neither is optional.
+
+**A leg count is never assumed.** The quantity of a side is the **sum** of that side's legs. The
+2023 Philips dividend issues 2 shares, not 1, and a rule reading "the `Gekocht` leg" loses one of
+them — a share never acquired, never disposed and never taxed. [IMP-SAXO-044]
+
+**An exactly opposing pair cancels before anything else is read.** A `Terugboeking` appears as a leg
+whose quantity, price and traded value are the exact negatives of another leg in the same group;
+both are removed and the event is what remains. The DeVolksbank tender is three legs — `Verkocht`
+2000 at 999.03, `Gekocht` 2000 at 999.03, `Verkocht` 2000 at 99.90 — of which the first two cancel,
+leaving one disposal of 2000 at 99.90 for 1998.07, which is what `Bookings` and the cash ledger both
+show. Read as an opening, that `Gekocht` invents a 19,980.65 acquisition that never
+happened. [IMP-SAXO-045]
 
 * Headers are Dutch, and several contain non-breaking spaces (`Bk\xa0Record\xa0Id`, `Booking\xa0Id`) or a leading space (` Positie-ID`). Normalize whitespace before matching [IMP-SAXO-002]
 * Dates are Excel serial numbers, not text [IMP-SAXO-003]
@@ -163,9 +189,9 @@ The quantity and the direction come from a column too, on `_Transacties`: `Trade
 | `Verkoop` | `sell` | derived automatically |
 | `Deponering` | `transfer_in` | derived automatically, source `broker`, date provenance `transfer_date` (see below) |
 | `Expiratie` | `expiration` | derived automatically; quantity is the remaining position, proceeds from the row. Pending if nothing remains |
-| `Fusie`, `Terugkoopaanbod` (+ `Terugboeking`) | `sell` and/or `transfer_out` | derived: both legs are `_Transacties` rows under the one `Corporate action-Id`, the `Verkocht` leg disposing and the `Gekocht` leg opening. Cash and costs go to the sell leg [IMP-SAXO-031] |
-| `Stock split` | `split` | derived: the ratio is the `Gekocht` quantity over the `Verkocht` quantity, an exact integer pair — Tesla `45 : 15` is 3:1, OBAM `20 : 4` is 5:1 [IMP-SAXO-040] |
-| `Omwisseling` | `transfer_out` | derived: the two `_Transacties` legs give both quantities, hence the ratio; the target security is the `Gekocht` leg's instrument [IMP-SAXO-041] |
+| `Fusie`, `Terugkoopaanbod` (+ `Terugboeking`) | `sell` and/or `transfer_out` | derived: both legs are `_Transacties` rows under the one `Corporate action-Id`, the `Verkocht` legs disposing and the `Gekocht` legs opening, each side summed after cancellation [IMP-SAXO-044, IMP-SAXO-045]. Cash and costs go to the sell leg [IMP-SAXO-031] |
+| `Stock split` | `split` | derived: the ratio is the summed `Gekocht` quantity over the summed `Verkocht` quantity, an exact integer pair — Tesla `45 : 15` is 3:1, OBAM `20 : 4` is 5:1 [IMP-SAXO-040] |
+| `Omwisseling` | `transfer_out` | derived: the two `_Transacties` legs give both quantities, hence the ratio; the target security is the `Gekocht` legs' instrument, which must be a single instrument or the file is refused [IMP-SAXO-041] |
 | `Dividend`, `Keuzedividend`, `Herbeleggingsdividend` | `buy` or none | see Dividends |
 | `Rente`, `Service fee`, `ADR-kosten`, `Storting`, `Opname` | none | recognized as non-position, not stored |
 
@@ -253,7 +279,7 @@ eligible position on those rows is 3 throughout, and across five years and eleve
 grows. No shares were issued, so there is no share count to ask for. [IMP-SAXO-042]
 
 Where a stock election **does** issue shares, both sheets say so. The 2025 Philips
-`Keuzedividend` carries a `_Transacties` leg `Gekocht 1 @ 20.09` and a `Bookings` component
+`Keuzedividend` carries one `_Transacties` leg `Gekocht 1 @ 20.09` and a `Bookings` component
 `Corporate Actions - Share Amount` of `-20.09` against a `Corporate Actions - Cashdividenden` of
 `28.05` on 33 eligible shares. The share count and the taxable value are both derivable, so this is
 not a manual entry either. [IMP-SAXO-043]

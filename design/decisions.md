@@ -471,3 +471,21 @@ components of each cash movement. The consequences are not cosmetic:
 
 The fixtures reproduce one sheet and so do not reproduce the file. They are rebuilt, and the
 anonymizer extended to all three sheets, before any Saxo importer work continues. [DEC-070]
+
+**DEC-071 — Corrects DEC-070: a corporate action has any number of legs, and a reversal is one of
+them.** DEC-070 described a corporate action as two `_Transacties` rows distinguished by
+`Trade Event Type`. Two of the ten groups in the sample are not that shape, and both matter.
+
+The 2023 Philips dividend carries **two** `Gekocht` legs of one share each at 34.74. A rule reading
+"the `Gekocht` leg" takes one share and silently drops the other, so a share is acquired, held and
+eventually sold without ever entering the ledger. Sides are therefore summed, never indexed.
+
+The DeVolksbank tender carries three legs: a disposal of 2000 at 999.03, a `Gekocht` of 2000 at
+999.03, and a disposal of 2000 at 99.90. The middle leg is the `Terugboeking` — an exact negative of
+the first — and reading it as an opening would invent a 19,980.65 acquisition. Exactly opposing
+legs are cancelled before the event is read, which leaves the single disposal that `Bookings` and
+the cash ledger both show.
+
+Both errors are of the same kind: they produce a plausible number from a rule that fit the examples
+looked at. The rule now states the observed leg shapes in full so the next reader can see what it
+must handle. [DEC-071]
