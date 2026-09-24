@@ -39,7 +39,9 @@ dependencies = [
  "rust_decimal",
  "rust_xlsxwriter",
  "sha2 0.11.0",
+ "tempfile",
  "uuid",
+ "zip",
 ]
 
 [[package]]

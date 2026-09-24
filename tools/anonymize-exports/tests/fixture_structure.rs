@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anonymize_exports::saxo::{self, Cell};
+use anonymize_exports::saxo::{self, Cell, SheetKind};
 use anonymize_exports::trade_republic as tr;
 use calamine::{Reader, Xlsx, open_workbook};
 use chrono::{Datelike as _, Days, NaiveDate};
@@ -44,22 +44,81 @@ fn files_in(directory: &str, extension: &str) -> Vec<PathBuf> {
     paths
 }
 
-fn saxo_sheets() -> Vec<(PathBuf, saxo::Sheet)> {
+fn saxo_exports() -> Vec<(PathBuf, saxo::Export)> {
     files_in("saxo-nl", "xlsx")
         .into_iter()
         .map(|path| {
-            let sheet = saxo::read(&path).expect("a fixture Saxo export reads");
-            (path, sheet)
+            let export = saxo::read(&path).expect("a fixture Saxo export reads");
+            (path, export)
         })
         .collect()
 }
 
+/// The `Transacties` sheet of every fixture, which the cash-ledger properties are asserted over.
+fn saxo_sheets() -> Vec<(PathBuf, saxo::Sheet)> {
+    saxo_exports()
+        .into_iter()
+        .map(|(path, export)| (path, export.sheet(SheetKind::Transacties).clone()))
+        .collect()
+}
+
 fn saxo_field(row: &[Cell], header: &str) -> String {
-    let index = saxo::HEADERS
+    field(SheetKind::Transacties, row, header)
+}
+
+fn field(kind: SheetKind, row: &[Cell], header: &str) -> String {
+    saxo::field(kind, row, header).as_text()
+}
+
+/// The rows of `sheet` carrying each non-empty value of `header`, by that value: the join index
+/// both Saxo joins are built on [IMP-SAXO-037].
+fn index_of(sheet: &saxo::Sheet, header: &str) -> BTreeMap<String, Vec<usize>> {
+    sheet.rows.iter().enumerate().fold(
+        BTreeMap::new(),
+        |mut indexed: BTreeMap<String, Vec<usize>>, (index, row)| {
+            let key = field(sheet.kind, row, header);
+            if !key.is_empty() {
+                indexed.entry(key).or_default().push(index);
+            }
+            indexed
+        },
+    )
+}
+
+/// The `_Transacties` rows a `Transacties` row joins: on `Transactie-ID`, else on
+/// `Corporate action-Id` [IMP-SAXO-037].
+fn detail_counterparts(export: &saxo::Export, row: &[Cell]) -> Vec<usize> {
+    let detail = export.sheet(SheetKind::Detail);
+    ["Transactie-ID", "Corporate action-Id"]
         .iter()
-        .position(|candidate| *candidate == header)
-        .expect("a named header");
-    row[index].as_text()
+        .find_map(|header| {
+            index_of(detail, header)
+                .get(&saxo_field(row, header))
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
+/// The `Bookings` rows a `Transacties` row joins: on `Bk Record Id`, then `Booking Id`, else on
+/// `Corporate action-Id` [IMP-SAXO-037].
+fn booking_components(export: &saxo::Export, row: &[Cell]) -> Vec<usize> {
+    let bookings = export.sheet(SheetKind::Bookings);
+    [
+        "Bk\u{a0}Record\u{a0}Id",
+        "Booking\u{a0}Id",
+        "Corporate action-Id",
+    ]
+    .iter()
+    .find_map(|header| {
+        index_of(bookings, header)
+            .get(&saxo_field(row, header))
+            .cloned()
+    })
+    .unwrap_or_default()
+}
+
+fn decimal_of(value: &str) -> Decimal {
+    value.parse::<Decimal>().expect("a numeric column")
 }
 
 /// The date a serial number stands for, against the epoch Excel counts from.
@@ -76,43 +135,83 @@ fn date_of(serial: &str) -> NaiveDate {
         .expect("a serial within the calendar")
 }
 
-/// A real XLSX container with one sheet and the 31 Dutch headers byte for byte — the
-/// non-breaking spaces and the leading space included [IMP-SAXO-001], [IMP-SAXO-002], [TST-013].
+/// A real XLSX container with **all three sheets**, each with its own header row byte for byte
+/// and its own row count — the non-breaking spaces and the leading space included
+/// [IMP-SAXO-001], [IMP-SAXO-002], [TST-013], [TST-031].
 #[test]
-fn saxo_fixtures_are_xlsx_with_one_sheet_and_the_31_headers() {
-    for (path, sheet) in saxo_sheets() {
-        // `saxo::read` refuses a header row that is not the 31, so it having parsed is the
-        // assertion; this states which 31 for the reader.
+fn saxo_fixtures_are_xlsx_with_the_three_sheets_and_their_headers() {
+    let mut counted = [0_usize; 3];
+    for (path, export) in saxo_exports() {
+        // `saxo::read` refuses a header row that is not the sheet's own, so it having parsed is
+        // the assertion; this states the sheets and their widths for the reader.
         let workbook: Xlsx<_> = open_workbook(&path).expect("a real XLSX container");
         assert_eq!(
             workbook.sheet_names(),
-            vec![saxo::SHEET_NAME],
-            "{} carries more than the one sheet",
+            vec!["Transacties", "_Transacties", "Bookings"],
+            "{} does not carry the three sheets",
             path.display()
         );
-        assert!(!sheet.rows.is_empty(), "{} has no rows", path.display());
-        for row in &sheet.rows {
-            assert_eq!(row.len(), 31, "{} has a short row", path.display());
+        for (index, kind) in SheetKind::ALL.into_iter().enumerate() {
+            let sheet = export.sheet(kind);
+            assert!(
+                !sheet.rows.is_empty(),
+                "{} has no {} rows",
+                path.display(),
+                kind.name()
+            );
+            for row in &sheet.rows {
+                assert_eq!(
+                    row.len(),
+                    kind.headers().len(),
+                    "{} has a short row on {}",
+                    path.display(),
+                    kind.name()
+                );
+            }
+            counted[index] += sheet.rows.len();
         }
     }
-    assert!(saxo::HEADERS.contains(&"Bk\u{a0}Record\u{a0}Id"));
-    assert!(saxo::HEADERS.contains(&"Booking\u{a0}Id"));
-    assert!(saxo::HEADERS.contains(&" Positie-ID"));
+    // The sample's row counts, which `importers.md` states [IMP-SAXO-001]. A corpus that grew is
+    // a rerun of the anonymizer and a revision of that table, not a fixture edited by hand.
+    assert_eq!(counted, [188, 33, 242]);
 }
 
-/// Dates are Excel serial numbers, not text [IMP-SAXO-003], [TST-013].
+/// Dates are Excel serial numbers, not text, on every sheet that holds one [IMP-SAXO-003],
+/// [TST-013], [TST-031]. `Bookings` also carries `Ex-datum` and `Boekdatum`, which the export
+/// writes as text and the fixture keeps as text.
 #[test]
 fn saxo_dates_are_excel_serial_numbers() {
-    for (path, sheet) in saxo_sheets() {
-        for row in &sheet.rows {
-            for header in ["Transactiedatum", "Valutadatum"] {
-                let index = saxo::HEADERS
-                    .iter()
-                    .position(|candidate| *candidate == header)
-                    .expect("a date header");
+    for (path, export) in saxo_exports() {
+        for (kind, headers) in [
+            (
+                SheetKind::Transacties,
+                &["Transactiedatum", "Valutadatum"][..],
+            ),
+            (
+                SheetKind::Detail,
+                &["Aangepaste transactiedatum", "Uitvoeringsdatum transactie"],
+            ),
+            (SheetKind::Bookings, &["Boekingsdatum"]),
+        ] {
+            for row in &export.sheet(kind).rows {
+                for header in headers {
+                    assert!(
+                        matches!(saxo::field(kind, row, header), Cell::Number(_)),
+                        "{} holds {header} on {} as something other than a serial number",
+                        path.display(),
+                        kind.name()
+                    );
+                }
+            }
+        }
+        for row in &export.sheet(SheetKind::Bookings).rows {
+            for header in ["Ex-datum", "Boekdatum"] {
                 assert!(
-                    matches!(row[index], Cell::Number(_)),
-                    "{} holds {header} as something other than a serial number",
+                    matches!(
+                        saxo::field(SheetKind::Bookings, row, header),
+                        Cell::Text(_) | Cell::Empty
+                    ),
+                    "{} holds {header} as something other than the text the export writes",
                     path.display()
                 );
             }
@@ -311,33 +410,58 @@ fn a_bond_instrument_is_present() {
     }
 }
 
-/// The identities are replaced [TST-012]. What a fixture cannot prove is what a value used to be,
-/// so this asserts the other half: every identifying column carries a generated value.
+/// The identities are replaced, on all three sheets [TST-012], [TST-031]. What a fixture cannot
+/// prove is what a value used to be, so this asserts the other half: every identifying column
+/// carries a generated value.
 #[test]
 fn saxo_identities_are_generated_ones() {
+    for (path, export) in saxo_exports() {
+        for sheet in &export.sheets {
+            for row in &sheet.rows {
+                let where_it_is = format!("{} on {}", path.display(), sheet.kind.name());
+                assert!(
+                    field(sheet.kind, row, "Rekening-ID").starts_with("40100/"),
+                    "{where_it_is} carries an unreplaced account"
+                );
+                let isin = field(sheet.kind, row, "Instrument ISIN");
+                assert!(
+                    isin.is_empty() || isin.starts_with("XF"),
+                    "{where_it_is} carries an unreplaced ISIN {isin}"
+                );
+                // A symbol keeps its `:exchange` suffix, which identifies a market and nobody.
+                let symbol = field(sheet.kind, row, "Instrumentsymbool");
+                assert!(
+                    symbol.is_empty() || symbol.starts_with("FXT"),
+                    "{where_it_is} carries an unreplaced symbol {symbol}"
+                );
+                let name = field(sheet.kind, row, "Instrument");
+                assert!(
+                    name.is_empty()
+                        || name.starts_with("Fixture Instrument")
+                        || name.starts_with("*Delisted"),
+                    "{where_it_is} carries an unreplaced instrument name {name}"
+                );
+            }
+        }
+        // `Order-ID` is the one id the two new sheets add. `0` is Saxo's "no order" marker and
+        // stays; anything else is a generated order number.
+        for row in &export.sheet(SheetKind::Detail).rows {
+            let order = field(SheetKind::Detail, row, "Order-ID");
+            assert!(
+                order == "0" || order.starts_with('6'),
+                "{} carries an unreplaced order id {order}",
+                path.display()
+            );
+        }
+    }
+    // The account holder is named on `Transacties` alone.
     for (path, sheet) in saxo_sheets() {
         for row in &sheet.rows {
-            let where_it_is = format!("{}", path.display());
-            assert!(
-                saxo_field(row, "Rekening-ID").starts_with("40100/"),
-                "{where_it_is} carries an unreplaced account"
-            );
-            let isin = saxo_field(row, "Instrument ISIN");
-            assert!(
-                isin.is_empty() || isin.starts_with("XF"),
-                "{where_it_is} carries an unreplaced ISIN {isin}"
-            );
-            let name = saxo_field(row, "Instrument");
-            assert!(
-                name.is_empty()
-                    || name.starts_with("Fixture Instrument")
-                    || name.starts_with("*Delisted"),
-                "{where_it_is} carries an unreplaced instrument name {name}"
-            );
             let owner = saxo_field(row, "Naam IBAN-eigenaar");
             assert!(
                 owner.is_empty() || owner.starts_with("Fixture Owner"),
-                "{where_it_is} carries an unreplaced name"
+                "{} carries an unreplaced name",
+                path.display()
             );
         }
     }
@@ -354,6 +478,270 @@ fn a_delisting_annotation_is_present() {
             .any(|row| saxo_field(row, "Instrument").starts_with("*Delisted "))
     });
     assert!(found, "no delisting-annotated instrument name");
+}
+
+/// Every position-affecting row resolves a `_Transacties` counterpart, and no `_Transacties` row
+/// is left unclaimed: the join an importer is specified against survives anonymization, a row
+/// that joined before joining the same counterpart after [IMP-SAXO-037], [TST-031].
+#[test]
+fn every_position_affecting_row_has_a_detail_counterpart() {
+    let mut joined = 0_usize;
+    let mut labels: Vec<String> = Vec::new();
+    for (path, export) in saxo_exports() {
+        let detail = export.sheet(SheetKind::Detail);
+        let mut claimed: BTreeSet<usize> = BTreeSet::new();
+        for row in &export.sheet(SheetKind::Transacties).rows {
+            let counterparts = detail_counterparts(&export, row);
+            if counterparts.is_empty() {
+                continue;
+            }
+            joined += 1;
+            labels.push(saxo_field(row, "Acties"));
+            claimed.extend(counterparts);
+        }
+        assert_eq!(
+            claimed.len(),
+            detail.rows.len(),
+            "{} leaves a _Transacties row joined to nothing",
+            path.display()
+        );
+    }
+    // The sample's 32 position-affecting rows, which `importers.md` counts [IMP-SAXO-037].
+    assert_eq!(joined, 32, "the joined rows are {labels:?}");
+    let family = |name: &str| {
+        labels
+            .iter()
+            .filter(|label| label.starts_with(name))
+            .count()
+    };
+    assert_eq!(family("Deponering"), 13);
+    assert_eq!(family("Stock split"), 2);
+    assert_eq!(family("Fusie"), 3);
+    assert_eq!(family("Keuzedividend"), 3);
+    // The tender and the `Terugboeking` that reverses it.
+    assert_eq!(family("Terugkoopaanbod"), 2);
+    for single in ["Koop ", "Verkoop ", "Omwisseling", "Expiratie"] {
+        assert_eq!(
+            family(single),
+            1,
+            "no {single} row joins a _Transacties row"
+        );
+    }
+}
+
+/// A price met on two sheets is the same price after anonymization [IMP-SAXO-011], [TST-031]:
+/// the label's price moves on its own magnitude and equal magnitudes move equally, so a joined
+/// row states one price and not two. The labels themselves need not match — a reversal leg joins
+/// its tender under one `Corporate action-Id` and says so — but a price does.
+#[test]
+fn a_label_price_reads_the_same_on_both_sheets_of_a_joined_row() {
+    let price_in = |label: &str| {
+        label
+            .split_once(" @ ")
+            .map(|(_, tail)| tail.to_owned())
+            .filter(|price| !price.is_empty())
+    };
+    let mut compared = 0_usize;
+    for (path, export) in saxo_exports() {
+        let detail = export.sheet(SheetKind::Detail);
+        for row in &export.sheet(SheetKind::Transacties).rows {
+            let Some(price) = price_in(&saxo_field(row, "Acties")) else {
+                continue;
+            };
+            for counterpart in detail_counterparts(&export, row) {
+                let Some(counterpart_price) = price_in(&field(
+                    SheetKind::Detail,
+                    &detail.rows[counterpart],
+                    "Acties",
+                )) else {
+                    continue;
+                };
+                compared += 1;
+                assert_eq!(
+                    counterpart_price,
+                    price,
+                    "{} states one row's price two ways",
+                    path.display()
+                );
+            }
+        }
+    }
+    // The sample's joined rows that carry a price on both sheets.
+    assert_eq!(compared, 15, "the joined prices are not the sample's");
+}
+
+/// Every `Bookings` row joins the booking it decomposes, and the join keys are the ones
+/// `importers.md` names [IMP-SAXO-037], [TST-031].
+#[test]
+fn every_bookings_row_joins_the_booking_it_decomposes() {
+    let mut joined = 0_usize;
+    for (path, export) in saxo_exports() {
+        let bookings = export.sheet(SheetKind::Bookings);
+        let mut claimed: BTreeSet<usize> = BTreeSet::new();
+        for row in &export.sheet(SheetKind::Transacties).rows {
+            let components = booking_components(&export, row);
+            if components.is_empty() {
+                continue;
+            }
+            joined += 1;
+            claimed.extend(components);
+        }
+        assert_eq!(
+            claimed.len(),
+            bookings.rows.len(),
+            "{} leaves a Bookings row joined to nothing",
+            path.display()
+        );
+    }
+    // The sample's 171 bookings that decompose; the remaining 17 rows are position-only.
+    assert_eq!(joined, 171);
+}
+
+/// The sample's `Transacties` rows whose joined `Bookings` components sum to neither the row's
+/// `Boekingsbedrag` nor its `Aantal`: a `Bookings` group the export does not state as a
+/// decomposition of the row it joins.
+const SAMPLE_UNDECOMPOSED_BOOKINGS: usize = 21;
+
+/// A booking's components still sum to the booking after anonymization: the amounts moved
+/// together rather than each on its own magnitude [TST-031].
+///
+/// Which figure they sum to is the export's business and not this fixture's: a booking decomposes
+/// either in the currency `Boekingsbedrag` is stated in or in the EUR `Aantal`. A group that sums
+/// to neither is one the export itself does not decompose, and its components are moved each on
+/// its own magnitude, so it is counted as its own class rather than passed over: a decomposition
+/// that stopped adding up shows here as one booking moving out of its class and into that one.
+#[test]
+fn the_components_of_a_booking_still_sum_to_it() {
+    let mut to_booked = 0_usize;
+    let mut to_euro = 0_usize;
+    let mut to_neither: Vec<String> = Vec::new();
+    for (path, export) in saxo_exports() {
+        let bookings = export.sheet(SheetKind::Bookings);
+        for row in &export.sheet(SheetKind::Transacties).rows {
+            let total: Decimal = booking_components(&export, row)
+                .iter()
+                .map(|index| {
+                    decimal_of(&field(
+                        SheetKind::Bookings,
+                        &bookings.rows[*index],
+                        "Boekingsbedrag",
+                    ))
+                })
+                .sum();
+            if total.is_zero() {
+                continue;
+            }
+            if total == decimal_of(&saxo_field(row, "Boekingsbedrag")) {
+                to_booked += 1;
+            } else if total == decimal_of(&saxo_field(row, "Aantal")) {
+                to_euro += 1;
+            } else {
+                to_neither.push(format!(
+                    "{} transaction {} booking {} sums to {total}",
+                    path.display(),
+                    saxo_field(row, "Transactie-ID"),
+                    saxo_field(row, "Bk\u{a0}Record\u{a0}Id"),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        (to_booked, to_euro),
+        (100, 50),
+        "a booking's components no longer sum to it"
+    );
+    assert_eq!(
+        to_neither.len(),
+        SAMPLE_UNDECOMPOSED_BOOKINGS,
+        "the bookings summing to neither figure are {to_neither:?}"
+    );
+}
+
+/// `Verhandelde waarde` is still the traded quantity at the traded price, the quantity never
+/// having moved [TST-028] and the value having moved with the price [TST-031].
+///
+/// It is not exactly the product: the price is rounded to two decimals [IMP-SAXO-039] and a bond
+/// quotes in percent of par [IMP-SAXO-020], so the value is within a percent of the product or of
+/// a hundredth of it. An independently perturbed value would be up to a fifth out.
+#[test]
+fn a_traded_value_is_still_its_quantity_at_its_price() {
+    let mut checked = 0_usize;
+    for (path, export) in saxo_exports() {
+        for row in &export.sheet(SheetKind::Detail).rows {
+            let quantity = decimal_of(&field(SheetKind::Detail, row, "Traded\u{a0}Quantity"));
+            let price = decimal_of(&field(SheetKind::Detail, row, "Prijs"));
+            let value = decimal_of(&field(SheetKind::Detail, row, "Verhandelde waarde"));
+            if quantity.is_zero() || price.is_zero() {
+                continue;
+            }
+            checked += 1;
+            let product = (quantity * price).abs();
+            let ratio = value.abs() / product;
+            let per_unit = (ratio - Decimal::ONE).abs() < Decimal::new(1, 2);
+            let percent_of_par = (ratio - Decimal::new(1, 2)).abs() < Decimal::new(1, 4);
+            assert!(
+                per_unit || percent_of_par,
+                "{} states {value} for {quantity} at {price}",
+                path.display()
+            );
+        }
+    }
+    assert_eq!(checked, 32, "the sample's priced _Transacties rows");
+}
+
+/// A corporate action's two legs are two `_Transacties` rows under one `Corporate action-Id`,
+/// distinguished by `Trade Event Type` [IMP-SAXO-037], [TST-013], [TST-031].
+#[test]
+fn a_corporate_action_carries_both_its_legs_under_one_id() {
+    let found = saxo_exports().iter().any(|(_, export)| {
+        let detail = export.sheet(SheetKind::Detail);
+        index_of(detail, "Corporate action-Id")
+            .values()
+            .any(|rows| {
+                let events: BTreeSet<String> = rows
+                    .iter()
+                    .map(|index| {
+                        field(
+                            SheetKind::Detail,
+                            &detail.rows[*index],
+                            "Trade\u{a0}Event\u{a0}Type",
+                        )
+                    })
+                    .collect();
+                rows.len() >= 2 && events.contains("Gekocht") && events.contains("Verkocht")
+            })
+    });
+    assert!(found, "no corporate action with a bought and a sold leg");
+}
+
+/// A withholding percentage on a `Bookings` row, which is the tax figure no other sheet holds
+/// [IMP-SAXO-042], [TST-031]. It is a rate and not an amount, so it is not perturbed [TST-028].
+#[test]
+fn a_bookings_row_carries_a_withholding_percentage() {
+    let rates: BTreeSet<String> = saxo_exports()
+        .iter()
+        .flat_map(|(_, export)| {
+            export
+                .sheet(SheetKind::Bookings)
+                .rows
+                .iter()
+                .filter(|row| {
+                    field(SheetKind::Bookings, row, "Amount Type").contains("Voorheffing")
+                })
+                .map(|row| field(SheetKind::Bookings, row, "Tax\u{a0}Percentage"))
+                .collect::<Vec<_>>()
+        })
+        .filter(|rate| !rate.is_empty())
+        .collect();
+    assert!(!rates.is_empty(), "no withholding percentage");
+    for rate in &rates {
+        let percentage = decimal_of(rate);
+        assert!(
+            percentage > Decimal::ZERO && percentage <= Decimal::ONE_HUNDRED,
+            "{rate} is not a percentage"
+        );
+        assert_eq!(percentage.fract(), Decimal::ZERO, "{rate} was perturbed");
+    }
 }
 
 fn groups_by_corporate_action(sheet: &saxo::Sheet) -> BTreeMap<String, Vec<&Vec<Cell>>> {

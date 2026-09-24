@@ -19,6 +19,9 @@ uuid = { version = "1.26.1", features = ["v5"] }
 
 [dev-dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+tempfile = "3.27.0"
+# Reading the container back apart, to state that the fixture carries a fixed creation time.
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

@@ -40,6 +40,9 @@ pub enum Kind {
     AccountBase,
     TransactieId,
     BkRecordId,
+    /// A Saxo `_Transacties` `Order-ID`, the broker's own order number. Not a column any
+    /// requirement reads, but a real id of a real order, so it is replaced like the rest.
+    OrderId,
     BookingId,
     CorporateActionId,
     PositieId,
@@ -56,8 +59,9 @@ pub enum Kind {
 /// The numeric id kinds, with the first value of the fixture's range and the step between
 /// consecutive ranks. The ranges are wide enough for many times the sample's row count and keep
 /// the digit width of the column they stand in.
-const NUMERIC_LAYOUT: [(Kind, u64, u64); 5] = [
+const NUMERIC_LAYOUT: [(Kind, u64, u64); 6] = [
     (Kind::TransactieId, 7_000_000_000, 7),
+    (Kind::OrderId, 6_000_000_000, 19),
     (Kind::BkRecordId, 3_000_000_000, 11),
     (Kind::BookingId, 40_000_000_000, 13),
     (Kind::CorporateActionId, 5_000_000, 3),
@@ -198,10 +202,11 @@ impl Pseudonyms {
     }
 }
 
-const KINDS: [Kind; 13] = [
+const KINDS: [Kind; 14] = [
     Kind::ClientId,
     Kind::AccountBase,
     Kind::TransactieId,
+    Kind::OrderId,
     Kind::BkRecordId,
     Kind::BookingId,
     Kind::CorporateActionId,
@@ -419,22 +424,65 @@ mod tests {
     }
 
     /// A rank-ordered replacement ascends where the original does, so Saxo's monotonic booking
-    /// counters still order the fixture [TST-013].
+    /// counters still order the fixture [TST-013], and it keeps the digit width of the column it
+    /// stands in [TST-012], [TST-031]. Every numeric kind, since each has its own range and step.
     #[test]
     fn numeric_ids_keep_their_order() {
-        let table = built(&[
-            (Kind::BkRecordId, "1621581503"),
-            (Kind::BkRecordId, "1424145358"),
-            (Kind::BkRecordId, "1452109983"),
-        ]);
-        let oldest = table.of(Kind::BkRecordId, "1424145358").unwrap();
-        let middle = table.of(Kind::BkRecordId, "1452109983").unwrap();
-        let newest = table.of(Kind::BkRecordId, "1621581503").unwrap();
-        assert!(
-            oldest < middle && middle < newest,
-            "{oldest} {middle} {newest}"
-        );
-        assert_eq!(oldest.len(), 10, "the column's digit width is kept");
+        // Three samples per kind at that column's width in the real export, offered out of order.
+        for originals in [
+            [
+                (Kind::TransactieId, "5057936890"),
+                (Kind::TransactieId, "4913220117"),
+                (Kind::TransactieId, "5020114455"),
+            ],
+            [
+                (Kind::OrderId, "6127884310"),
+                (Kind::OrderId, "5993410277"),
+                (Kind::OrderId, "6011238844"),
+            ],
+            [
+                (Kind::BkRecordId, "1621581503"),
+                (Kind::BkRecordId, "1424145358"),
+                (Kind::BkRecordId, "1452109983"),
+            ],
+            [
+                (Kind::BookingId, "22516735552"),
+                (Kind::BookingId, "14836444374"),
+                (Kind::BookingId, "19004122871"),
+            ],
+            [
+                (Kind::CorporateActionId, "8957416"),
+                (Kind::CorporateActionId, "8909094"),
+                (Kind::CorporateActionId, "8931200"),
+            ],
+            [
+                (Kind::PositieId, "3241778890"),
+                (Kind::PositieId, "3105449201"),
+                (Kind::PositieId, "3188220145"),
+            ],
+        ] {
+            let kind = originals[0].0;
+            let table = built(&originals);
+            let mut ascending: Vec<&str> = originals.iter().map(|(_, value)| *value).collect();
+            ascending.sort_by_key(|value| value.parse::<u64>().expect("a numeric id"));
+            let replacements: Vec<String> = ascending
+                .iter()
+                .map(|value| table.of(kind, value).unwrap())
+                .collect();
+            assert!(
+                replacements
+                    .windows(2)
+                    .all(|pair| pair[0].parse::<u64>().unwrap() < pair[1].parse::<u64>().unwrap()),
+                "{kind:?} no longer ascends: {replacements:?}"
+            );
+            for (original, replacement) in ascending.iter().zip(&replacements) {
+                assert_eq!(
+                    replacement.len(),
+                    original.len(),
+                    "{kind:?} left {original} as {replacement}, changing the column's digit width"
+                );
+            }
+        }
     }
 
     /// One original is one pseudonym, so rows of one corporate action keep sharing an id and one

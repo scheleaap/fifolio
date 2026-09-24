@@ -9,8 +9,10 @@
 //! cargo run --package anonymize-exports -- --source design/example_exports --out fixtures
 //! ```
 //!
-//! Every row of every export is carried over. Which rows exist, in which order, carrying which
-//! labels, ids and classification columns, is the real file's [TST-013]; the identities are
+//! Every row of every export is carried over — for Saxo that is all three sheets, since a fixture
+//! carrying one of them is not a fixture of this file [TST-031]. Which rows exist, on which sheet,
+//! in which order, carrying which labels, ids and classification columns, is the real file's
+//! [TST-013]; the identities are
 //! replaced [TST-012] and the amounts are moved, which is why the fixtures test parsing,
 //! classification and idempotency and never arithmetic [TST-014].
 //!
@@ -55,7 +57,7 @@ pub fn run(source: &Path, out: &Path) -> Result<()> {
     let saxo_sources = exports_in(&source.join(SAXO_DIRECTORY), "xlsx")?;
     let trade_republic_sources = exports_in(&source.join(TRADE_REPUBLIC_DIRECTORY), "csv")?;
 
-    let saxo_sheets = saxo_sources
+    let saxo_exports = saxo_sources
         .iter()
         .map(|path| saxo::read(path))
         .collect::<Result<Vec<_>>>()?;
@@ -65,8 +67,8 @@ pub fn run(source: &Path, out: &Path) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
 
     let mut originals = Originals::default();
-    for sheet in &saxo_sheets {
-        saxo::collect(sheet, &mut originals);
+    for export in &saxo_exports {
+        saxo::collect(export, &mut originals);
     }
     for rows in &trade_republic_rows {
         trade_republic::collect(rows, &mut originals);
@@ -78,19 +80,17 @@ pub fn run(source: &Path, out: &Path) -> Result<()> {
     fs::create_dir_all(&saxo_out)?;
     fs::create_dir_all(&trade_republic_out)?;
 
-    for (source, sheet) in saxo_sources.iter().zip(&saxo_sheets) {
-        let anonymized = saxo::anonymize(sheet, &pseudonyms)?;
+    for (source, export) in saxo_sources.iter().zip(&saxo_exports) {
+        let anonymized = saxo::anonymize(export, &pseudonyms)?;
         let target = fixture_path(&saxo_out, source, &pseudonyms)?;
-        refuse_leaks(
-            &pseudonyms,
-            &target,
-            anonymized
-                .rows
-                .iter()
-                .flat_map(|row| row.iter().map(saxo::Cell::as_text)),
-        )?;
+        refuse_leaks(&pseudonyms, &target, saxo_values(&anonymized))?;
         saxo::write(&target, &anonymized)?;
-        println!("{} rows -> {}", anonymized.rows.len(), target.display());
+        let counts: Vec<String> = anonymized
+            .sheets
+            .iter()
+            .map(|sheet| format!("{} {}", sheet.rows.len(), sheet.kind.name()))
+            .collect();
+        println!("{} rows -> {}", counts.join(", "), target.display());
     }
 
     for (source, rows) in trade_republic_sources.iter().zip(&trade_republic_rows) {
@@ -138,6 +138,18 @@ fn fixture_path(directory: &Path, source: &Path, pseudonyms: &Pseudonyms) -> Res
     Ok(directory.join(anonymized))
 }
 
+/// Every value a Saxo fixture would be written from, on all three sheets.
+///
+/// An original standing on `_Transacties` or on `Bookings` leaks as surely as one standing on
+/// `Transacties`, so the leak check sees the whole workbook and not its first sheet [TST-031].
+fn saxo_values(anonymized: &saxo::Export) -> impl Iterator<Item = String> {
+    anonymized
+        .sheets
+        .iter()
+        .flat_map(|sheet| sheet.rows.iter())
+        .flat_map(|row| row.iter().map(saxo::Cell::as_text))
+}
+
 /// Refuses to write a file in which any collected original still appears.
 fn refuse_leaks(
     pseudonyms: &Pseudonyms,
@@ -153,4 +165,71 @@ fn refuse_leaks(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use pseudonym::Kind;
+    use saxo::{Cell, Export, Sheet, SheetKind};
+
+    /// A sheet of `kind` with one row naming `instrument`, every other column empty.
+    fn sheet_naming(kind: SheetKind, instrument: &str) -> Sheet {
+        let row = kind
+            .headers()
+            .iter()
+            .map(|header| {
+                if *header == "Instrument" {
+                    Cell::Text(instrument.to_owned())
+                } else {
+                    Cell::Empty
+                }
+            })
+            .collect();
+        Sheet {
+            kind,
+            rows: vec![row],
+        }
+    }
+
+    /// The leak check reads the whole workbook: an original left standing on `_Transacties` or on
+    /// `Bookings` stops the run exactly as one on `Transacties` does, since all three sheets are
+    /// written and all three carry instrument-level detail [TST-012], [TST-031].
+    #[test]
+    fn a_collected_original_on_any_of_the_three_sheets_refuses_the_fixture() {
+        let original = "Sample Account Holder";
+        let mut originals = Originals::default();
+        originals.add(Kind::InstrumentName, original);
+        let pseudonyms = Pseudonyms::build(&originals).expect("the table builds");
+        let target = Path::new("fixture.xlsx");
+
+        for leaking in SheetKind::ALL {
+            let export = Export {
+                sheets: SheetKind::ALL.map(|kind| {
+                    let instrument = if kind == leaking {
+                        original
+                    } else {
+                        "Fixture Instrument 00"
+                    };
+                    sheet_naming(kind, instrument)
+                }),
+            };
+
+            let refused = refuse_leaks(&pseudonyms, target, saxo_values(&export))
+                .expect_err(&format!("a leak on {} was written", leaking.name()));
+
+            assert!(
+                refused.to_string().contains(original),
+                "{} does not name what leaked on {}",
+                refused,
+                leaking.name()
+            );
+        }
+
+        let clean = Export {
+            sheets: SheetKind::ALL.map(|kind| sheet_naming(kind, "Fixture Instrument 00")),
+        };
+        assert!(refuse_leaks(&pseudonyms, target, saxo_values(&clean)).is_ok());
+    }
 }
