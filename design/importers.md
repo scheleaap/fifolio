@@ -57,13 +57,37 @@ Two rules follow, and neither is optional.
 2023 Philips dividend issues 2 shares, not 1, and a rule reading "the `Gekocht` leg" loses one of
 them — a share never acquired, never disposed and never taxed. [IMP-SAXO-044]
 
-**An exactly opposing pair cancels before anything else is read.** A `Terugboeking` appears as a leg
-whose quantity, price and traded value are the exact negatives of another leg in the same group;
-both are removed and the event is what remains. The DeVolksbank tender is three legs — `Verkocht`
-2000 at 999.03, `Gekocht` 2000 at 999.03, `Verkocht` 2000 at 99.90 — of which the first two cancel,
-leaving one disposal of 2000 at 99.90 for 1998.07, which is what `Bookings` and the cash ledger both
-show. Read as an opening, that `Gekocht` invents a 19,980.65 acquisition that never
-happened. [IMP-SAXO-045]
+**A reversal cancels before anything else is read, and it is identified by its label.** A leg whose
+`Acties` carries the `- Terugboeking` suffix is a reversal. It cancels against the leg in the same
+group with the same absolute quantity, the **same** price, and the opposite-signed traded value.
+Both are removed and the event is what remains. A group containing no `- Terugboeking` leg never
+cancels anything. [IMP-SAXO-045]
+
+The label is the signal because the shape is not sufficient. The DeVolksbank tender's reversal is
+`Gekocht 2000 @ 999.03 / -19980.65` against `Verkocht -2000 @ 999.03 / 19980.65`, and the sample's
+one `Omwisseling` is `Gekocht 3 @ 168.63 / -505.89` against `Verkocht -3 @ 168.63 / 505.89`. On
+quantity, price and traded value the two are the same shape. One is a booking being undone; the
+other is a genuine exchange whose `transfer_out` IMP-SAXO-041 requires. Cancelling on shape alone
+destroys the exchange and leaves its group with no legs at all. `Openen/sluiten` corroborates — a
+real opening leg reads `Te openen` and the reversal's reads `Te sluiten` — but the suffix is the
+rule, in keeping with this document's refusal to classify a row by its shape. [IMP-SAXO-046]
+
+Note also that the price on a cancelling pair is **equal**, not negated: both DeVolksbank legs read
+999.03. An earlier wording here said "the exact negatives" of quantity, price and traded value,
+which matches nothing in five years of exports — the tender it was written for would not have
+cancelled.
+
+After cancellation the tender is one disposal of 2000 at 99.90 for 1998.07, which is what `Bookings`
+and the cash ledger both show. Read as an opening, its `Gekocht` invents a 19,980.65 acquisition
+that never happened.
+
+A side's summed traded value is available because a group's legs carry one instrument and so one
+currency; a group whose legs disagree on instrument currency is refused rather than summed.
+[IMP-SAXO-047]
+
+`Deponering` is a **third side**, neither buying nor selling: all 13 transfer legs carry it, and a
+rule that recognizes only `Gekocht` and `Verkocht` drops every transferred-in parcel. A side's
+summed quantity keeps the file's sign, so a `Verkocht` side is negative. [IMP-SAXO-048]
 
 * Headers are Dutch, and several contain non-breaking spaces (`Bk\xa0Record\xa0Id`, `Booking\xa0Id`) or a leading space (` Positie-ID`). Normalize whitespace before matching [IMP-SAXO-002]
 * Dates are Excel serial numbers, not text [IMP-SAXO-003]

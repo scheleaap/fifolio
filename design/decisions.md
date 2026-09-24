@@ -489,3 +489,23 @@ the cash ledger both show.
 Both errors are of the same kind: they produce a plausible number from a rule that fit the examples
 looked at. The rule now states the observed leg shapes in full so the next reader can see what it
 must handle. [DEC-071]
+
+**DEC-072 — Corrects DEC-071: a reversal is identified by its label, not by its shape.** DEC-071
+said an exactly opposing pair cancels, and described the pair as legs whose "quantity, price and
+traded value are the exact negatives" of each other. Both halves were wrong.
+
+The price on a cancelling pair is **equal**, not negated — the DeVolksbank legs both read 999.03,
+as that entry's own worked example printed. Taken literally the rule matches nothing in five years
+of exports, and the tender it was written for would not have cancelled.
+
+Read charitably as negated quantity and value with equal price, it then matches too much: the
+sample's only `Omwisseling` is `-3 @ 168.63 / 505.89` against `3 @ 168.63 / -505.89`, the same shape
+as the reversal. Cancelling it destroys a genuine exchange and leaves its group empty.
+
+Cancellation therefore keys on the `- Terugboeking` suffix, which Saxo states explicitly, and a
+group without one never cancels. This document already refuses to classify a row by its shape when
+a stated value is available; the reversal rule was violating its own principle.
+
+Two further points settled while correcting it: `Deponering` is a third side rather than a missing
+one, since a two-sided reading drops all 13 transfer legs; and a side's summed quantity keeps the
+file's sign, the side naming its own direction. [DEC-072, IMP-SAXO-046, IMP-SAXO-047, IMP-SAXO-048]
