@@ -73,6 +73,7 @@ use super::reader::{ReadError, SheetRows, SourceRow, SpreadsheetReader};
 
 pub mod identity;
 pub mod money;
+pub mod quantity;
 
 /// One of the three sheets a Saxo export carries [IMP-SAXO-001].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -283,6 +284,28 @@ pub enum SaxoError {
         first: usize,
         second: usize,
     },
+    /// A quantity column holding something that is not a number [IMP-SAXO-038]. `Traded
+    /// Quantity` is a share count and not money, so it is reported apart from
+    /// [`SaxoError::NotAnAmount`].
+    #[error("the column {header} holds {value:?}, which is not a quantity")]
+    NotAQuantity { header: String, value: String },
+    /// An `Acties` label stating a trade clause that cannot be read [IMP-SAXO-038]. A parse
+    /// failure and never a guess: the figure in it is a share count.
+    #[error("the Acties label {label:?} states a quantity that cannot be read")]
+    UnparsableLabel { label: String },
+    /// A row stating a quantity neither on its `_Transacties` counterpart nor in its `Acties`
+    /// label [IMP-SAXO-038]. Reported rather than read as zero, which would book a movement of
+    /// no shares.
+    #[error("the row labelled {label:?} states no quantity, on its counterpart or in its label")]
+    NoQuantity { label: String },
+    /// A row whose `Acties` label and whose `Traded Quantity` disagree. The file is refused
+    /// rather than one of the two chosen [IMP-SAXO-038]: both are quantities of the same trade,
+    /// and either choice books a position the export does not describe.
+    #[error(
+        "the Acties label states a quantity of {label} and Traded Quantity {column}; \
+         the file is refused rather than choosing one"
+    )]
+    QuantityDisagreement { label: String, column: String },
     /// A column asked for that the row does not carry, which a header check makes unreachable
     /// for a column of the sheet and reachable for a caller naming the wrong sheet's.
     #[error("the row carries no column {header}")]

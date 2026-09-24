@@ -13,6 +13,7 @@ use fifolio_core::entities::{Account, RecordIdentity};
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::saxo::identity::{account, check_identities, identity};
 use fifolio_core::import::saxo::money::Booked;
+use fifolio_core::import::saxo::quantity::{Label, StatedBy, traded};
 use fifolio_core::import::saxo::{SaxoError, SaxoWorkbook, Sheet, date, field};
 
 /// Every committed Saxo fixture, with the year its filename names.
@@ -449,4 +450,83 @@ fn every_fixture_row_states_the_money_it_booked() {
     }
 
     assert!(foreign > 0, "the corpus carries foreign-currency rows");
+}
+
+/// Every `Acties` value in the corpus reads as a label, in one of its two shapes, and an
+/// unparsable one is a failure rather than a guess [IMP-SAXO-038].
+///
+/// The counts are what keep this from passing on a parser that answered "no trade clause" to
+/// everything: the sample's fifteen clause-bearing labels are the thirteen transfers, the one
+/// buy and the one sell.
+#[test]
+fn every_fixture_label_reads_as_a_label() {
+    let labels: Vec<Label> = exports()
+        .iter()
+        .flat_map(|(path, export)| {
+            (0..export.rows().len())
+                .map(|index| {
+                    let acties = action(export, index);
+                    Label::parse(acties).unwrap_or_else(|error| {
+                        panic!(
+                            "{} row {} labelled {acties:?}: {error}",
+                            path.display(),
+                            index + 2
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    let with_clause = labels.iter().filter(|label| label.quantity().is_some());
+    assert_eq!(with_clause.clone().count(), 15);
+    assert_eq!(
+        with_clause
+            .filter(|label| label.price().is_some() && label.currency().is_some())
+            .count(),
+        15,
+        "a trade clause states a price and a currency as well as a quantity"
+    );
+    assert!(
+        labels.iter().any(|label| label.quantity().is_none()),
+        "most of the ledger is labelled with an action alone"
+    );
+}
+
+/// Every labelled quantity in the corpus agrees with the `Traded Quantity` of the row's
+/// counterpart, and the counterpart is what answers [IMP-SAXO-038].
+///
+/// A disagreement refuses the file, so this is the assertion that the rule does not refuse the
+/// real exports; the refusal itself is unit tested, no fixture carrying a mismatch. Rows joining
+/// several legs are left out: their sides are summed after cancellation, which is IMP-SAXO-044's
+/// and IMP-SAXO-045's, not this rule's.
+#[test]
+fn every_labelled_quantity_agrees_with_its_counterpart() {
+    let mut checked = 0_usize;
+    for (path, export) in exports() {
+        for index in 0..export.rows().len() {
+            let acties = action(&export, index);
+            let label = Label::parse(acties).expect("a fixture label reads");
+            let legs: Vec<_> = export.detail_of(index).collect();
+            let [leg] = legs[..] else { continue };
+
+            let traded = traded(&label, Some(leg)).unwrap_or_else(|error| {
+                panic!(
+                    "{} row {} labelled {acties:?}: {error}",
+                    path.display(),
+                    index + 2
+                )
+            });
+
+            assert_eq!(traded.stated_by(), StatedBy::Columns);
+            if let Some(stated) = label.quantity() {
+                checked += 1;
+                assert_eq!(traded.quantity(), stated, "{acties}");
+            }
+        }
+    }
+
+    // The thirteen transfers, the buy and the sell: every clause-bearing label in the corpus
+    // joins exactly one leg.
+    assert_eq!(checked, 15);
 }

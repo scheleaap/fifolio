@@ -632,13 +632,30 @@ Blocked by: IMP-SAXO-008 is on the undecided list.
 Notes: Split out of FIF-020 in revision 3. Without the ordinal, two rows sharing a label and an amount deduplicate as a re-import and money vanishes from the event; DEC-033 records why the ordinal and not a hash of the row.
 
 ## FIF-021 Saxo: money derivation
-Status: todo
+Status: done
 Requirements: IMP-SAXO-009, IMP-SAXO-010, IMP-SAXO-023, IMP-SAXO-029, IMP-SAXO-030, IMP-SAXO-032
 Depends on: FIF-019, FIF-008
 Acceptance: `Boekingsbedrag` read as native cash movement including costs, `Aantal` as the same amount in EUR and never as a quantity, `Totale kosten` as EUR costs (always negative), `Omrekeningskoers` as the native-to-EUR multiplier whose **reciprocal** is the stored rate; the derivation is sign-aware — EUR gross = |Aantal| − |Totale kosten| on a buy and |Aantal| + |Totale kosten| on a disposal; EUR fees = |Totale kosten|; EUR price = EUR gross / (quantity × factor), so the quoted price is reproduced and the factor is applied once; native figures follow the same shape with costs converted back using `Omrekeningskoers`, not the stored rate, **the subtraction keeping full precision like every other intermediate**, so the sample buy stores a native unit price of 5.750036 against a printed 5.75; rate source `broker`. Unit tests reproduce all three worked examples in `importers.md`: the 40 @ 5.75 USD buy (EUR gross 209.63, EUR price 5.240750), the 60 @ 30.65 sell (EUR gross 1839.24, EUR price 30.654) and the 3000 @ 139.46 bond (EUR price 139.46, not 1.3946).
 Notes: The sign-aware derivation (DEC-035) was new in revision 2; revision 1's single formula understated every disposal's proceeds by twice the fee. Blocked in revision 2 on IMP-SAXO-030, which left the undecided list in revision 3. The factor in the EUR-price step is FIF-075 and still undecided, so the bond case in the third worked example lands with that item.
 IMP-SAXO-032 is **reversed in revision 8**. Revision 7 read it (DEC-054) as an exception to the intermediate-precision policy of FIF-054, rounding the native fee so the stored price matched the printed one; DEC-059 supersedes DEC-054 and settles it the other way, so IMP-SAXO-032 is now an instance of that policy rather than an exception to it, and the plan's earlier acceptance clause is gone rather than edited into silence. Nothing was built against the old reading — this item has never been started — so no completed work is invalidated. It changes no EUR figure and therefore no tax figure either way.
 DOM-039 was restated in the same commit: reconciliation against a broker document is on the **booked amounts**, which are exact, and not on the printed unit price. FIF-055 records that the observable assertion for DOM-039 lands here; that assertion is now "the derived price reproduces the booked gross", not "the stored price equals the printed one", and the sell case (30.654 against a printed 30.65) already in this item's acceptance is exactly it.
+Done in revision 35, commit `f34c466`, in `crates/fifolio-core/src/import/saxo/money.rs` (38
+functions, 806 lines with its unit tests) plus the integration cases in
+`crates/fifolio-core/tests/saxo_export.rs`. The four columns are read as what they are
+[IMP-SAXO-009, IMP-SAXO-010]; the direction is an argument rather than the sign of a money cell, so
+a disposal is no longer understated by twice the fee [IMP-SAXO-030]; the unit price divides by
+`quantity × factor` once [IMP-SAXO-023]; the native costs are converted back with the row's own
+`Omrekeningskoers` and the stored rate is its reciprocal [IMP-SAXO-029]; nothing rounds, the
+subtraction included, so the sample buy derives 5.750036 against a printed 5.75 and the sample sell
+30.654 against 30.65 [IMP-SAXO-032]. Both EUR-quoted worked examples are reproduced; the bond
+example waits on FIF-075 as this item's notes said it would.
+The **rounded-to-FX-scale half of IMP-SAXO-029 is not here** and is deliberately carried onto
+FIF-023 (see its notes): whichever row-to-transaction mapping first persists a Saxo conversion must
+round at the storage boundary, and storage refuses an unrounded rate outright, so omitting it is a
+failed insert and not a wrong figure.
+That commit also carried revision 34's own PLAN.md edits, which is why the plan it committed still
+showed this item as `todo` — the sixth time this has happened. The record is corrected here rather
+than by rewriting the commit.
 
 ## FIF-022 Saxo: `Acties` label parsing
 Status: todo
@@ -1028,6 +1045,37 @@ Ids are never reused.
 * **FIF-018 — Corporate action engine.** Dropped in this revision. `domain.md` replaced the separate corporate-action entity with transaction variants (DEC-024, DEC-025), retiring DOM-014, DOM-015 and DOM-050 to DOM-053. Its two halves became FIF-061 (splits and effective quantity) and FIF-063 (transfer out emission, basis and decomposition); DOM-016, the citation rule, moved to FIF-056.
 
 # Revision history
+
+**Revision 35 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
+design/` is empty), so no requirement was added, restated or retired and coverage is untouched at
+**345** ids, each named on exactly one `Requirements:` line and together precisely the live ids in
+`design/` less the nine retired ones. `HEAD` is `f34c466`; the working tree carries no tracked
+change (only the user's untracked `docs/` and `tmp/`); `cargo test --workspace` gives **410 passed,
+0 failed**, up from revision 34's 386.
+
+* **Completed:** **FIF-021**, Saxo money derivation, committed as `f34c466`. Found built, committed
+  and green with the plan still reading `todo`, because that commit swept revision 34's plan edits
+  in alongside the implementation. Nothing was rebuilt; `money.rs` was read against the six
+  requirements and the status corrected. This is the sixth consecutive occurrence of that pattern
+  and the plan can only keep recording it: the status flip needs to be its own commit before the
+  session can be interrupted, which is a workflow change and not an item.
+* No item added, split, retired or re-scoped. No status changed but FIF-021's.
+* One obligation was moved rather than dropped, and it was moved by the implementer, not here: the
+  *rounding* clause of IMP-SAXO-029 now sits in FIF-023's notes, the derivation keeping full
+  precision per FIF-054. IMP-SAXO-029 stays assigned to FIF-021 alone — the id is covered once, and
+  what FIF-023 carries is a construction note, not a second claim on the requirement.
+* `design/open-questions.md` is unchanged: thirty-four blocked requirements across OQ-001 to OQ-019
+  (OQ-020 blocks nothing), twenty-four `blocked` items, every one carrying a blocked id and no other
+  item doing so, and no item blocked in an earlier revision has been released. 95 items:
+  **27 `done`, 44 `todo`, 24 `blocked`**.
+* **Next ready item: FIF-022**, Saxo `Acties` label parsing — its only dependency FIF-019 is `done`
+  (`a97004e`) and none of IMP-SAXO-011, IMP-SAXO-012, IMP-SAXO-038 is on a `Blocks:` line. The five
+  `todo` items standing earlier in document order — FIF-060, FIF-013, FIF-014, FIF-015, FIF-016 —
+  each still wait on a `blocked` dependency (FIF-058, FIF-076, FIF-061, FIF-063), so none is
+  selectable. The caveat for the implementer is the DEC-070 re-scope already written into the item:
+  the quantity and the direction come from `_Transacties`, the label is a cross-check and a fallback,
+  a disagreement refuses the file, and no path may exist by which a label price reaches a money
+  field — `Deponering`'s old exception is gone.
 
 **Revision 34 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
 design/` is empty), so no requirement was added, restated or retired and coverage is untouched at
