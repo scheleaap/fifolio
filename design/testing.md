@@ -81,7 +81,7 @@ The real exports in `example_exports/` are personal financial records and are gi
 
 Anonymization replaces account ids, client ids, personal names, IBANs and instrument-level identifying detail, and perturbs amounts. [TST-012] It must preserve every structural property the importers depend on, because that is the whole point of using real files: [TST-013]
 
-* Saxo: XLSX container, Dutch headers, the non-breaking spaces and the leading space in header names, Excel serial dates, the per-currency account suffix, the free-text `Acties` strings with their rounded prices, multi-row corporate actions sharing a `Corporate action-Id`, reversal rows, and at least one row of every `Acties` value observed
+* Saxo: XLSX container, **all three sheets** (`Transacties`, `_Transacties`, `Bookings`) with their own headers and row counts, and the join keys intact between them, since a fixture carrying one sheet is not a fixture of this file [TST-031]; Dutch headers, the non-breaking spaces and the leading space in header names, Excel serial dates, the per-currency account suffix, the free-text `Acties` strings with their rounded prices, multi-row corporate actions sharing a `Corporate action-Id`, reversal rows, and at least one row of every `Acties` value observed
 * Trade Republic: quoted CSV, the full column set, ISO-8601 timestamps with sub-second precision, UUID transaction ids, negative cash-flow amounts, and populated `original_*` columns
 
 Anonymization perturbs **amounts only**. Quantities and dates are left alone, because both are

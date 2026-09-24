@@ -17,7 +17,27 @@ Both mappings were derived from real exports in `example_exports/`: five Saxo fi
 
 ## File format
 
-**XLSX, not CSV.** One sheet, one header row, 31 columns, identical across all five files. [IMP-SAXO-001]
+**XLSX, not CSV.** **Three sheets**, each with one header row, identical across all five files:
+`Transacties` (31 columns), `_Transacties` (24 columns) and `Bookings` (21 columns).
+[IMP-SAXO-001]
+
+`Transacties` is the cash ledger: one row per booked movement, and the sheet every other rule here
+was originally written against. The other two are detail sheets, and between them they carry the
+quantities, prices and tax figures that `Transacties` does not.
+
+| Sheet | Rows in the sample | What it holds | Joined by |
+| --- | --- | --- | --- |
+| `Transacties` | 188 | the booked cash movement, the instrument, the dates | — |
+| `_Transacties` | 33 | the **position** side: signed quantity, price, traded value, buy/sell direction, open/close, order id, an execution timestamp | `Transactie-ID`, else `Corporate action-Id` |
+| `Bookings` | 242 | the **components** of a cash movement: amount type, eligible quantity, dividend per share, ex-date, book date, withholding percentage | `Bk Record Id`, `Booking Id`, else `Corporate action-Id` |
+
+Every position-affecting row of `Transacties` has a `_Transacties` counterpart: all 13 `Deponering`,
+both `Stock split`, all three `Fusie`, all three `Keuzedividend`, the `Koop`, the `Verkoop`, the
+`Omwisseling`, the `Terugkoopaanbod` with its reversal and the `Expiratie` — 32 rows in all. The
+remaining 156 are cash movements and appear in `Bookings` instead. A row may join on
+`Corporate action-Id` rather than on a transaction id, and a corporate action's two legs are two
+`_Transacties` rows under one `Corporate action-Id`, distinguished by `Trade Event Type`
+(`Gekocht` / `Verkocht`). [IMP-SAXO-037]
 
 * Headers are Dutch, and several contain non-breaking spaces (`Bk\xa0Record\xa0Id`, `Booking\xa0Id`) or a leading space (` Positie-ID`). Normalize whitespace before matching [IMP-SAXO-002]
 * Dates are Excel serial numbers, not text [IMP-SAXO-003]
@@ -129,7 +149,9 @@ The bond case, where the factor matters:
 
 Quantity and direction are only present inside the free-text `Acties` string: `Koop 40 @ 5.75 USD`, `Verkoop -60 @ 30.65 EUR`, `Deponering 300 @ 51.40 EUR`.
 
-**The price in that string is rounded to 2 decimals and must never be used for money.** [IMP-SAXO-011] The one sell in the sample reads `30.65`, while 1833.24 + 6.00 over 60 units gives 30.654. Take the quantity and the direction from the label, every figure from the columns. [IMP-SAXO-012]
+**The price in that string is rounded to 2 decimals and must never be used for money.** [IMP-SAXO-011] The one sell in the sample reads `30.65`, while 1833.24 + 6.00 over 60 units gives 30.654. Every figure comes from a column. [IMP-SAXO-012]
+
+The quantity and the direction come from a column too, on `_Transacties`: `Traded Quantity` is signed and `Trade Event Type` states `Gekocht` or `Verkocht`. Parsing them out of the label is a fallback for a row with no `_Transacties` counterpart, not the normal path, and a label whose parsed quantity disagrees with the column **refuses the file** rather than choosing one. [IMP-SAXO-038]
 
 ## Row classification
 
@@ -141,9 +163,9 @@ Quantity and direction are only present inside the free-text `Acties` string: `K
 | `Verkoop` | `sell` | derived automatically |
 | `Deponering` | `transfer_in` | derived automatically, source `broker`, date provenance `transfer_date` (see below) |
 | `Expiratie` | `expiration` | derived automatically; quantity is the remaining position, proceeds from the row. Pending if nothing remains |
-| `Fusie`, `Terugkoopaanbod` (+ `Terugboeking`) | `sell` and/or `transfer_out` | pending: the quantity disposed, and any target security. Cash and costs go to the sell leg [IMP-SAXO-031] |
-| `Stock split` | `split` | pending: the ratio |
-| `Omwisseling` | `transfer_out` | pending: the target security and the ratio |
+| `Fusie`, `Terugkoopaanbod` (+ `Terugboeking`) | `sell` and/or `transfer_out` | derived: both legs are `_Transacties` rows under the one `Corporate action-Id`, the `Verkocht` leg disposing and the `Gekocht` leg opening. Cash and costs go to the sell leg [IMP-SAXO-031] |
+| `Stock split` | `split` | derived: the ratio is the `Gekocht` quantity over the `Verkocht` quantity, an exact integer pair — Tesla `45 : 15` is 3:1, OBAM `20 : 4` is 5:1 [IMP-SAXO-040] |
+| `Omwisseling` | `transfer_out` | derived: the two `_Transacties` legs give both quantities, hence the ratio; the target security is the `Gekocht` leg's instrument [IMP-SAXO-041] |
 | `Dividend`, `Keuzedividend`, `Herbeleggingsdividend` | `buy` or none | see Dividends |
 | `Rente`, `Service fee`, `ADR-kosten`, `Storting`, `Opname` | none | recognized as non-position, not stored |
 
@@ -177,7 +199,28 @@ The price is a **historical acquisition price restated to the transfer date**, t
 
 Import creates a complete `transfer_in` with source `broker`: quantity and price from the label, acquisition date set to the transfer date, date provenance `transfer_date`. [IMP-SAXO-015] The date is never corrected, so any grandfathered status the parcel carried is not represented [IMP-SAXO-016] (see Altbestand in `domain.md`).
 
-This is the **one place** the `Acties` label's price is authoritative, against the general rule that it must never be used for money. [IMP-SAXO-028] `Boekingsbedrag` and `Aantal` are zero on these rows, so no column carries the figure. The label's 2-decimal rounding is therefore carried into the cost basis: on the sample bond, `3000 @ 139.46` at percent of par, the half-cent tolerance is 0.15 EUR.
+`Boekingsbedrag` and `Aantal` are zero on these rows, so the cost basis is not on `Transacties` at
+all. It is on `_Transacties`: `Verhandelde waarde` is the traded value and is authoritative, with
+`Traded Quantity` the quantity. [IMP-SAXO-028]
+
+This matters by more than a rounding tolerance. `Verhandelde waarde` is **not** the label price
+times the quantity, because the label price is rounded to 2 decimals while the value is exact. All
+thirteen transfers in the sample:
+
+| Label | quantity x label price | `Verhandelde waarde` | error |
+| --- | --- | --- | --- |
+| `300 @ 14.06 CAD` | 4218.00 | 4216.50 | 1.50 |
+| `345 @ 7.29 EUR` | 2515.05 | 2514.15 | 0.90 |
+| `300 @ 51.40 EUR` | 15420.00 | 15419.46 | 0.54 |
+| `60 @ 32.31 EUR` | 1938.60 | 1938.30 | 0.30 |
+| `30 @ 36.73 EUR` | 1101.90 | 1101.95 | 0.05 |
+| `15 @ 146.08 USD` | 2191.20 | 2191.21 | 0.01 |
+| the other seven | — | — | exact |
+
+3.30 in total, on a cost basis that is subtracted from a future gain. An earlier version of this
+document accepted a "half-cent tolerance" of 0.15 on the bond; that figure was derived from the
+`Transacties` sheet alone and is wrong by an order of magnitude on the worst row. The label's price
+is never used for money here either. [IMP-SAXO-039]
 
 `Omrekeningskoers` is 1 on these rows even for foreign-currency instruments, so a non-EUR transferred lot has **no** EUR cost basis in the file and needs an ECB rate lookup for the transfer date. [IMP-SAXO-017]
 
@@ -202,6 +245,18 @@ Stock is pre-selected because all six position-marked rows in the sample were st
 This is a heuristic calibrated on one account and one issuer. It is acceptable because its failure mode is safe: an understated position surfaces later as a blocked attribution with a named shortfall, not as a wrong number.
 
 In the sample it isolates 6 rows out of 74 dividend-type rows. The 19 `Herbeleggingsdividend` rows were verified against declared dividends per share and are ordinary cash despite the label.
+
+`Bookings` settles that directly rather than by inference. Each of the 19 decomposes into exactly
+two components, `Corporate actions - Fracties` and `Corporate actions - Voorheffing` — the cash paid
+for a fraction too small to issue, and withholding tax on it — and never a share amount. The
+eligible position on those rows is 3 throughout, and across five years and eleven bookings it never
+grows. No shares were issued, so there is no share count to ask for. [IMP-SAXO-042]
+
+Where a stock election **does** issue shares, both sheets say so. The 2025 Philips
+`Keuzedividend` carries a `_Transacties` leg `Gekocht 1 @ 20.09` and a `Bookings` component
+`Corporate Actions - Share Amount` of `-20.09` against a `Corporate Actions - Cashdividenden` of
+`28.05` on 33 eligible shares. The share count and the taxable value are both derivable, so this is
+not a manual entry either. [IMP-SAXO-043]
 
 ## Bonds
 

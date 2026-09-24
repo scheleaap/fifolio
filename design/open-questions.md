@@ -104,7 +104,11 @@ value, which orders them where the export puts them.
 The mechanism in `ordering.rs` is unaffected either way and currently sorts absent first. What is
 blocked is the Saxo importer's binding of it.
 
-**OQ-014 — A stock dividend's cost basis.**
+**OQ-014 — A stock dividend's cost basis.** *(answered; kept until the rule is written into
+`domain.md` and the entry deleted)* `Bookings` carries the taxable value as a
+`Corporate Actions - Share Amount` component and `_Transacties` carries the share count as the
+`Gekocht` leg's quantity, so neither is a manual entry. The 19 `Herbeleggingsdividend` events issue
+no shares at all. See IMP-SAXO-042 and IMP-SAXO-043.
 Blocks: `IMP-SAXO-013`
 A `Herbeleggingsdividend` row carries a cash amount and no share count: `0.43 EUR` of ING, `0.12` of
 KPN. The shares it bought are in no column of the export, and Saxo's separate corporate-action
@@ -148,4 +152,13 @@ The error names the currency and date when a rate is "neither cached nor fetchab
 an import can fetch. No requirement assigns that path: seeding and top-up are separate acts, and
 whether an import reaches the network at all is unstated. It decides whether an import can fail for
 want of a network connection.
+
+**OQ-020 — Withholding tax is in the export and in no requirement.**
+Blocks: nothing yet
+`Bookings` states a `Tax Percentage` (15 on the Dutch dividends) and isolates the withheld amount as
+a `Corporate actions - Voorheffing` component. Foreign withholding is creditable against German tax,
+so this is a figure with a use, and 70 of the 242 booking rows carry one. Nothing in `domain.md`
+models a tax withheld, and DEC-001 puts tax treatment out of scope while the reports exist to feed a
+tax return. Whether the withheld amount is stored and reported, or deliberately ignored, is a
+scoping decision rather than a gap.
 

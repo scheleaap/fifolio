@@ -452,3 +452,22 @@ while each compares to the second by position, and no arrangement satisfies all 
 correction keeps DEC-064's reason and fixes its mechanism. Within one date: if every row populates
 the same counter column, that counter orders the date; otherwise the date is ordered by reversed
 file position and no counter is consulted. The decision is per date, so the comparison is total.
+
+**DEC-070 — The Saxo export has three sheets, and the two that were never opened carry the
+quantities.** Every Saxo rule until now was written against `Transacties` alone, because that is the
+sheet the file opens on. `_Transacties` holds the position side of each event and `Bookings` the
+components of each cash movement. The consequences are not cosmetic:
+
+* The `Acties` label is no longer a source of money **anywhere**. `Verhandelde waarde` is the exact
+  traded value, and on the thirteen transferred-in parcels it differs from the label price times the
+  quantity by up to 1.50 on one parcel and 3.30 in total — a cost basis error, not a display
+  rounding. IMP-SAXO-028's "half-cent tolerance of 0.15" was an artifact of reading one sheet.
+* The corporate actions the classification table marked `pending` are derivable: split ratios as
+  exact integer pairs (Tesla 45:15, OBAM 20:4), both legs of a merger and of an exchange, the tender
+  quantity, the expiration quantity, and a stock election's share count with its taxable value.
+* The 19 `Herbeleggingsdividend` events issue no shares. Each decomposes into a fractional cash
+  payment and its withholding tax, and the eligible position never grows across five years. The
+  largest anticipated block of manual data entry does not exist.
+
+The fixtures reproduce one sheet and so do not reproduce the file. They are rebuilt, and the
+anonymizer extended to all three sheets, before any Saxo importer work continues. [DEC-070]
