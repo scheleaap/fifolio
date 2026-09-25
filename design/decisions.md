@@ -588,3 +588,11 @@ DOM-069's re-rating clause then holds by construction, as its edit clause alread
 remedy for an ECB correction, re-rating the transaction, is therefore unavailable until re-rating
 is specified; the gap is accepted, since a correction to an already-cached day is rare and small.
 [DEC-084]
+
+**DEC-085 — A date after the newest publication has no rate yet.** A Saturday trade imported on
+Sunday and a weekday trade imported before that day's 16:00 CET publication look the same to the
+cache: nothing after the date. Only the first will never be published, and substituting the earlier
+rate for the second fixes a guess into the transaction for good. A day counts as a non-publication
+day under DOM-034 only when a later publication proves it was skipped; before that ARC-019 refuses.
+The cost is waiting a day, and imports are mostly of past years. Rejected: a calendar of weekends
+and TARGET holidays, correct in both cases but a table to maintain. [DEC-085, DOM-034, ARC-019]

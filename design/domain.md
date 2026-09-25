@@ -112,7 +112,7 @@ Rate source, in order of preference: [DOM-030]
 
 **The stored rate is foreign units per EUR**, the ECB convention: `EUR = native / rate`. [DOM-086] Brokers differ — Trade Republic and the ECB quote it this way, Saxo quotes its inverse — so an importer meeting the other convention inverts at full precision from the figures the file states, never from the rounded stored rate.
 
-If the ECB published no rate for the trade date (weekend, holiday), the most recent published rate before that date is used, and the rate's own date is stored alongside it, so the substitution is visible. [DOM-034]
+If the ECB published no rate for the trade date (weekend, holiday), the most recent published rate before that date is used, and the rate's own date is stored alongside it, so the substitution is visible. A date is known to carry no publication only once a later publication exists: a trade dated after the newest published rate has no rate yet, and ARC-019 applies (DEC-085). [DOM-034]
 
 Fees are converted at the same rate as the leg they belong to. [DOM-035]
 
