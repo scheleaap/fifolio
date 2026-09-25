@@ -8,12 +8,17 @@
 //! drift apart. [`openapi`] and `GET /openapi.json` both read that list, which is what makes
 //! `fifolio-server openapi` print the same document the running server returns [SRV-005,
 //! SRV-006].
+//!
+//! Every error response is a problem document; see [`problem`] [ARC-020].
+
+pub mod problem;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{FromRef, State};
+use axum::middleware::map_response;
 use axum::{Json, Router};
 use clap::{Parser, Subcommand};
 use fifolio_core::storage::{DEFAULT_DATABASE_PATH, Database, StorageError};
@@ -71,11 +76,19 @@ pub fn listen_address(port: u16) -> SocketAddr {
 }
 
 #[derive(OpenApi)]
-#[openapi(info(title = "fifolio-server"))]
+#[openapi(info(title = "fifolio-server"), components(schemas(problem::Problem)))]
 struct ApiDoc;
 
+/// What a handler can extract: the spec it serves, and the database it reaches storage
+/// through, the one handle this process holds [ARC-003].
+#[derive(Clone, FromRef)]
+struct AppState {
+    spec: Arc<utoipa::openapi::OpenApi>,
+    database: Database,
+}
+
 /// Every documented route. A handler added here is served and documented at once.
-fn api() -> OpenApiRouter<Arc<utoipa::openapi::OpenApi>> {
+fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(ApiDoc::openapi()).routes(routes!(openapi_json))
 }
 
@@ -85,10 +98,18 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     api().split_for_parts().1
 }
 
-/// The HTTP surface.
-pub fn router() -> Router {
+/// The HTTP surface over `database`.
+///
+/// The problem layer goes on last so it sees every response, the fallback's 404 and a route's
+/// 405 included [ARC-020].
+pub fn router(database: Database) -> Router {
     let (router, spec) = api().split_for_parts();
-    router.with_state(Arc::new(spec))
+    router
+        .with_state(AppState {
+            spec: Arc::new(spec),
+            database,
+        })
+        .layer(map_response(problem::problem_for_bare_errors))
 }
 
 /// The server's OpenAPI document [SRV-006].
@@ -122,7 +143,7 @@ pub async fn serve(port: u16, database: PathBuf) -> Result<(), ServeError> {
         .await
         .map_err(|source| ServeError::Bind { address, source })?;
     tracing::info!(%address, database = %database.display(), "fifolio-server listening");
-    let served = axum::serve(listener, router())
+    let served = axum::serve(listener, router(db.clone()))
         .with_graceful_shutdown(async {
             // An error here means no signal handler could be installed; the server then runs
             // until killed, which is what it would do without graceful shutdown at all.
@@ -190,5 +211,18 @@ mod tests {
     #[test]
     fn the_spec_documents_its_own_route() {
         assert!(openapi().paths.paths.contains_key("/openapi.json"));
+    }
+
+    /// The problem document's schema is in the same spec as the routes that return it
+    /// [ARC-020].
+    #[test]
+    fn the_spec_describes_the_problem_document() {
+        let spec = serde_json::to_value(openapi()).expect("the spec serializes");
+        let problem = &spec["components"]["schemas"]["Problem"];
+        assert_eq!(
+            problem["required"],
+            serde_json::json!(["type", "title", "status"])
+        );
+        assert_eq!(problem["properties"]["status"]["type"], "integer");
     }
 }

@@ -1024,10 +1024,12 @@ Acceptance: `fifolio-server` replaces the stub, binds `127.0.0.1:8000` and nothi
 Notes: Done in revision 42's build. `fifolio-server` is a library (`src/lib.rs`: `Args`, `serve`, `router`, `openapi`) behind a thin `main.rs`. The OpenAPI document is assembled by `utoipa-axum` from the handlers' own annotations, so `fifolio-server openapi` and `GET /openapi.json` read one route list [SRV-005, SRV-006]. The database is opened before the socket is bound; `openapi` opens neither. ARC-022 is asserted end to end (127.0.0.2 and `::1` refuse), ARC-003 by the spawned server creating its database and by `dependency_graph.rs` showing the CLI reaches neither `fifolio-core` nor a SQLite driver.
 
 ## FIF-033 Problem+json errors and the HTTP test harness
-Status: todo
+Status: done
 Requirements: ARC-020, ARC-021, TST-005
 Depends on: FIF-032
 Acceptance: every error response is `application/problem+json` per RFC 9457 with a stable machine-readable `type` per error class, and each core error variant maps to exactly one `type`; an integration harness spins the router over a temporary database in process and asserts status codes and body shape. Later server items add their own cases to this harness.
+Notes: Named next to build in revision 43. FIF-032 (`8964f18`) left `fifolio-server` a library (`src/lib.rs`: `Args`, `serve`, `router`, `openapi`) whose OpenAPI document `utoipa-axum` assembles from handler annotations; the problem+json schema belongs in that same document, and the harness should drive `router()` rather than a spawned process. `crates/fifolio-server/tests/http_surface.rs` already exists and is the natural home.
+"Each core error variant" is read as each variant of an error a handler can hold: `StorageError`, `ImportError` (with `ReadError` through `ImportError::Read`), `RateError`, `FeedError` and `IngestError`. `SaxoError` and `TradeRepublicError` are format-internal and get no problem type: the server imports through `import::import`, and the `Importer` trait answers only `RowError` and `ImportError`, so a format error reaches the server as one of those or not at all. Consequence for whoever writes the Saxo and Trade Republic `Importer` impls (FIF-023 onward, FIF-029): `ImportError` has no variant yet for a format's whole-file refusals (unrecognized or reordered headers, an unjoined detail row, a duplicate identity, a disagreeing quantity, an unknown instrument type, a mixed security type), so those need `ImportError` variants, and each new variant needs its `ProblemType` in `fifolio-server/src/problem.rs`, which the exhaustive match will demand.
 
 ## FIF-034 Accounts and securities endpoints
 Status: todo
@@ -1234,7 +1236,25 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 42 (this run).** `design/` **changed**: `b9017d8` adds **OQ-021** to
+**Revision 43 (this run).** A status reconciliation. `design/` is **unchanged** since revision 42:
+`git log -- design/` still ends at `b9017d8`, and `open-questions.md` is byte-identical. `HEAD` is
+`8964f18`; the working tree still carries the uncommitted, unreviewed FIF-028 implementation
+revision 42 described (`import/trade_republic/money.rs`, error variants, fixture tests), untouched.
+
+* **Completed: FIF-032**, server binary, arguments and OpenAPI, committed as `8964f18` with its
+  status flip in the same commit.
+* No item added, split, retired or re-scoped. Nothing blocked or unblocked. 96 items: **33
+  `done`, 37 `todo`, 26 `blocked`**, counted by script.
+* Coverage re-verified by script: **348** ids on the `Requirements:` lines, each exactly once, equal
+  to the live ids in `design/` less the nine retired. Nothing uncovered, nothing deferred. **37** ids
+  on `Blocks:` lines across OQ-001 to OQ-021; the 26 items carrying them are exactly the 26 `blocked`.
+* The Decisions required section was stale since revision 42 (it still said 34 ids, 24 items, and
+  omitted OQ-021); corrected there.
+* **Next to build: FIF-033**, problem+json errors and the HTTP test harness. It is the first `todo`
+  in document order whose dependencies are all `done` (FIF-032) and none of whose requirements
+  (ARC-020, ARC-021, TST-005) is blocked. FIF-042 is the only other ready item.
+
+**Revision 42.** `design/` **changed**: `b9017d8` adds **OQ-021** to
 `open-questions.md`, blocking `IMP-TR-006`, `IMP-TR-016` and `DOM-086`. No requirement was added,
 restated or retired. `HEAD` is `b9017d8`; the working tree carries an uncommitted FIF-028
 implementation and revision 41's uncommitted plan text, both kept.
@@ -2002,8 +2022,9 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**Thirty-four** requirements are named on the `Blocks:` lines of `design/open-questions.md`, and the
-**twenty-four** items carrying them are `blocked`. Revision 29 raised both by two and one: OQ-017 to
+**Thirty-seven** requirements are named on the `Blocks:` lines of `design/open-questions.md`, and the
+**twenty-six** items carrying them are `blocked` (as of revision 43; revision 42's OQ-021 added
+IMP-TR-006, IMP-TR-016 and DOM-086, blocking FIF-028 and the new FIF-097). Revision 29 raised both by two and one: OQ-017 to
 OQ-020 are new in `409f76f` and `c04362c`, of which OQ-018 names DOM-115 (already in the blocked
 FIF-063), OQ-019 names ARC-019 (split out of the `done` FIF-009 into the new **FIF-095**) and OQ-020
 names nothing yet. This plan does not resolve any of them; closing a question is a change to
@@ -2029,6 +2050,7 @@ names nothing yet. This plan does not resolve any of them; closing a question is
 * **OQ-018** an emitted quantity sum that must equal a product not representable at the quantity scale — DOM-115 (FIF-063)
 * **OQ-019** who fetches a rate an import needs and does not have — ARC-019 (FIF-095)
 * **OQ-020** withholding tax is in the export and in no requirement — blocks nothing yet, and so blocks no item; it is a scoping question, and if it is answered by modelling a withheld tax it will add requirements rather than release any
+* **OQ-021** Trade Republic changed its `fx_rate` convention in late 2024 — IMP-TR-006, IMP-TR-016 (FIF-028), DOM-086 (FIF-097)
 
 Several questions reach one item from different directions, and every one of them must close before
 that item unblocks: FIF-023 by OQ-005, OQ-008 and OQ-014; FIF-080 by OQ-003, OQ-011 and OQ-016;
@@ -2051,12 +2073,12 @@ in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
 
-Re-verified in revision 40 by script against `design/` at `79b82de`, unchanged: **348** ids on the
+Re-verified in revision 43 by script against `design/` at `b9017d8`: **348** ids on the
 `Requirements:` lines, each exactly once, and together precisely the live ids in `design/` less the
 nine retired ones (DOM-009, DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to DOM-053), which are
 assigned to nothing. **Nothing is uncovered and nothing is deferred.** Every item carrying one of
-the thirty-four ids on a `Blocks:` line is `blocked`, and no other item is — twenty-four items of
-ninety-five, of which thirty-one are now `done`.
+the thirty-seven ids on a `Blocks:` line is `blocked`, and no other item is — twenty-six items of
+ninety-six, of which thirty-three are now `done`.
 
 Unchanged in revision 39, re-verified by script against `design/` at `79b82de`: **348** ids on the
 `Requirements:` lines, each exactly once, and together precisely the live ids in `design/` less the

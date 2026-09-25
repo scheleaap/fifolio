@@ -2,6 +2,8 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use fifolio_core::storage::Database;
+use fifolio_test_support::TempDb;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -9,7 +11,9 @@ use tower::ServiceExt;
 /// both being read from one route list [SRV-005, SRV-006].
 #[tokio::test]
 async fn get_openapi_json_returns_the_spec() {
-    let response = fifolio_server::router()
+    let dir = TempDb::new();
+    let database = Database::open(dir.path()).await.expect("open the database");
+    let response = fifolio_server::router(database)
         .oneshot(
             Request::builder()
                 .uri("/openapi.json")
