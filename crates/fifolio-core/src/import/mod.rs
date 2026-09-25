@@ -34,11 +34,11 @@
 //!
 //! # Failures
 //!
-//! A row whose ordering key, identity or classification cannot be read is a failed row, and any
-//! failed row refuses the import as a whole [SRV-058] (DEC-074, DEC-087): skipping it would
-//! leave a batch owning part of a file, and without a row's key the file has no total order, so
-//! every row's `order` would depend on which rows were dropped. Every row is still tried first,
-//! so that the refusal names every failed row and one round of fixes suffices.
+//! A row whose ordering key, account, identity or classification cannot be read is a failed
+//! row, and any failed row refuses the import as a whole [SRV-058] (DEC-074, DEC-087): skipping
+//! it would leave a batch owning part of a file, and without a row's key the file has no total
+//! order, so every row's `order` would depend on which rows were dropped. Every row is still
+//! tried first, so that the refusal names every failed row and one round of fixes suffices.
 
 pub mod reader;
 pub mod saxo;
@@ -174,6 +174,14 @@ pub enum ImportError {
     /// [IMP-001]. The years are those of the rows' **trade dates** [IMP-002], ascending.
     #[error("the file carries trade dates in more than one calendar year: {}", years.iter().map(i32::to_string).collect::<Vec<_>>().join(", "))]
     MultipleCalendarYears { years: Vec<i32> },
+    /// The file names one account and the import targets another [IMP-003]: the mis-aimed
+    /// import batch deletion exists to undo, refused before anything is stored.
+    #[error("the file names account {file}, but the import targets account {target}")]
+    AccountMismatch { file: String, target: String },
+    /// The file carries rows from more than one account, refused outright [IMP-003] rather than
+    /// compared, since no one target could be right for all of them. Ascending; at least two.
+    #[error("the file carries rows from more than one account: {}", accounts.join(", "))]
+    MultipleAccounts { accounts: Vec<String> },
     /// An importer that answers a different number of rows than it was given has lost the
     /// correspondence between row and classification; pairing them anyway would file one row's
     /// outcome against another's record.
@@ -253,6 +261,24 @@ pub trait Importer {
     /// [SRV-058].
     fn ordering_key(&self, row: &SourceRow) -> Result<RowOrderingKey, RowError>;
 
+    /// The account `row` names, as the format normalizes it, or `None` when the format states
+    /// no account id [IMP-003].
+    ///
+    /// The answer is compared with [`Account::id`], which carries the normalized id, so a
+    /// format whose file spells the account in several ways answers the one it normalizes to:
+    /// Saxo's is the `Rekening-ID` without its currency suffix [DOM-003], never the raw cell.
+    ///
+    /// The default states none, as Trade Republic's export does: such a file has nothing to
+    /// check and is imported into the account the caller names (DEC-075).
+    ///
+    /// # Errors
+    ///
+    /// When the format states an account id and this row's cannot be read, which makes it a
+    /// failed row [SRV-058].
+    fn account_id(&self, _row: &SourceRow) -> Result<Option<String>, RowError> {
+        Ok(None)
+    }
+
     /// What each row of the file is [DOM-043], one answer per row in the order given.
     ///
     /// It takes the whole file because a classification can depend on a row's neighbours: a
@@ -265,8 +291,10 @@ pub trait Importer {
 ///
 /// # Errors
 ///
-/// [`ImportError`] when the file cannot be read, or when any row's ordering key, identity or
-/// classification cannot be read, in which case every such row is named [SRV-058].
+/// [`ImportError`] when the file cannot be read; when its trade dates span more than one year
+/// [IMP-001]; when it names an account other than `account`, or more than one [IMP-003]; or
+/// when any row's ordering key, account, identity or classification cannot be read, in which
+/// case every such row is named [SRV-058].
 pub fn import(
     importer: &dyn Importer,
     account: &Account,
@@ -295,6 +323,30 @@ pub fn import(
         });
     }
 
+    // The account guard [IMP-003], like the year guard, reads every row first and judges only
+    // the ids it could read; a row whose id is unreadable is a failed row and refuses the file
+    // below, so no file is imported with an account the guard has not seen. Combining this
+    // refusal with the others [SRV-059] is FIF-103's.
+    let named: Vec<Result<Option<String>, RowError>> =
+        rows.iter().map(|row| importer.account_id(row)).collect();
+    let accounts: BTreeSet<&str> = named
+        .iter()
+        .flatten()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    if accounts.len() > 1 {
+        return Err(ImportError::MultipleAccounts {
+            accounts: accounts.into_iter().map(str::to_owned).collect(),
+        });
+    }
+    if let Some(file) = accounts.first().filter(|file| **file != account.id()) {
+        return Err(ImportError::AccountMismatch {
+            file: (*file).to_owned(),
+            target: account.id().to_owned(),
+        });
+    }
+
     let classifications = importer.classify(&rows);
     if classifications.len() != rows.len() {
         return Err(ImportError::ClassificationCount {
@@ -304,13 +356,14 @@ pub fn import(
     }
 
     // A row is still classified and identified when its key is unreadable, but it is named once,
-    // for the first value that failed in reading order: its key, its classification, then its
-    // identity, which is only asked of a row that is stored.
+    // for the first value that failed in reading order: its key, its account, its
+    // classification, then its identity, which is only asked of a row that is stored.
     let outcomes: Vec<Result<(RowOrderingKey, Outcome), RowError>> = rows
         .iter()
         .zip(keys)
+        .zip(named)
         .zip(classifications)
-        .map(|((row, key), classification)| {
+        .map(|(((row, key), named), classification)| {
             let outcome = classification.and_then(|classification| match classification {
                 RowClassification::NonPosition(_) => Ok(Outcome::NonPosition),
                 RowClassification::DerivedAutomatically => importer
@@ -320,7 +373,7 @@ pub fn import(
                     .identity(row)
                     .map(|identity| Outcome::Store(StoredAs::Pending, identity)),
             });
-            key.and_then(|key| outcome.map(|outcome| (key, outcome)))
+            key.and_then(|key| named.and_then(|_| outcome.map(|outcome| (key, outcome))))
         })
         .collect();
 

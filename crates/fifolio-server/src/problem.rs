@@ -78,6 +78,8 @@ pub enum ProblemType {
     StorageFailure,
     UnreadableFile,
     MultipleCalendarYears,
+    AccountMismatch,
+    MultipleAccounts,
     FailedRows,
     ImporterDefect,
     RateBeforeSeries,
@@ -193,6 +195,16 @@ impl ProblemType {
                 S::UNPROCESSABLE_ENTITY,
                 "The file spans more than one calendar year",
             ),
+            Self::AccountMismatch => (
+                "account-mismatch",
+                S::UNPROCESSABLE_ENTITY,
+                "The file names a different account than the target",
+            ),
+            Self::MultipleAccounts => (
+                "multiple-accounts",
+                S::UNPROCESSABLE_ENTITY,
+                "The file carries rows from more than one account",
+            ),
             Self::FailedRows => (
                 "failed-rows",
                 S::UNPROCESSABLE_ENTITY,
@@ -282,6 +294,8 @@ impl From<&ImportError> for ProblemType {
         match error {
             ImportError::Read(_) => Self::UnreadableFile,
             ImportError::MultipleCalendarYears { .. } => Self::MultipleCalendarYears,
+            ImportError::AccountMismatch { .. } => Self::AccountMismatch,
+            ImportError::MultipleAccounts { .. } => Self::MultipleAccounts,
             ImportError::FailedRows { .. } => Self::FailedRows,
             // The importer answered the wrong number of rows: a defect here, not in the file.
             ImportError::ClassificationCount { .. } => Self::ImporterDefect,
@@ -555,6 +569,16 @@ mod tests {
             422,
         ),
         (
+            ProblemType::AccountMismatch,
+            "urn:fifolio:problem:account-mismatch",
+            422,
+        ),
+        (
+            ProblemType::MultipleAccounts,
+            "urn:fifolio:problem:multiple-accounts",
+            422,
+        ),
+        (
             ProblemType::FailedRows,
             "urn:fifolio:problem:failed-rows",
             422,
@@ -783,6 +807,19 @@ mod tests {
                     years: vec![2023, 2024],
                 },
                 ProblemType::MultipleCalendarYears,
+            ),
+            (
+                ImportError::AccountMismatch {
+                    file: "40100/9000001".to_owned(),
+                    target: "40100/9000002".to_owned(),
+                },
+                ProblemType::AccountMismatch,
+            ),
+            (
+                ImportError::MultipleAccounts {
+                    accounts: vec!["40100/9000001".to_owned(), "40100/9000002".to_owned()],
+                },
+                ProblemType::MultipleAccounts,
             ),
             (
                 ImportError::FailedRows {

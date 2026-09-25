@@ -565,7 +565,7 @@ Revision 58: SRV-059 (DEC-088) makes this guard's first-ground refusal a defect 
 also hold. Corrected by **FIF-103**; this item's own acceptance still holds.
 
 ## FIF-099 A row that fails to parse rejects the whole import
-Status: todo
+Status: done
 Requirements: SRV-058
 Depends on: FIF-017
 Acceptance: an import in which any row fails to parse is refused as a whole, and nothing is stored. A row fails to parse when its **ordering key**, its identity or its classification cannot be read (DEC-087). The refusal names **every** failed row by position with its reason, not only the first, whichever of the three each failed on. An unreadable ordering key no longer stops the import at the first such row. `Import::failures` and the failed-to-parse count are gone, because no import can succeed with a failed row. Tested with a synthetic file carrying failing rows of all three kinds among good ones, including two with unreadable ordering keys.
@@ -580,6 +580,12 @@ acceptance. DEC-088 also adds SRV-059, which answers the question revision 57 le
 guard: a file with two years and failed rows is refused with both grounds. That combination is
 **FIF-103**, not this item; here, the failed-row refusal need only be complete on its own.
 Named next to build again in revision 58.
+Revision 59: **done**, committed as `116be0c`. `ImportError::Unorderable` and `Import::failures` are
+replaced by `ImportError::FailedRows` (problem type `failed-rows`), and migration
+`0004_no_failed_count.sql` drops the batch's failed count (DOM-017, DEC-088). The acceptance test
+`every_failed_row_refuses_the_import_and_is_named` in `import/mod.rs` carries two unreadable ordering
+keys, one unclassifiable and one unidentifiable row among good ones and asserts all four are named.
+`cargo test --workspace`: **596 passed, 0 failed**. The multi-ground combination stays FIF-103.
 
 ## FIF-089 Import guard: one account per file
 Status: todo
@@ -1299,6 +1305,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 59.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-099**, committed as `116be0c`; suite 596 passed, 0 failed.
+* No item added, split, retired, blocked or unblocked. 101 items: **40 `done`, 47 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-089.** Its dependencies FIF-017 and FIF-065 are `done`, and IMP-003 is not
+  blocked. It is the remaining dependency of FIF-103. Also ready: FIF-083, FIF-028, FIF-069,
+  FIF-034, FIF-041, FIF-042.
 
 **Revision 58.** `design/` **changed** in `951cb67` (DEC-088): new requirement SRV-059 (an import
 refused on several grounds reports all of them), and the batch's `failed` count leaves DOM-017.
@@ -2288,7 +2307,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 58** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 59** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2354,6 +2373,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 59: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `116be0c`. One hundred and one items: 40 `done`, 47 `todo`, 14 `blocked`.
 
 Revision 58: **352** live ids, each exactly once, re-verified by script against `design/` at
 `951cb67`; SRV-059 is new and on FIF-103. One hundred and one items: 39 `done`, 48 `todo`, 14
