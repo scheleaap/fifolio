@@ -149,16 +149,33 @@ pub struct DelimitedReader {
     delimiter: u8,
 }
 
+/// One delimited file as read: its header row, and its data rows.
+///
+/// The headers are carried separately as well as on every row for the same reason
+/// [`SheetRows`] carries them: a file with no data row still has a header row and a format
+/// checks it, so a wholly different file carrying only a header is refused rather than read as
+/// a successful, empty import [IMP-TR-001].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelimitedRows {
+    /// The header row, as the file spells it, in file column order.
+    pub headers: Vec<String>,
+    /// The data rows, in file order.
+    pub rows: Vec<SourceRow>,
+}
+
 impl DelimitedReader {
     /// A comma-delimited file, which is what Trade Republic exports [IMP-TR-001].
     #[must_use]
     pub fn comma() -> Self {
         Self { delimiter: b',' }
     }
-}
 
-impl RowReader for DelimitedReader {
-    fn rows(&self, content: &[u8]) -> Result<Vec<SourceRow>, ReadError> {
+    /// The file's header row and its data rows.
+    ///
+    /// # Errors
+    ///
+    /// As [`RowReader::rows`].
+    pub fn read(&self, content: &[u8]) -> Result<DelimitedRows, ReadError> {
         let text = std::str::from_utf8(content).map_err(|error| ReadError::NotUtf8 {
             reason: error.to_string(),
         })?;
@@ -194,7 +211,7 @@ impl RowReader for DelimitedReader {
             records.push((start, record));
         }
 
-        Ok(records
+        let rows = records
             .iter()
             .enumerate()
             .map(|(index, (start, record))| {
@@ -210,7 +227,14 @@ impl RowReader for DelimitedReader {
                     .collect();
                 SourceRow::new(columns, raw)
             })
-            .collect())
+            .collect();
+        Ok(DelimitedRows { headers, rows })
+    }
+}
+
+impl RowReader for DelimitedReader {
+    fn rows(&self, content: &[u8]) -> Result<Vec<SourceRow>, ReadError> {
+        self.read(content).map(|read| read.rows)
     }
 }
 
@@ -499,6 +523,18 @@ mod tests {
             .expect("a header alone reads");
 
         assert!(rows.is_empty());
+    }
+
+    /// The header row is answered whether or not the file carries a data row, so a format can
+    /// check it on a file it would otherwise read as empty [IMP-TR-001].
+    #[test]
+    fn a_header_only_delimited_file_still_answers_its_headers() {
+        let read = DelimitedReader::comma()
+            .read(b"a,b\n")
+            .expect("a header alone reads");
+
+        assert_eq!(read.headers, ["a", "b"]);
+        assert!(read.rows.is_empty());
     }
 
     /// A file with no header row is refused rather than read as no rows, as it is in the

@@ -875,11 +875,37 @@ The summing and cancelling themselves moved to **FIF-096**, which this item now 
 Tesla 45:15 is 3:1 and OBAM 20:4 is 5:1, but the sheet states the quantities and not the reduced form; reducing early is where a 45:15 that is really a 3:1 on a partial position would be lost, so the pair is carried and the reduction, if any, is FIF-061's.
 
 ## FIF-027 Trade Republic: CSV reading, identity, ordering and sign convention
-Status: todo
+Status: done
 Requirements: IMP-TR-001, IMP-TR-002, IMP-TR-003, IMP-TR-004, IMP-TR-015, IMP-TR-022, IMP-TR-023
 Depends on: FIF-017, FIF-003, FIF-007, FIF-006
 Acceptance: quoted comma-delimited CSV with dot decimals and one header row of 23 columns; `date` is the effective date and becomes the trade date, `datetime` is a booking timestamp used only as an ordering column after the date and never described as an execution time; the two are independent fields that diverge by up to six days on a corporate action; rows are ordered on `date`, then `datetime`, then file position, because the 2025 export is sorted by neither; `shares` is the quantity and `price` the unit price; `transaction_id` UUID used directly as the identity; cash-flow signs interpreted so buys and fees are negative. Re-importing the fixture twice yields no new records.
 Notes: Blocked in revision 2 on IMP-TR-001, which left the undecided list in revision 3. IMP-TR-023 was restated in revision 7 and is sharper than the plan's earlier reading: the 2022 to 2024 exports ascend by both columns, while 2025 ascends by `date` and **descends** by `datetime` within a date. The requirement id and the item are unchanged; the fixture must carry the 2025 shape, which FIF-003 already states.
+Named next to build in revision 40, FIF-026 having landed in `4d434ba`. All four dependencies are
+`done` — FIF-017 (`bb09bb0`, the import and derivation framework), FIF-003 (`610ca2c`, the Trade
+Republic fixtures), FIF-007 (`f9cecac`, identity) and FIF-006 (`8f9837c`, per-file order) — none of
+IMP-TR-001 to IMP-TR-004, IMP-TR-015, IMP-TR-022 or IMP-TR-023 appears on a `Blocks:` line, and everything ahead of it in document order is `done`,
+`blocked`, or waits on a `blocked` item. It is the **first Trade Republic item**, so it opens the
+second format rather than continuing the Saxo chain, which is stalled behind the blocked FIF-023
+(IMP-SAXO-013, by OQ-005, OQ-008 and OQ-014).
+Concretely for the implementer, three pieces already exist and must be used rather than rebuilt:
+`import/reader.rs` carries `DelimitedReader::comma()`, which answers the same `RowReader` trait the
+Saxo spreadsheet reader does and already refuses a ragged file, so "CSV reading" here is the
+23-column header check and the field mapping, not a parser; `import/mod.rs` carries the `Importer`
+trait, `RowIdentity` and the counts, which the Saxo importer fills and this one must fill the same
+way [ARC-023]; and `ordering.rs` carries `assign_orders(rows, direction)`, whose ordering columns
+this item supplies as (`date`, `datetime`) with `FileDirection::OldestFirst`, which the enum's own
+documentation already names as the Trade Republic direction [DOM-040]. Note that the file's first
+column is `datetime` and its second `date`: the ordering precedence is the requirement's, not the
+header's, so reading them in column order would order the 2025 export wrongly.
+Two boundaries this item must not cross. Money is **FIF-028**'s — `price`, `amount`, `fee`, `tax`,
+`currency` and the `original_*` triple — and IMP-TR-022 is here only because it says which column
+holds the quantity and which the unit price, not what either is worth. Security typing is
+**FIF-069**'s and is `blocked` by OQ-006, so a row's `asset_class` must be carried through
+untouched; deciding what an unmapped class does here would answer that question in code.
+Unlike Saxo's OQ-013, the ordering columns are never absent: all four committed fixtures (7, 17, 21
+and 20 rows, 23 columns each) populate both `date` and `datetime` on every row, so no absent-value rule is needed and none should be invented. What the
+2025 fixture does carry is the descending-`datetime`-within-`date` shape [IMP-TR-023], which is the
+case that makes file position alone wrong and is the one a test must name.
 
 ## FIF-028 Trade Republic: money mapping
 Status: todo
@@ -894,6 +920,14 @@ Requirements: IMP-TR-008, IMP-TR-009, IMP-TR-010, IMP-TR-011, IMP-TR-012, IMP-TR
 Depends on: FIF-028, FIF-056
 Acceptance: `TRADING`/`BUY` and `TRADING`/`SELL` derive automatically; `CORPORATE_ACTION`/`TAX_EXCHANGE` is handled by FIF-068 and `CORPORATE_ACTION`/anything else rejects the import naming the type, the row and the transaction id; `CASH`/`DIVIDEND`, `INTEREST_PAYMENT`, `CUSTOMER_INBOUND`, `TRANSFER_INBOUND`, `STOCKPERK` are recognized as non-position and not stored, the `STOCKPERK` credit specifically without any check that its paired `TRADING`/`BUY` exists; any other type **naming a security** rejects the import, and any other type naming no security is not stored but is counted and named in the summary; nothing is inferred from quantity signs for an unrecognized type; the Saxo `Positie-ID` heuristic is not applied here.
 Notes: Previously blocked on decision D1 — which `CORPORATE_ACTION` types besides `TAX_EXCHANGE` map to a lot transfer. DEC-019 resolved it: none do, and an unrecognized type rejects the file. D1 is closed.
+**An obligation carried over from FIF-027**, recorded here so it is not rediscovered: FIF-027's
+acceptance clause "re-importing the fixture twice yields no new records", and the fixture half of
+FIF-065's year guard, cannot be asserted through `import::import` until an `impl Importer for
+TradeRepublic` exists, which needs the classification this item owns. FIF-027 asserts them at the
+reader — the same fixture bytes identify the same records twice, and each fixture holds one calendar
+year of trade dates — and this item must additionally drive a committed Trade Republic fixture
+through `import::import` twice, asserting the second import stores no new source record and that the
+year guard accepts the single-year file.
 
 ## FIF-068 Trade Republic: `TAX_EXCHANGE`
 Status: todo
@@ -1149,7 +1183,45 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 39 (this run).** `design/` is **unchanged** since revision 38: `git log -- design/` still
+**Revision 40 (this run).** `design/` is **unchanged** since revision 38: `git log -- design/` still
+ends at `79b82de`, so no requirement was added, restated or retired, and `open-questions.md` is
+byte-identical to revision 32's. `HEAD` is `4d434ba`; the tracked working tree is clean (`docs/` and
+`tmp/` are the user's, untracked); `cargo test --workspace` gives **474 passed, 0 failed**, up from
+the 461 revision 39 measured.
+
+* **Completed: FIF-026**, Saxo security mapping and bond quotation, committed as `4d434ba` **with
+  its status flip in the same commit**, which is the third time in ten revisions that plan and
+  implementation landed together. Nothing needed correcting: the two points its completion note
+  records as decided in the module header — a security keeps its first row's name, and one ISIN
+  under two instrument types refuses the file — are gap-filling within the item's own acceptance,
+  not answers to anything on a `Blocks:` line, so neither becomes a `decision-required` finding.
+  The one acceptance clause it could not meet as written (`3000 @ 139.46 = 4183.80`) was met as a
+  magnitude assertion for the reason revision 39 had already recorded on the item: amounts are
+  perturbed and the fixture states `138.00` [TST-028].
+* No item added, split, retired or re-scoped. No status changed but FIF-026's. 95 items: **31
+  `done`, 40 `todo`, 24 `blocked`**.
+* Coverage re-verified by script in both directions: **348** ids on the `Requirements:` lines, each
+  exactly once, together precisely the live ids in `design/` less the nine retired ones (DOM-009,
+  DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to DOM-053). Nothing is uncovered and nothing is
+  deferred.
+* **34** requirements sit on `Blocks:` lines across OQ-001 to OQ-019 (OQ-020 blocks nothing), and
+  the 24 items carrying them are exactly the 24 `blocked` items, checked by script. Nothing was
+  blocked or unblocked. OQ-014 is still marked *answered* and still on a `Blocks:` line, so
+  IMP-SAXO-013 and FIF-023 with it stay blocked; this plan follows the file's own instruction.
+* **Next to build: FIF-027**, Trade Republic CSV reading, identity, ordering and sign convention.
+  It is the first `todo` in document order whose dependencies are all `done` and none of whose
+  requirements is blocked. Everything ahead of it waits on something blocked: FIF-060 on FIF-058
+  (DOM-101), FIF-013 on FIF-076 (DOM-011, DOM-013, DOM-111), FIF-014 / FIF-015 / FIF-016 behind
+  FIF-013, FIF-061 and FIF-063, and FIF-024 / FIF-025 / FIF-067 / FIF-094 all behind the blocked
+  FIF-023.
+* Worth stating plainly, since it is now visible in the shape of the plan rather than in any one
+  item: **the Saxo importer is finished as far as the open questions allow**. Of the remaining Saxo
+  items, four wait on FIF-023 alone, and FIF-023 waits on three questions of which one (OQ-014) is
+  marked answered but not yet written into `domain.md`. Closing OQ-014's paperwork and OQ-008 would
+  release more buildable work than anything else in `design/`. That is an observation for
+  `spec-auditor` and a person, not a decision this plan may take.
+
+**Revision 39.** `design/` is **unchanged** since revision 38: `git log -- design/` still
 ends at `79b82de`, so no requirement was added, restated or retired. Coverage stays at **348** ids,
 each on exactly one `Requirements:` line and together precisely the live ids in `design/` less the
 nine retired ones (DOM-009, DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to DOM-053), checked by
@@ -1863,6 +1935,13 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Re-verified in revision 40 by script against `design/` at `79b82de`, unchanged: **348** ids on the
+`Requirements:` lines, each exactly once, and together precisely the live ids in `design/` less the
+nine retired ones (DOM-009, DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to DOM-053), which are
+assigned to nothing. **Nothing is uncovered and nothing is deferred.** Every item carrying one of
+the thirty-four ids on a `Blocks:` line is `blocked`, and no other item is — twenty-four items of
+ninety-five, of which thirty-one are now `done`.
 
 Unchanged in revision 39, re-verified by script against `design/` at `79b82de`: **348** ids on the
 `Requirements:` lines, each exactly once, and together precisely the live ids in `design/` less the
