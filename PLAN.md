@@ -1001,7 +1001,7 @@ and 20 rows, 23 columns each) populate both `date` and `datetime` on every row, 
 case that makes file position alone wrong and is the one a test must name.
 
 ## FIF-028 Trade Republic: money mapping
-Status: todo
+Status: done
 Requirements: IMP-TR-005, IMP-TR-006, IMP-TR-007, IMP-TR-016
 Depends on: FIF-027, FIF-008
 Acceptance: `price`, `amount`, `fee`, `tax`, `currency` map to the native figures. **`amount` excludes the fee**, the opposite of Saxo, so gross = |amount| and fees = |fee| + |tax| in the settlement currency, checked as that relation against the fixtures (the real export's 35 × 75.09 = 2628.15 with a fee of −1.00 carried separately is the worked case). `original_amount`, `original_currency` and `fx_rate` are read where populated, but **`fx_rate` is never used to value anything**, in either convention: its convention changed in late 2024 and nothing stored needs it.
@@ -1047,6 +1047,13 @@ requirement in `design/`: `b9017d8` reverted the `importers.md` paragraph an imp
 authorize its own refusal (`PartialConversion`). It is removed here; the refusal has no requirement
 behind it until a person writes one.
 **Revision 47: unblocked, re-scoped.** DEC-073 closed OQ-021. IMP-TR-017 now rejects *any* row that would be stored with `original_*` populated, not only a `TRADING` one. Whether a row would be stored is classification, so IMP-TR-017 moves to **FIF-029**, and this item no longer reads the `category` cell at all. The uncommitted working tree (`import/trade_republic/money.rs`, the `trade_republic.rs` error variants, the new fixture tests) predates DEC-073 and must be reviewed against it, not committed as is. `the_fixture_dividends_carry_their_conversion_uninverted` asserts a convention the specification now says holds only up to 2024-07-02, so it must go or change. A `TRADING`-only refusal there belongs to FIF-029's broader rule.
+Revision 64: **done**, committed as `e395518`. `import/trade_republic/money.rs` maps `price`,
+`amount`, `fee`, `tax` and `currency`; gross is `|amount|` and fees `|fee| + |tax|` [IMP-TR-016],
+[IMP-TR-007]; the `original_*` triple is read verbatim and values nothing (DEC-073) [IMP-TR-006]. The
+obsolete uninverted-convention test was replaced. The foreign-trade refusal left this item for FIF-029
+[IMP-TR-017]. Fixture cases in `fifolio-core/tests/trade_republic_export.rs`. `cargo test
+--workspace`: **615 passed, 0 failed** (fewer than revision 63's 618 because the pre-DEC-073 cases in
+`money.rs` were removed).
 
 ## FIF-029 Trade Republic: row classification
 Status: todo
@@ -1063,6 +1070,8 @@ year of trade dates — and this item must additionally drive a committed Trade 
 through `import::import` twice, asserting the second import stores no new source record and that the
 year guard accepts the single-year file.
 Revision 47 moves IMP-TR-017 here from FIF-028. DEC-073 extended it from `TRADING` rows to every stored row, and "would be stored" is this item's classification. The stored case exists in no export, so it is tested against a constructed row.
+Revision 64: FIF-028 landed in `e395518` without any refusal on `original_*`; IMP-TR-017's
+refusal is wholly this item's to write, on top of the `money.rs` reading FIF-028 left.
 
 ## FIF-068 Trade Republic: `TAX_EXCHANGE`
 Status: todo
@@ -1326,6 +1335,20 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 64.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-028**, committed as `e395518`; suite 615 passed, 0 failed.
+* **Amended:** FIF-029 note (the IMP-TR-017 refusal is wholly its own).
+* No item added, split, retired, blocked or unblocked. 101 items: **45 `done`, 42 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-029.** Its dependencies FIF-028 and FIF-056 are `done`, and none of its
+  requirements is blocked. It is the first ready `todo` in document order. Also ready: FIF-069,
+  FIF-034, FIF-041, FIF-042.
 
 **Revision 63.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
 `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
@@ -2379,7 +2402,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 63** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 64** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2445,6 +2468,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 64: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `e395518`. One hundred and one items: 45 `done`, 42 `todo`, 14 `blocked`.
 
 Revision 63: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `18cf73a`. One hundred and one items: 44 `done`, 43 `todo`, 14 `blocked`.

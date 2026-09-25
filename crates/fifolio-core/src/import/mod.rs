@@ -48,7 +48,7 @@ pub mod saxo;
 mod test_workbook;
 pub mod trade_republic;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::Datelike;
 
@@ -77,7 +77,7 @@ use crate::entities::Isin;
 /// [`EnumCount`](strum::EnumCount) is derived so the size of the set is readable at compile
 /// time: the test that pins DOM-043 counts the outcomes an import reaches against it, and a
 /// variant added here fails that count rather than passing unnoticed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumCount)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumCount)]
 pub enum RowClassification {
     /// Every field the variant needs is present and unambiguous [DOM-044].
     DerivedAutomatically,
@@ -85,7 +85,23 @@ pub enum RowClassification {
     /// the user: this is the completion queue [DOM-045].
     Pending,
     /// Income that is not a disposal. Counted and not stored [DOM-002], [DOM-046].
-    NonPosition(NonPositionKind),
+    NonPosition(NonPositionReason),
+}
+
+/// Why a row is taken as carrying no position effect.
+///
+/// A row of a type the format does not recognize is still one of DOM-043's three outcomes and
+/// not a fourth: it is not stored, and non-position is the only outcome that stores nothing, so
+/// it is counted there. What sets it apart is only that the import names its type
+/// [IMP-TR-014], [SRV-049].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NonPositionReason {
+    /// Recognized as one of the kinds of DOM-002.
+    Recognized(NonPositionKind),
+    /// A type the format does not recognize, taken as cash because the row names no security
+    /// [IMP-TR-014]. The string is the format's own name for the type, which the import reports
+    /// with the number of rows that carried it [SRV-049].
+    UnrecognizedType(String),
 }
 
 /// The kinds of row that are recognized as carrying no position effect [DOM-002].
@@ -212,6 +228,7 @@ pub struct Import {
     format: SourceFormat,
     stored: Vec<StoredRecord>,
     counts: ImportCounts,
+    unrecognized: BTreeMap<String, u32>,
 }
 
 impl Import {
@@ -239,6 +256,14 @@ impl Import {
     #[must_use]
     pub fn counts(&self) -> ImportCounts {
         self.counts
+    }
+
+    /// Every unrecognized row type the file carried, with how many rows carried it
+    /// [IMP-TR-014], [SRV-049]. Those rows are also among
+    /// [`counts`](Self::counts)`.non_position`, being stored nowhere else.
+    #[must_use]
+    pub fn unrecognized_types(&self) -> &BTreeMap<String, u32> {
+        &self.unrecognized
     }
 }
 
@@ -378,7 +403,12 @@ pub fn import(
         .zip(classifications)
         .map(|(((row, key), named), classification)| {
             let outcome = classification.and_then(|classification| match classification {
-                RowClassification::NonPosition(_) => Ok(Outcome::NonPosition),
+                RowClassification::NonPosition(NonPositionReason::Recognized(_)) => {
+                    Ok(Outcome::NonPosition(None))
+                }
+                RowClassification::NonPosition(NonPositionReason::UnrecognizedType(name)) => {
+                    Ok(Outcome::NonPosition(Some(name)))
+                }
                 RowClassification::DerivedAutomatically => importer
                     .identity(row)
                     .map(|identity| Outcome::Store(StoredAs::DerivedAutomatically, identity)),
@@ -424,10 +454,16 @@ pub fn import(
 
     let mut stored = Vec::new();
     let mut counts = ImportCounts::default();
+    let mut unrecognized = BTreeMap::new();
 
     for ((row, order), outcome) in rows.iter().zip(orders).zip(outcomes) {
         match outcome {
-            Outcome::NonPosition => counts.non_position += 1,
+            Outcome::NonPosition(name) => {
+                counts.non_position += 1;
+                if let Some(name) = name {
+                    *unrecognized.entry(name).or_insert(0) += 1;
+                }
+            }
             Outcome::Store(stored_as, identity) => {
                 stored.push(StoredRecord {
                     record: record(account, order, row, &identity),
@@ -445,6 +481,7 @@ pub fn import(
         format: importer.format(),
         stored,
         counts,
+        unrecognized,
     })
 }
 
@@ -452,8 +489,9 @@ pub fn import(
 ///
 /// The non-position kind is not carried: a batch counts non-position rows without distinguishing
 /// them [DOM-046], and the kind is what the importer stated rather than something derived here.
+/// An unrecognized type's name is, because the import reports it [SRV-049].
 enum Outcome {
-    NonPosition,
+    NonPosition(Option<String>),
     Store(StoredAs, RowIdentity),
 }
 
@@ -600,19 +638,24 @@ mod tests {
                     Some("buy") => Ok(RowClassification::DerivedAutomatically),
                     Some("split") => Ok(RowClassification::Pending),
                     Some("cash dividend") => Ok(RowClassification::NonPosition(
-                        NonPositionKind::CashDividend,
+                        NonPositionReason::Recognized(NonPositionKind::CashDividend),
                     )),
-                    Some("interest") => {
-                        Ok(RowClassification::NonPosition(NonPositionKind::Interest))
-                    }
-                    Some("deposit") => Ok(RowClassification::NonPosition(NonPositionKind::Deposit)),
-                    Some("withdrawal") => {
-                        Ok(RowClassification::NonPosition(NonPositionKind::Withdrawal))
-                    }
-                    Some("account fee") => {
-                        Ok(RowClassification::NonPosition(NonPositionKind::AccountFee))
-                    }
+                    Some("interest") => Ok(RowClassification::NonPosition(
+                        NonPositionReason::Recognized(NonPositionKind::Interest),
+                    )),
+                    Some("deposit") => Ok(RowClassification::NonPosition(
+                        NonPositionReason::Recognized(NonPositionKind::Deposit),
+                    )),
+                    Some("withdrawal") => Ok(RowClassification::NonPosition(
+                        NonPositionReason::Recognized(NonPositionKind::Withdrawal),
+                    )),
+                    Some("account fee") => Ok(RowClassification::NonPosition(
+                        NonPositionReason::Recognized(NonPositionKind::AccountFee),
+                    )),
                     Some("stock dividend") => Ok(RowClassification::Pending),
+                    Some(kind) if kind.starts_with("new ") => Ok(RowClassification::NonPosition(
+                        NonPositionReason::UnrecognizedType(kind.to_owned()),
+                    )),
                     other => Err(RowError::new(format!("unknown kind {other:?}"))),
                 })
                 .collect()
@@ -790,6 +833,43 @@ mod tests {
 
         assert_eq!(import.counts().non_position, 5);
         assert!(import.stored().is_empty());
+    }
+
+    /// A row of a type the format does not recognize but takes as cash is counted with the
+    /// non-position rows and not stored, and the import names its type with how many rows
+    /// carried it [IMP-TR-014], [SRV-049]. A recognized kind is not named.
+    #[test]
+    fn an_unrecognized_type_is_counted_named_and_not_stored() {
+        let content = "id,date,kind\n\
+                       a,2024-01-02,new card payment\n\
+                       b,2024-01-03,interest\n\
+                       c,2024-01-04,new card payment\n\
+                       d,2024-01-05,new round up\n\
+                       e,2024-01-06,buy\n";
+
+        let import = run(content);
+
+        assert_eq!(import.counts().non_position, 4);
+        assert_eq!(import.counts().derived, 1);
+        assert_eq!(
+            import.unrecognized_types(),
+            &BTreeMap::from([
+                ("new card payment".to_owned(), 2),
+                ("new round up".to_owned(), 1),
+            ])
+        );
+        let stored: Vec<&str> = import
+            .stored()
+            .iter()
+            .map(|stored| stored.record().raw())
+            .collect();
+        assert_eq!(stored, ["e,2024-01-06,buy"]);
+    }
+
+    /// A file of recognized rows only names no type [SRV-049].
+    #[test]
+    fn a_file_of_recognized_rows_names_no_type() {
+        assert!(run(FILE).unrecognized_types().is_empty());
     }
 
     /// Order comes from the file's own content, so a row's order does not move because a row

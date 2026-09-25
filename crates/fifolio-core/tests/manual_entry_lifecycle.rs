@@ -20,8 +20,8 @@ use fifolio_core::entities::{
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::reader::{DelimitedReader, RowReader, SourceRow};
 use fifolio_core::import::{
-    Import, Importer, NonPositionKind, RowClassification, RowError, RowIdentity, StoredAs,
-    completion, import,
+    Import, Importer, NonPositionKind, NonPositionReason, RowClassification, RowError, RowIdentity,
+    StoredAs, completion, import,
 };
 use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
 use fifolio_core::ordering::{FileDirection, RowOrderingKey};
@@ -83,7 +83,9 @@ impl Importer for FakeImporter {
                 // A dividend that issues shares is a position event, and the count is in no
                 // column, so it waits for the user [DOM-045], [DOM-124].
                 Some("stock dividend") => Ok(RowClassification::Pending),
-                Some("interest") => Ok(RowClassification::NonPosition(NonPositionKind::Interest)),
+                Some("interest") => Ok(RowClassification::NonPosition(
+                    NonPositionReason::Recognized(NonPositionKind::Interest),
+                )),
                 other => Err(RowError::new(format!("unknown kind {other:?}"))),
             })
             .collect()

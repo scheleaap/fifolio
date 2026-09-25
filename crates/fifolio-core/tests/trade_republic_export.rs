@@ -10,17 +10,20 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Datelike as _, NaiveDate};
+use chrono::{DateTime, Datelike as _, NaiveDate, Utc};
 use fifolio_core::decimal::Scaled;
-use fifolio_core::entities::{Account, RecordIdentity};
+use fifolio_core::entities::{Account, ImportBatch, RecordIdentity, SourceFormat};
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::reader::SourceRow;
 use fifolio_core::import::trade_republic::money::Booked;
 use fifolio_core::import::trade_republic::{
-    DIRECTION, HEADERS, QUANTITY_COLUMN, UNIT_PRICE_COLUMN, booking_instant, field, identity,
-    is_outflow, ordering_key, read, trade_date,
+    DIRECTION, HEADERS, QUANTITY_COLUMN, TradeRepublic, UNIT_PRICE_COLUMN, booking_instant, field,
+    identity, is_outflow, ordering_key, read, trade_date,
 };
+use fifolio_core::import::{Ground, Import, ImportError, StoredAs, import};
 use fifolio_core::ordering::assign_orders;
+use fifolio_core::storage::Database;
+use fifolio_test_support::TempDb;
 use rust_decimal::Decimal;
 
 /// Every committed Trade Republic fixture, with its path.
@@ -151,9 +154,8 @@ fn every_fixture_row_is_identified_by_a_uuid_transaction_id() {
 /// Reading a fixture twice yields the same identities, which is what makes a re-import create no
 /// new records: a source record is keyed by its identity [DOM-022], [DOM-023], [IMP-TR-003].
 ///
-/// This is the reader's half. That a second `import::import` of the same file stores no new source
-/// record cannot be asserted yet — no `impl Importer for TradeRepublic` exists, its classification
-/// being FIF-029's — and is recorded on that item.
+/// This is the reader's half; the import's is
+/// `a_second_import_of_a_fixture_stores_no_new_source_record`.
 #[test]
 fn re_reading_a_fixture_identifies_the_same_records() {
     for (path, rows) in exports() {
@@ -477,4 +479,153 @@ fn the_fixture_dividends_carry_their_foreign_side_as_stated() {
     }
 
     assert_eq!(dividends, 14, "the fixtures' 14 dividends");
+}
+
+/// The fixtures an import accepts today: every one but 2024, whose `TAX_EXCHANGE` pair is
+/// FIF-068's and refuses the file until it lands.
+fn importable() -> Vec<(PathBuf, Vec<SourceRow>)> {
+    exports()
+        .into_iter()
+        .filter(|(path, _)| !path.to_string_lossy().contains("2024"))
+        .collect()
+}
+
+fn import_fixture(path: &Path) -> Result<Import, ImportError> {
+    let content = fs::read(path).expect("a fixture is readable");
+    import(&TradeRepublic, &account(), &content)
+}
+
+/// Each importable fixture passes the year guard and every other ground, and stores exactly its
+/// `TRADING` / `BUY` rows, derived automatically; every other row is a recognized cash type,
+/// counted and not stored, the foreign dividends included, and no type goes unrecognized
+/// [IMP-001], [IMP-TR-008], [IMP-TR-011], [IMP-TR-012], [IMP-TR-017].
+#[test]
+fn every_importable_fixture_stores_its_buys_and_counts_the_rest() {
+    let mut buys = 0;
+    for (path, rows) in importable() {
+        let import = import_fixture(&path)
+            .unwrap_or_else(|error| panic!("{} does not import: {error}", path.display()));
+        let expected: BTreeSet<&str> = rows
+            .iter()
+            .filter(|row| {
+                field(row, "category") == Ok("TRADING") && field(row, "type") == Ok("BUY")
+            })
+            .map(|row| identity(row).expect("an identity"))
+            .collect();
+        buys += expected.len();
+
+        let stored: BTreeSet<&str> = import
+            .stored()
+            .iter()
+            .map(|stored| {
+                assert_eq!(stored.stored_as(), StoredAs::DerivedAutomatically);
+                stored
+                    .record()
+                    .field("transaction_id")
+                    .expect("a stored id")
+            })
+            .collect();
+        assert_eq!(stored, expected, "{}", path.display());
+        assert_eq!(
+            usize::try_from(import.counts().non_position).expect("a count"),
+            rows.len() - expected.len(),
+            "{}",
+            path.display()
+        );
+        assert!(
+            import.unrecognized_types().is_empty(),
+            "{}: {:?}",
+            path.display(),
+            import.unrecognized_types()
+        );
+    }
+
+    // 2024's two buys are in the file that is not importable yet.
+    assert_eq!(buys, 5, "the importable fixtures' five buys");
+}
+
+/// The 2024 fixture is refused on its `TAX_EXCHANGE` pair alone, both rows named, and not on its
+/// year: its corporate action is booked in the same year it takes effect, and the guard reads the
+/// trade date regardless [IMP-001], [IMP-002].
+#[test]
+fn the_2024_fixture_is_refused_on_its_tax_exchange_pair_alone() {
+    let (path, rows) = exports()
+        .into_iter()
+        .find(|(path, _)| path.to_string_lossy().contains("2024"))
+        .expect("the 2024 fixture is committed");
+
+    let refusal = import_fixture(&path).expect_err("TAX_EXCHANGE is not imported yet");
+
+    let ImportError::Refused { grounds } = refusal else {
+        panic!("a refusal, not {refusal}");
+    };
+    let [Ground::FailedRows { failures }] = grounds.as_slice() else {
+        panic!("only failed rows, not {grounds:?}");
+    };
+    let refused: Vec<usize> = failures.iter().map(|failure| failure.position).collect();
+    let exchanges: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| field(row, "type") == Ok("TAX_EXCHANGE"))
+        .map(|(position, _)| position)
+        .collect();
+    assert_eq!(refused, exchanges);
+    assert_eq!(refused.len(), 2);
+}
+
+/// A fixture imported twice stores no new source record on the second pass: the second import
+/// yields the very records of the first, and each is one storage already holds [DOM-022],
+/// [SRV-015], [IMP-TR-003]. Both passes pass the year guard [IMP-001]. This is the obligation
+/// FIF-027 carried to FIF-029.
+#[tokio::test]
+async fn a_second_import_of_a_fixture_stores_no_new_source_record() {
+    let db = TempDb::new();
+    let database = Database::open(db.path())
+        .await
+        .expect("open the temporary database");
+    database
+        .accounts()
+        .insert(&account())
+        .await
+        .expect("the account");
+    let imported_at: DateTime<Utc> = "2026-01-02T09:00:00Z".parse().expect("a timestamp");
+
+    for (path, _) in importable() {
+        let first = import_fixture(&path).expect("the first pass imports");
+        let batch = database
+            .import_batches()
+            .insert(&ImportBatch::new(
+                account(),
+                path.display().to_string(),
+                SourceFormat::TradeRepublicDeCsv,
+                imported_at,
+                first.counts(),
+            ))
+            .await
+            .expect("the batch");
+        for stored in first.stored() {
+            database
+                .source_records()
+                .insert(batch, stored.record())
+                .await
+                .expect("the source record");
+        }
+
+        let second = import_fixture(&path).expect("the second pass imports");
+
+        assert_eq!(second, first, "{}", path.display());
+        assert!(!second.stored().is_empty(), "{}", path.display());
+        for stored in second.stored() {
+            assert_eq!(
+                database
+                    .source_records()
+                    .find(stored.record().identity())
+                    .await
+                    .expect("the lookup"),
+                Some(stored.record().clone()),
+                "{}: the second pass's record is already stored",
+                path.display()
+            );
+        }
+    }
 }

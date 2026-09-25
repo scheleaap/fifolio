@@ -1,8 +1,9 @@
 //! Reading a Trade Republic DE export: its header, its two date columns, its identity and its
 //! signs.
 //!
-//! This module is the container half of the Trade Republic importer. What a money column is
-//! worth is not here — that is FIF-028's — and neither is what a row *is*, which is FIF-029's.
+//! This module is the container half of the Trade Republic importer and the [`TradeRepublic`]
+//! format that binds it to [`import`](super::import). What a money column is worth is
+//! [`money`]'s, and what a row *is* is [`classification`]'s.
 //!
 //! # One header row, 23 columns
 //!
@@ -38,13 +39,16 @@
 //! export backwards. A timestamp outside the range nanoseconds can hold is refused rather than
 //! wrapped.
 
+pub mod classification;
 pub mod money;
 
 use chrono::{DateTime, NaiveDate};
 use rust_decimal::Decimal;
 use thiserror::Error;
 
-use super::reader::{DelimitedReader, ReadError, SourceRow};
+use super::reader::{DelimitedReader, ReadError, RowReader, SourceRow};
+use super::{Importer, RowClassification, RowError, RowIdentity};
+use crate::entities::SourceFormat;
 use crate::ordering::{FileDirection, RowOrderingKey};
 
 /// The 23 headers, in the order the export writes them [IMP-TR-001].
@@ -142,14 +146,105 @@ pub enum TradeRepublicError {
     /// decimal [ARC-009].
     #[error("the row's money cannot be derived: {reason}")]
     UnderivableMoney { reason: &'static str },
+    /// A corporate action of a type no requirement maps [IMP-TR-010]. Nothing is inferred from
+    /// its quantities (DEC-019): the remedy is to specify the type and import again.
+    #[error(
+        "transaction {transaction_id} is a CORPORATE_ACTION of type {kind}, which is not \
+         recognized"
+    )]
+    UnknownCorporateAction {
+        kind: String,
+        transaction_id: String,
+    },
+    /// A `TAX_EXCHANGE`, which is recognized [IMP-TR-008] but not imported until its pairing and
+    /// ratio are (FIF-068).
+    #[error(
+        "transaction {transaction_id} is a CORPORATE_ACTION of type TAX_EXCHANGE, which is not \
+         imported yet"
+    )]
+    TaxExchangeNotImported { transaction_id: String },
+    /// A type the table does not recognize, on a row naming a security [IMP-TR-013]: it may
+    /// create or remove units, and guessing corrupts a cost basis (DEC-022).
+    #[error(
+        "transaction {transaction_id} is of type {category}/{kind}, which is not recognized, \
+         and names the security {symbol}"
+    )]
+    UnrecognizedTypeNamingSecurity {
+        category: String,
+        kind: String,
+        symbol: String,
+        transaction_id: String,
+    },
+    /// A row that would be stored carries `original_amount`, `original_currency` or `fx_rate`
+    /// [IMP-TR-017], whose rate has no convention a reader could apply (DEC-073).
+    #[error(
+        "transaction {transaction_id} would be stored with a foreign-currency side \
+         (original_amount, original_currency or fx_rate), which cannot be valued reliably"
+    )]
+    ForeignSideOnStoredRow { transaction_id: String },
+}
+
+/// The Trade Republic DE CSV format, as [`import`](super::import) drives it [SRV-013].
+///
+/// It states no account id: the export carries none, so the file is imported into the account
+/// the caller names (DEC-075), and [`Importer::account_id`] keeps its default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TradeRepublic;
+
+/// [`read`] as a [`RowReader`], so that an import reaches the rows through the header refusal
+/// of IMP-TR-001 and never through the bare delimited reader.
+struct Rows;
+
+impl RowReader for Rows {
+    fn rows(&self, content: &[u8]) -> Result<Vec<SourceRow>, ReadError> {
+        read(content).map_err(|error| match error {
+            TradeRepublicError::Container(error) => error,
+            other => ReadError::Malformed {
+                reason: other.to_string(),
+            },
+        })
+    }
+}
+
+fn row_error(error: TradeRepublicError) -> RowError {
+    RowError::new(error.to_string())
+}
+
+impl Importer for TradeRepublic {
+    fn format(&self) -> SourceFormat {
+        SourceFormat::TradeRepublicDeCsv
+    }
+
+    fn reader(&self) -> &dyn RowReader {
+        &Rows
+    }
+
+    fn direction(&self) -> FileDirection {
+        DIRECTION
+    }
+
+    fn identity(&self, row: &SourceRow) -> Result<RowIdentity, RowError> {
+        identity(row)
+            .map(|reference| RowIdentity::BrokerReference(reference.to_owned()))
+            .map_err(row_error)
+    }
+
+    fn ordering_key(&self, row: &SourceRow) -> Result<RowOrderingKey, RowError> {
+        ordering_key(row).map_err(row_error)
+    }
+
+    fn classify(&self, rows: &[SourceRow]) -> Vec<Result<RowClassification, RowError>> {
+        rows.iter()
+            .map(|row| classification::classify(row).map_err(row_error))
+            .collect()
+    }
 }
 
 /// Reads `content` as a Trade Republic DE export, answering its rows in file order.
 ///
 /// This, and not [`DelimitedReader`] on its own, is where the header refusal of IMP-TR-001 lives:
-/// the bare reader yields rows of whatever header it finds. So the `Importer` impl FIF-029 adds
-/// must reach the file through here — its `reader()` answering a wrapper that checks the header —
-/// or an import would read another format's columns by name.
+/// the bare reader yields rows of whatever header it finds. So [`TradeRepublic`] reaches the file
+/// through here, or an import would read another format's columns by name.
 ///
 /// # Errors
 ///
@@ -296,6 +391,7 @@ fn check_headers(found: &[String]) -> Result<(), TradeRepublicError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Ground, Import, ImportError, RowFailure, import};
     use super::*;
     use crate::entities::Account;
     use crate::identity::{IdentitySource, identify};
@@ -750,5 +846,203 @@ mod tests {
             read(&[0xff, 0xfe]),
             Err(TradeRepublicError::Container(ReadError::NotUtf8 { .. }))
         ));
+    }
+
+    /// A data line of the export: the given columns populated, every other one blank.
+    fn line(values: &[(&str, &str)]) -> Vec<String> {
+        HEADERS
+            .iter()
+            .map(|header| {
+                values
+                    .iter()
+                    .find(|(name, _)| name == header)
+                    .map_or("", |(_, value)| *value)
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// Imports a file of the given lines through the whole framework.
+    fn import_lines(lines: &[Vec<String>]) -> Result<Import, ImportError> {
+        let lines: Vec<Vec<&str>> = lines
+            .iter()
+            .map(|line| line.iter().map(String::as_str).collect())
+            .collect();
+        let borrowed: Vec<&[&str]> = lines.iter().map(Vec::as_slice).collect();
+        import(
+            &TradeRepublic,
+            &Account::new("trade-republic", "mine"),
+            export(&borrowed).as_bytes(),
+        )
+    }
+
+    fn buy(transaction_id: &str) -> Vec<String> {
+        buy_with(transaction_id, &[])
+    }
+
+    /// A buy carrying `extra` columns besides its own.
+    fn buy_with(transaction_id: &str, extra: &[(&str, &str)]) -> Vec<String> {
+        let own = [
+            ("datetime", "2024-05-02T06:01:14.891Z"),
+            ("date", "2024-05-02"),
+            ("category", "TRADING"),
+            ("type", "BUY"),
+            ("symbol", "XF0000000152"),
+            ("shares", "35.0000000000"),
+            ("price", "75.090000"),
+            ("amount", "-2628.150000"),
+            ("fee", "-1.00"),
+            ("currency", "EUR"),
+            ("transaction_id", transaction_id),
+        ];
+        line(&[extra, &own].concat())
+    }
+
+    fn cash(kind: &str, transaction_id: &str) -> Vec<String> {
+        line(&[
+            ("datetime", "2024-05-03T06:01:14.891Z"),
+            ("date", "2024-05-03"),
+            ("category", "CASH"),
+            ("type", kind),
+            ("amount", "12.50"),
+            ("currency", "EUR"),
+            ("transaction_id", transaction_id),
+        ])
+    }
+
+    /// An unknown corporate action refuses the whole import, naming the row by its position,
+    /// its type and its transaction id [IMP-TR-010], [SRV-058].
+    #[test]
+    fn an_unknown_corporate_action_refuses_the_import_naming_the_row() {
+        let spin_off = line(&[
+            ("datetime", "2024-05-04T06:01:14.891Z"),
+            ("date", "2024-05-04"),
+            ("category", "CORPORATE_ACTION"),
+            ("type", "SPIN_OFF"),
+            ("symbol", "LU1861134382"),
+            ("shares", "60.0000000000"),
+            ("transaction_id", "0b0e1c2d-0000-4000-8000-000000000001"),
+        ]);
+
+        let refusal = import_lines(&[buy("a"), spin_off]).expect_err("the type is unknown");
+
+        let ImportError::Refused { grounds } = &refusal else {
+            panic!("a refusal, not {refusal}");
+        };
+        let [Ground::FailedRows { failures }] = grounds.as_slice() else {
+            panic!("one failed-rows ground, not {grounds:?}");
+        };
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].position, 1);
+        assert!(failures[0].error.reason().contains("SPIN_OFF"));
+        assert!(
+            failures[0]
+                .error
+                .reason()
+                .contains("0b0e1c2d-0000-4000-8000-000000000001")
+        );
+    }
+
+    /// A buy carrying a foreign side refuses the import naming the row; a foreign dividend beside
+    /// it is not stored and refuses nothing [IMP-TR-017].
+    #[test]
+    fn a_stored_row_with_a_foreign_side_refuses_the_import_naming_the_row() {
+        let foreign_buy = buy_with("foreign-buy", &[("original_currency", "USD")]);
+        let dividend = line(&[
+            ("datetime", "2024-05-03T06:01:14.891Z"),
+            ("date", "2024-05-03"),
+            ("category", "CASH"),
+            ("type", "DIVIDEND"),
+            ("symbol", "XF0000000152"),
+            ("amount", "0.032946"),
+            ("currency", "EUR"),
+            ("original_amount", "0.05"),
+            ("original_currency", "USD"),
+            ("fx_rate", "0.860751"),
+            ("transaction_id", "dividend"),
+        ]);
+
+        let refusal =
+            import_lines(&[dividend.clone(), foreign_buy]).expect_err("the buy is foreign");
+
+        assert_eq!(
+            refusal,
+            ImportError::Refused {
+                grounds: vec![Ground::FailedRows {
+                    failures: vec![RowFailure {
+                        position: 1,
+                        error: RowError::new(
+                            TradeRepublicError::ForeignSideOnStoredRow {
+                                transaction_id: "foreign-buy".to_owned(),
+                            }
+                            .to_string()
+                        ),
+                    }],
+                }],
+            }
+        );
+        let import = import_lines(&[dividend, buy("a")]).expect("the dividend is not stored");
+        assert_eq!(import.counts().non_position, 1);
+        assert_eq!(import.stored().len(), 1);
+    }
+
+    /// The recognized cash types and an unrecognized one naming no security are counted and not
+    /// stored, the unrecognized one named with its count; the buy alone is stored, derived
+    /// automatically [IMP-TR-008], [IMP-TR-011], [IMP-TR-012], [IMP-TR-014].
+    #[test]
+    fn an_import_stores_the_trades_and_names_the_unrecognized_cash_types() {
+        let import = import_lines(&[
+            buy("a"),
+            cash("DIVIDEND", "b"),
+            cash("INTEREST_PAYMENT", "c"),
+            cash("CUSTOMER_INBOUND", "d"),
+            cash("TRANSFER_INBOUND", "e"),
+            cash("STOCKPERK", "f"),
+            cash("CARD_TRANSACTION", "g"),
+            cash("CARD_TRANSACTION", "h"),
+        ])
+        .expect("the file imports");
+
+        assert_eq!(import.format(), SourceFormat::TradeRepublicDeCsv);
+        assert_eq!(import.counts().derived, 1);
+        assert_eq!(import.counts().pending, 0);
+        assert_eq!(import.counts().non_position, 7);
+        assert_eq!(
+            import.unrecognized_types(),
+            &std::collections::BTreeMap::from([("CASH/CARD_TRANSACTION".to_owned(), 2)])
+        );
+        let stored: Vec<Option<&str>> = import
+            .stored()
+            .iter()
+            .map(|stored| stored.record().field("transaction_id"))
+            .collect();
+        assert_eq!(stored, [Some("a")]);
+    }
+
+    /// A header that is not the format's refuses the import as an unreadable file, not as rows
+    /// [IMP-TR-001].
+    #[test]
+    fn the_import_reaches_the_rows_through_the_header_check() {
+        let refusal = import(
+            &TradeRepublic,
+            &Account::new("trade-republic", "mine"),
+            b"\"a\",\"b\"\n",
+        )
+        .expect_err("the header is not the format's");
+
+        assert!(
+            matches!(refusal, ImportError::Read(ReadError::Malformed { .. })),
+            "{refusal:?}"
+        );
+        let not_utf_8 = import(
+            &TradeRepublic,
+            &Account::new("trade-republic", "mine"),
+            &[0xff, 0xfe],
+        )
+        .expect_err("the file is not UTF-8");
+        assert!(
+            matches!(not_utf_8, ImportError::Read(ReadError::NotUtf8 { .. })),
+            "{not_utf_8:?}"
+        );
     }
 }
