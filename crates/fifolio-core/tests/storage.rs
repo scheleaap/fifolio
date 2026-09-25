@@ -621,6 +621,83 @@ async fn a_handle_issued_by_another_database_is_refused() {
     );
 }
 
+/// A derivation is refused whole when any of its records is not stored, whichever citation it
+/// is: nothing of the transaction is left behind, neither its header, its detail row nor the
+/// citations written before the unknown one [DOM-047], [TST-004].
+#[tokio::test]
+async fn a_derivation_with_one_unknown_record_among_several_leaves_nothing_stored() {
+    let (db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let stored = store_record(&database, batch, "4100200300", &[]).await;
+    let (_issuer_db, issuer) = open().await;
+    let (_, issuer_batch) = place(&issuer).await;
+    let foreign = store_record(&issuer, issuer_batch, "4100200399", &[]).await;
+    let unknown = foreign.identity().clone();
+
+    for handles in [
+        vec1![stored.clone(), foreign.clone()],
+        vec1![foreign.clone(), stored.clone()],
+    ] {
+        // A buy, so that a detail row is written before the citations are.
+        let buy: Transaction = Buy::new(
+            Derivation::new(date(), handles),
+            Quantity::new(dec!(55)),
+            price(dec!(4.18), dec!(3.89)),
+            money(dec!(230.00), dec!(214.05)),
+            money(dec!(8.00), dec!(7.45)),
+            BuyOrigin::Purchase,
+            conversion(),
+        )
+        .into();
+
+        match database.transactions().insert(&placement, &buy).await {
+            Err(StorageError::UnknownRecord { identity }) => {
+                assert_eq!(identity, unknown.as_str());
+            }
+            other => panic!("a derivation from an unknown record must be refused, got {other:?}"),
+        }
+    }
+
+    let pool = SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+        .await
+        .expect("connect");
+    for (table, count) in [
+        (
+            "transaction_record",
+            "select count(*) as n from transaction_record",
+        ),
+        (
+            "transaction_citation",
+            "select count(*) as n from transaction_citation",
+        ),
+        (
+            "transaction_buy",
+            "select count(*) as n from transaction_buy",
+        ),
+    ] {
+        let rows: i64 = query(count).fetch_one(&pool).await.expect("count").get("n");
+        assert_eq!(rows, 0, "a refused insert leaves no row in {table}");
+    }
+    pool.close().await;
+}
+
+/// A record that was not written yields no handle, so nothing can be derived from it [DOM-047].
+#[tokio::test]
+async fn a_record_that_was_not_written_yields_no_handle() {
+    let (_db, database) = open().await;
+    let record = SourceRecord::new(cite("4100200300"), Order::new(1), "raw", BTreeMap::new());
+
+    let refused = database
+        .source_records()
+        .insert(BatchId::new(999), &record)
+        .await;
+
+    assert!(
+        refused.is_err(),
+        "a record in a batch that does not exist must not be stored, got {refused:?}"
+    );
+}
+
 /// A transaction's citations keep the caller's order, which is the shape a multi-row corporate
 /// action had [DOM-016], [TST-004].
 #[tokio::test]
