@@ -77,8 +77,8 @@ pub enum ProblemType {
     BatchRecordsCited,
     StorageFailure,
     UnreadableFile,
-    UnorderableRow,
     MultipleCalendarYears,
+    FailedRows,
     ImporterDefect,
     RateBeforeSeries,
     RateUnavailable,
@@ -188,15 +188,15 @@ impl ProblemType {
                 S::UNPROCESSABLE_ENTITY,
                 "The file could not be read",
             ),
-            Self::UnorderableRow => (
-                "unorderable-row",
-                S::UNPROCESSABLE_ENTITY,
-                "A row cannot be ordered",
-            ),
             Self::MultipleCalendarYears => (
                 "multiple-calendar-years",
                 S::UNPROCESSABLE_ENTITY,
                 "The file spans more than one calendar year",
+            ),
+            Self::FailedRows => (
+                "failed-rows",
+                S::UNPROCESSABLE_ENTITY,
+                "Rows of the file could not be read",
             ),
             Self::ImporterDefect => (
                 "importer-defect",
@@ -281,8 +281,8 @@ impl From<&ImportError> for ProblemType {
     fn from(error: &ImportError) -> Self {
         match error {
             ImportError::Read(_) => Self::UnreadableFile,
-            ImportError::Unorderable { .. } => Self::UnorderableRow,
             ImportError::MultipleCalendarYears { .. } => Self::MultipleCalendarYears,
+            ImportError::FailedRows { .. } => Self::FailedRows,
             // The importer answered the wrong number of rows: a defect here, not in the file.
             ImportError::ClassificationCount { .. } => Self::ImporterDefect,
         }
@@ -432,6 +432,7 @@ mod tests {
     use axum::routing::post;
     use chrono::NaiveDate;
     use fifolio_core::import::reader::ReadError;
+    use fifolio_core::import::{RowError, RowFailure};
     use fifolio_core::storage::{AttributionId, BatchId, TransactionId};
     use fifolio_core::valuation::Currency;
     use http_body_util::BodyExt;
@@ -549,13 +550,13 @@ mod tests {
             422,
         ),
         (
-            ProblemType::UnorderableRow,
-            "urn:fifolio:problem:unorderable-row",
+            ProblemType::MultipleCalendarYears,
+            "urn:fifolio:problem:multiple-calendar-years",
             422,
         ),
         (
-            ProblemType::MultipleCalendarYears,
-            "urn:fifolio:problem:multiple-calendar-years",
+            ProblemType::FailedRows,
+            "urn:fifolio:problem:failed-rows",
             422,
         ),
         (
@@ -778,17 +779,19 @@ mod tests {
                 ProblemType::UnreadableFile,
             ),
             (
-                ImportError::Unorderable {
-                    position: 3,
-                    reason: "no date".into(),
-                },
-                ProblemType::UnorderableRow,
-            ),
-            (
                 ImportError::MultipleCalendarYears {
                     years: vec![2023, 2024],
                 },
                 ProblemType::MultipleCalendarYears,
+            ),
+            (
+                ImportError::FailedRows {
+                    failures: vec![RowFailure {
+                        position: 1,
+                        error: RowError::new("unknown kind"),
+                    }],
+                },
+                ProblemType::FailedRows,
             ),
             (
                 ImportError::ClassificationCount {

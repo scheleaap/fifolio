@@ -561,13 +561,25 @@ refusal, a partial year passing as a single year, and the guard ignoring a booki
 format also puts in its ordering columns. `cargo test --workspace` on the clean tree: **315 passed,
 0 failed**, up from 310. The deferred fixture clause above stands unchanged and is now additionally
 owed through **FIF-093**, the fixtures being rebuilt before FIF-019 can run it.
+Revision 58: SRV-059 (DEC-088) makes this guard's first-ground refusal a defect when other grounds
+also hold. Corrected by **FIF-103**; this item's own acceptance still holds.
 
 ## FIF-099 A row that fails to parse rejects the whole import
 Status: todo
 Requirements: SRV-058
 Depends on: FIF-017
-Acceptance: an import in which any row fails to be identified or classified is refused as a whole, and nothing is stored. The refusal names **every** failed row by position with its reason, not only the first. `Import::failures` and the failed-to-parse count are gone, because no import can succeed with a failed row. Tested with a synthetic file carrying two failing rows among good ones.
+Acceptance: an import in which any row fails to parse is refused as a whole, and nothing is stored. A row fails to parse when its **ordering key**, its identity or its classification cannot be read (DEC-087). The refusal names **every** failed row by position with its reason, not only the first, whichever of the three each failed on. An unreadable ordering key no longer stops the import at the first such row. `Import::failures` and the failed-to-parse count are gone, because no import can succeed with a failed row. Tested with a synthetic file carrying failing rows of all three kinds among good ones, including two with unreadable ordering keys.
 Notes: New in revision 47 (DEC-074, SRV-058). **This is completed work the specification has put in question.** FIF-017 (`done`) built `import::import` to count a failed row and carry on, reporting it in `Import::failures`. DEC-074 reverses that. The refusal is a new `ImportError` variant, and FIF-033's exhaustive match in `fifolio-server/src/problem.rs` needs a `ProblemType` for it. Built at the core level. FIF-035 exposes it at the endpoint. SRV-017's summary (FIF-085) loses its failed-to-parse count for the same reason.
+Named next to build in revision 56: the first `todo` in document order whose dependencies are all `done` and which carries no blocked id.
+Revision 57: acceptance widened for DEC-087 (`242ab6a`), which rewrote SRV-058 so that an unreadable ordering key is a failed row too. **This puts more of FIF-017's completed work in question**: FIF-017 built `ImportError::Unorderable`, which stops the import at the first row whose key cannot be read, and FIF-033 maps it to the `unorderable-row` problem type. Both now fall under this item's refusal. Said here rather than as a new item because SRV-058 is this item's one requirement and the item is not yet done. The uncommitted partial work in the tree (the `FailedRows` variant, migration `0004_no_failed_count.sql`, the `failed-rows` problem type) predates DEC-087 and still keeps `Unorderable` as a first-row stop, so it does not yet meet this acceptance. The year guard (IMP-002, FIF-065) reads the ordering keys' trade dates; how it combines with rows whose key is unreadable is for the implementer to check against IMP-002 and SRV-058, and to raise with `spec-auditor` if they conflict.
+Named next to build again in revision 57.
+Revision 58: DEC-088 (`951cb67`) removes the `failed` count from the import batch's fields in
+`domain.md` (DOM-017), so the stored batch loses it too, as the uncommitted migration
+`0004_no_failed_count.sql` already does; this is in scope here, not a change to FIF-005's
+acceptance. DEC-088 also adds SRV-059, which answers the question revision 57 left about the year
+guard: a file with two years and failed rows is refused with both grounds. That combination is
+**FIF-103**, not this item; here, the failed-row refusal need only be complete on its own.
+Named next to build again in revision 58.
 
 ## FIF-089 Import guard: one account per file
 Status: todo
@@ -576,6 +588,13 @@ Depends on: FIF-017, FIF-065
 Acceptance: where the format states an account id, an import whose file names a different account than the target is refused naming both, and a file carrying rows from more than one account is refused outright. A format stating none, as Trade Republic's does not, is not checked and is imported into the account the caller names. Tested against the Saxo fixture (matching, mismatching) and a Trade Republic fixture (unchecked).
 Notes: Split out of FIF-065 in revision 8. OQ-015 observes that the Trade Republic export carries no account identifier at all, so the check has nothing to read there; whether the requirement admits uncheckable formats or Trade Republic files are matched some other way decides the shape of this item, not merely a detail of it. Its server-side counterpart is SRV-056 in FIF-090, blocked by the same question.
 Unblocked in revision 47: DEC-075 closed OQ-015 and rewrote IMP-003. Saxo's account id is the normalized one FIF-020 derives (DOM-003), so the comparison is against the normalized id and not the raw suffixed cell.
+
+## FIF-103 One refusal reports every ground
+Status: todo
+Requirements: SRV-059
+Depends on: FIF-099, FIF-089
+Acceptance: an import refused on more than one ground reports every ground it can determine in one refusal: trade dates in more than one year (IMP-002), a file account differing from the target or several accounts in one file (IMP-003), and failed rows (SRV-058), in any combination. No guard short-circuits another. Nothing is stored. Tested with synthetic files carrying each pair of grounds and all three together, each refusal naming every ground and, for failed rows, every row.
+Notes: New in revision 58 (DEC-088, `951cb67`). **This puts completed work in question**: FIF-065 (`done`) refuses on the years as soon as it sees them, so a file with two years and a failed row is refused on the years alone, which DEC-088 names as the defect. FIF-065's record is left as built; the correction is here. Built at the core level, where all three guards live in `import::import`. The endpoint shape of a combined refusal reaches the caller through FIF-070 and FIF-090, which now depend on this item. A row whose ordering key is unreadable has no trade date, so it is a failed row and contributes no year; whether it should also be counted toward the year check is not stated, and if the implementer finds the two requirements conflict, that is a `spec-auditor` finding.
 
 ## FIF-019 Saxo: file reading and header normalization
 Status: done
@@ -1096,9 +1115,10 @@ Unblocked in revision 47: DEC-074 closed OQ-012 and removed the fifth count from
 ## FIF-070 Multi-year refusal at the endpoint
 Status: todo
 Requirements: SRV-051
-Depends on: FIF-035, FIF-065
+Depends on: FIF-035, FIF-065, FIF-103
 Acceptance: posting a file whose rows carry trade dates in more than one calendar year is refused at the endpoint with its own problem type, the refusal reaching the caller rather than being swallowed into a generic parse failure.
 Notes: Blocked in revision 2 on SRV-056; it and IMP-003 both left the undecided list in revision 3, and SRV-056 re-entered it in revision 8 (OQ-015), so revision 8 splits it into FIF-090. Renamed accordingly; the year refusal is decided on both sides.
+Revision 58: now depends on FIF-103. A refusal carrying the years together with other grounds (SRV-059) must reach the caller with every ground, not only the years' problem type.
 
 ## FIF-090 Account-mismatch refusal at the endpoint
 Status: todo
@@ -1107,6 +1127,7 @@ Depends on: FIF-070, FIF-089
 Acceptance: where the format states an account id it is checked against the target account, and a mismatch, or a file carrying rows from more than one account, refuses the import naming both, as problem+json. A Trade Republic file, which states none, is not checked.
 Notes: Split out of FIF-070 in revision 8.
 Unblocked in revision 47 with FIF-089 (DEC-075). It still waits on FIF-070 and FIF-089.
+Revision 58: an account refusal combined with other grounds (SRV-059, FIF-103) reaches the caller with every ground; FIF-103 arrives through FIF-070.
 
 ## FIF-036 Import batch endpoints
 Status: todo
@@ -1278,6 +1299,53 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 58.** `design/` **changed** in `951cb67` (DEC-088): new requirement SRV-059 (an import
+refused on several grounds reports all of them), and the batch's `failed` count leaves DOM-017.
+`open-questions.md` is unchanged: the same **18** ids, and the 14 items carrying one are exactly the
+14 `blocked`; none is unblocked.
+
+* **Added: FIF-103** (`todo`), carrying SRV-059. It puts completed work in FIF-065 in question
+  (the year guard refuses on the years alone); recorded on both.
+* **Amended:** FIF-099 notes (DOM-017's failed count is in its scope; SRV-059 answers revision 57's
+  year-guard question), FIF-070 now depends on FIF-103, FIF-090 note.
+* No item split, retired, completed, blocked or unblocked. 101 items: **39 `done`, 48 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-099.** Its one dependency, FIF-017, is `done`, and SRV-058 is not blocked.
+  Also ready: FIF-089, FIF-083, FIF-028, FIF-069, FIF-034, FIF-041, FIF-042.
+
+**Revision 57.** `design/` **changed** in `242ab6a` (DEC-087): SRV-058 now defines a failed row as
+one whose ordering key, identity or classification cannot be read. Revision 56's claim that
+`design/` was unchanged since `d55a1b5` held when it was written and no longer does.
+`open-questions.md` is unchanged: the same **18** ids, and the 14 items carrying one are exactly the
+14 `blocked`; none is unblocked.
+
+* **Amended: FIF-099** (still `todo`). Acceptance widened to the ordering key. This further
+  invalidates completed work in FIF-017 (`ImportError::Unorderable` as a first-row stop) and
+  FIF-033 (its `unorderable-row` mapping); recorded on FIF-099, which already exists to correct
+  FIF-017 for SRV-058. Uncommitted partial code for FIF-099 is in the tree and predates DEC-087.
+* No item added, split, retired, completed, blocked or unblocked. 100 items: **39 `done`, 47
+  `todo`, 14 `blocked`**, counted by script.
+* Coverage re-verified by script: **351** live ids, each on exactly one item; no id added or
+  removed by DEC-087. Uncovered: only the retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-099.** Its one dependency, FIF-017, is `done`, and SRV-058 is not blocked.
+  Also ready: FIF-089, FIF-083, FIF-028, FIF-069, FIF-034, FIF-041, FIF-042.
+
+**Revision 56.** A status reconciliation. `design/` is **unchanged** since revision 52 (last touched
+in `d55a1b5`; no uncommitted change). `open-questions.md` names the same **18** ids, and the 14
+items carrying one are exactly the 14 `blocked`; none is unblocked.
+
+* **Completed: FIF-081**, committed as `fdad876`, `6a8b5ba`, `35b3374`, status flip in `1ce1a9f`.
+* No item added, split, retired, blocked or unblocked. 100 items: **39 `done`, 47 `todo`, 14
+  `blocked`**, counted by script.
+* Coverage re-verified by script: every live id on exactly one item's `Requirements:` line, none on
+  an item without being in `design/`. Uncovered: only the retired DOM-009, 014, 015, 021, 041 and
+  050 to 053.
+* **Next to build: FIF-099.** Its one dependency, FIF-017, is `done`, and SRV-058 is not blocked.
+  Also ready: FIF-089, FIF-083, FIF-028, FIF-069, FIF-034, FIF-041, FIF-042. FIF-028 and FIF-034
+  still carry the unreviewed partial code committed in revision 54.
 
 **Revision 55.** A status reconciliation. `design/` is **unchanged** since revision 52 (last touched
 in `d55a1b5`; no uncommitted change). `open-questions.md` names the same **18** ids, and the 14
@@ -2220,7 +2288,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 51** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 58** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2286,6 +2354,17 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 58: **352** live ids, each exactly once, re-verified by script against `design/` at
+`951cb67`; SRV-059 is new and on FIF-103. One hundred and one items: 39 `done`, 48 `todo`, 14
+`blocked`.
+
+Revision 57: unchanged. **351** live ids, each exactly once, re-verified by script against `design/`
+at `242ab6a`; DEC-087 reworded SRV-058 without adding an id. One hundred items: 39 `done`, 47
+`todo`, 14 `blocked`.
+
+Revision 56: unchanged. **351** live ids, each exactly once, re-verified by script against `design/`
+at `1ce1a9f`. One hundred items: 39 `done`, 47 `todo`, 14 `blocked`.
 
 Revision 51: unchanged. **348** live ids, each exactly once, re-verified by script against `design/`
 at `39eb756`. Ninety-nine items: 37 `done`, 48 `todo`, 14 `blocked`.

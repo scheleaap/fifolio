@@ -369,7 +369,6 @@ fn batch(format: SourceFormat) -> ImportBatch {
             derived: 7,
             pending: 2,
             non_position: 48,
-            failed: 0,
         },
     )
 }

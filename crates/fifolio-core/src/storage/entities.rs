@@ -435,8 +435,8 @@ impl<'a> ImportBatchRepository<'a> {
         let inserted = query(
             "insert into import_batch
                  (account_broker, account_id, filename, format, imported_at,
-                  derived, pending, non_position, failed)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  derived, pending, non_position)
+             values (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(batch.account().broker())
         .bind(batch.account().id())
@@ -446,7 +446,6 @@ impl<'a> ImportBatchRepository<'a> {
         .bind(i64::from(counts.derived))
         .bind(i64::from(counts.pending))
         .bind(i64::from(counts.non_position))
-        .bind(i64::from(counts.failed))
         .execute(self.pool)
         .await?;
 
@@ -502,7 +501,7 @@ impl<'a> ImportBatchRepository<'a> {
     pub async fn find(&self, id: BatchId) -> Result<Option<ImportBatch>, StorageError> {
         let Some(row) = query(
             "select account_broker, account_id, filename, format, imported_at,
-                    derived, pending, non_position, failed
+                    derived, pending, non_position
              from import_batch where id = ?",
         )
         .bind(id.get())
@@ -516,7 +515,6 @@ impl<'a> ImportBatchRepository<'a> {
             derived: count("derived", row.get::<i64, _>("derived"))?,
             pending: count("pending", row.get::<i64, _>("pending"))?,
             non_position: count("non_position", row.get::<i64, _>("non_position"))?,
-            failed: count("failed", row.get::<i64, _>("failed"))?,
         };
 
         Ok(Some(ImportBatch::new(

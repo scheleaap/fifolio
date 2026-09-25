@@ -318,8 +318,8 @@ pub struct ImportCounts {
     pub pending: u32,
     /// Rows recognized as carrying no position effect, and so not stored.
     pub non_position: u32,
-    /// Rows that could not be parsed.
-    pub failed: u32,
+    // No failed count: a row that fails to parse refuses the import, so no batch has one
+    // [SRV-058] (DEC-074).
 }
 
 /// One import of one file into one account, so that an import can be undone as a unit
@@ -564,7 +564,6 @@ mod tests {
             derived: 7,
             pending: 2,
             non_position: 48,
-            failed: 0,
         };
         let at = DateTime::from_timestamp(1_714_608_000, 0).expect("a valid timestamp");
 
@@ -593,6 +592,5 @@ mod tests {
         assert_eq!(counts.derived, 0);
         assert_eq!(counts.pending, 0);
         assert_eq!(counts.non_position, 0);
-        assert_eq!(counts.failed, 0);
     }
 }

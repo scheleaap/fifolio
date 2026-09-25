@@ -34,12 +34,11 @@
 //!
 //! # Failures
 //!
-//! A row whose ordering key cannot be read stops the import: without it the file has no total
-//! order, and every row's `order` would depend on which rows were dropped. A row that is read
-//! but cannot be identified or classified is counted as failed and left out, and both the
-//! counts and the failures are returned. Whether the *import* then proceeds or fails as a whole
-//! is not decided by the specification (OQ-012), so that judgement stays with the caller rather
-//! than being made here.
+//! A row whose ordering key, identity or classification cannot be read is a failed row, and any
+//! failed row refuses the import as a whole [SRV-058] (DEC-074, DEC-087): skipping it would
+//! leave a batch owning part of a file, and without a row's key the file has no total order, so
+//! every row's `order` would depend on which rows were dropped. Every row is still tried first,
+//! so that the refusal names every failed row and one round of fixes suffices.
 
 pub mod reader;
 pub mod saxo;
@@ -158,7 +157,8 @@ impl RowError {
     }
 }
 
-/// A row that was read but could not be identified or classified, by its position in the file.
+/// A row whose ordering key, identity or classification could not be read, by its position in
+/// the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowFailure {
     pub position: usize,
@@ -170,10 +170,6 @@ pub struct RowFailure {
 pub enum ImportError {
     #[error("the file could not be read: {0}")]
     Read(#[from] ReadError),
-    /// Without an ordering key a row cannot be placed, and dropping it would change the `order`
-    /// of every row after it, so this is a whole-file refusal [DOM-040].
-    #[error("row {position} cannot be ordered: {reason}")]
-    Unorderable { position: usize, reason: String },
     /// Broker exports are taken a year at a time, so a file spanning two is refused whole
     /// [IMP-001]. The years are those of the rows' **trade dates** [IMP-002], ascending.
     #[error("the file carries trade dates in more than one calendar year: {}", years.iter().map(i32::to_string).collect::<Vec<_>>().join(", "))]
@@ -183,6 +179,11 @@ pub enum ImportError {
     /// outcome against another's record.
     #[error("the importer classified {classified} of {rows} rows")]
     ClassificationCount { rows: usize, classified: usize },
+    /// Rows whose ordering key, identity or classification could not be read refuse the file
+    /// whole [SRV-058]. Every one is named, in file order, not only the first (DEC-074,
+    /// DEC-087); never empty.
+    #[error("{} rows could not be read: {}", failures.len(), failures.iter().map(|failure| format!("row {}: {}", failure.position, failure.error)).collect::<Vec<_>>().join("; "))]
+    FailedRows { failures: Vec<RowFailure> },
 }
 
 /// What one file yielded.
@@ -190,7 +191,6 @@ pub enum ImportError {
 pub struct Import {
     format: SourceFormat,
     stored: Vec<StoredRecord>,
-    failures: Vec<RowFailure>,
     counts: ImportCounts,
 }
 
@@ -213,11 +213,6 @@ impl Import {
             .iter()
             .filter(|stored| stored.stored_as == StoredAs::Pending)
             .map(StoredRecord::record)
-    }
-
-    #[must_use]
-    pub fn failures(&self) -> &[RowFailure] {
-        &self.failures
     }
 
     /// How the import classified what it read [DOM-046], as an import batch records it.
@@ -254,7 +249,8 @@ pub trait Importer {
     ///
     /// # Errors
     ///
-    /// When the trade date or an ordering column cannot be read, which stops the import.
+    /// When the trade date or an ordering column cannot be read, which makes it a failed row
+    /// [SRV-058].
     fn ordering_key(&self, row: &SourceRow) -> Result<RowOrderingKey, RowError>;
 
     /// What each row of the file is [DOM-043], one answer per row in the order given.
@@ -269,8 +265,8 @@ pub trait Importer {
 ///
 /// # Errors
 ///
-/// [`ImportError`] when the file cannot be read or ordered. A row that fails on its own is
-/// counted and reported in [`Import::failures`] rather than stopping the import.
+/// [`ImportError`] when the file cannot be read, or when any row's ordering key, identity or
+/// classification cannot be read, in which case every such row is named [SRV-058].
 pub fn import(
     importer: &dyn Importer,
     account: &Account,
@@ -278,32 +274,26 @@ pub fn import(
 ) -> Result<Import, ImportError> {
     let rows = importer.reader().rows(content)?;
 
-    // Orders are assigned over every row the file holds, including the ones that will not be
-    // stored, so that what a row's `order` is depends on the file alone and not on how its
-    // neighbours were classified [DOM-040].
-    let keys = rows
-        .iter()
-        .enumerate()
-        .map(|(position, row)| {
-            importer
-                .ordering_key(row)
-                .map_err(|error| ImportError::Unorderable {
-                    position,
-                    reason: error.0,
-                })
-        })
-        .collect::<Result<Vec<RowOrderingKey>, _>>()?;
+    // Every row's key is read before any refusal, so that an unreadable one is named with every
+    // other failed row rather than stopping the import at the first [SRV-058] (DEC-087).
+    let keys: Vec<Result<RowOrderingKey, RowError>> =
+        rows.iter().map(|row| importer.ordering_key(row)).collect();
     // The year guard reads the ordering keys' trade dates and nothing else [IMP-002]: not a
     // booking timestamp, which a format may also put in its ordering columns, and not the
-    // filename, which `import` never sees. A partial year is a single year and passes.
-    let years: BTreeSet<i32> = keys.iter().map(|key| key.trade_date.year()).collect();
+    // filename, which `import` never sees. A partial year is a single year and passes. A row
+    // whose key is unreadable has no trade date to contribute, and refuses the file below, so no
+    // file is imported with a trade date the guard has not seen. Reporting the years and the
+    // failed rows together [SRV-059] is FIF-103's, not this refusal's.
+    let years: BTreeSet<i32> = keys
+        .iter()
+        .flatten()
+        .map(|key| key.trade_date.year())
+        .collect();
     if years.len() > 1 {
         return Err(ImportError::MultipleCalendarYears {
             years: years.into_iter().collect(),
         });
     }
-
-    let orders = assign_orders(&keys, importer.direction());
 
     let classifications = importer.classify(&rows);
     if classifications.len() != rows.len() {
@@ -313,24 +303,58 @@ pub fn import(
         });
     }
 
+    // A row is still classified and identified when its key is unreadable, but it is named once,
+    // for the first value that failed in reading order: its key, its classification, then its
+    // identity, which is only asked of a row that is stored.
+    let outcomes: Vec<Result<(RowOrderingKey, Outcome), RowError>> = rows
+        .iter()
+        .zip(keys)
+        .zip(classifications)
+        .map(|((row, key), classification)| {
+            let outcome = classification.and_then(|classification| match classification {
+                RowClassification::NonPosition(_) => Ok(Outcome::NonPosition),
+                RowClassification::DerivedAutomatically => importer
+                    .identity(row)
+                    .map(|identity| Outcome::Store(StoredAs::DerivedAutomatically, identity)),
+                RowClassification::Pending => importer
+                    .identity(row)
+                    .map(|identity| Outcome::Store(StoredAs::Pending, identity)),
+            });
+            key.and_then(|key| outcome.map(|outcome| (key, outcome)))
+        })
+        .collect();
+
+    let failures: Vec<RowFailure> = outcomes
+        .iter()
+        .enumerate()
+        .filter_map(|(position, outcome)| {
+            outcome.as_ref().err().map(|error| RowFailure {
+                position,
+                error: error.clone(),
+            })
+        })
+        .collect();
+    if !failures.is_empty() {
+        return Err(ImportError::FailedRows { failures });
+    }
+
+    // Every outcome is `Ok` past the refusal above, so flattening drops nothing and the keys
+    // stay aligned with the rows.
+    let (keys, outcomes): (Vec<RowOrderingKey>, Vec<Outcome>) =
+        outcomes.into_iter().flatten().unzip();
+
+    // Orders are assigned over every row the file holds, including the ones that will not be
+    // stored, so that what a row's `order` is depends on the file alone and not on how its
+    // neighbours were classified [DOM-040].
+    let orders = assign_orders(&keys, importer.direction());
+
     let mut stored = Vec::new();
-    let mut failures = Vec::new();
     let mut counts = ImportCounts::default();
 
-    for (position, ((row, order), classification)) in
-        rows.iter().zip(orders).zip(classifications).enumerate()
-    {
-        match classification.and_then(|classification| match classification {
-            RowClassification::NonPosition(_) => Ok(Outcome::NonPosition),
-            RowClassification::DerivedAutomatically => importer
-                .identity(row)
-                .map(|identity| Outcome::Store(StoredAs::DerivedAutomatically, identity)),
-            RowClassification::Pending => importer
-                .identity(row)
-                .map(|identity| Outcome::Store(StoredAs::Pending, identity)),
-        }) {
-            Ok(Outcome::NonPosition) => counts.non_position += 1,
-            Ok(Outcome::Store(stored_as, identity)) => {
+    for ((row, order), outcome) in rows.iter().zip(orders).zip(outcomes) {
+        match outcome {
+            Outcome::NonPosition => counts.non_position += 1,
+            Outcome::Store(stored_as, identity) => {
                 stored.push(StoredRecord {
                     record: record(account, order, row, &identity),
                     stored_as,
@@ -340,17 +364,12 @@ pub fn import(
                     StoredAs::Pending => counts.pending += 1,
                 }
             }
-            Err(error) => {
-                counts.failed += 1;
-                failures.push(RowFailure { position, error });
-            }
         }
     }
 
     Ok(Import {
         format: importer.format(),
         stored,
-        failures,
         counts,
     })
 }
@@ -697,7 +716,6 @@ mod tests {
 
         assert_eq!(import.counts().non_position, 5);
         assert!(import.stored().is_empty());
-        assert_eq!(import.counts().failed, 0);
     }
 
     /// Order comes from the file's own content, so a row's order does not move because a row
@@ -773,7 +791,6 @@ mod tests {
         assert!(import.stored().is_empty());
         assert_eq!(import.pending().count(), 0);
         assert_eq!(import.counts(), ImportCounts::default());
-        assert!(import.failures().is_empty());
     }
 
     /// Identity is scoped to the account, so the same file imported into two accounts yields
@@ -801,49 +818,73 @@ mod tests {
         assert_eq!(run(FILE), run(FILE));
     }
 
-    /// A row that cannot be classified is counted and named, and the rows around it still
-    /// import. What that does to the batch is the caller's (OQ-012).
+    /// Failed rows of all three kinds among good rows — two whose ordering key cannot be read,
+    /// one that cannot be classified and one that cannot be identified — refuse the whole
+    /// import, and the refusal names every one by position with its reason rather than stopping
+    /// at the first [SRV-058] (DEC-074, DEC-087). No `Import` is returned, so nothing the good
+    /// rows yielded can be stored.
     #[test]
-    fn a_row_that_cannot_be_classified_is_counted_and_named() {
+    fn every_failed_row_refuses_the_import_and_is_named() {
         let content = "id,date,kind\n\
                        a,2024-01-02,buy\n\
-                       b,2024-01-03,nonsense\n";
-
-        let import = run(content);
-
-        assert_eq!(import.counts().failed, 1);
-        assert_eq!(import.failures().len(), 1);
-        assert_eq!(import.failures()[0].position, 1);
-        assert!(import.failures()[0].error.reason().contains("nonsense"));
-        assert_eq!(import.stored().len(), 1);
-    }
-
-    /// A row with no identity is a failure of that row, not of the file.
-    #[test]
-    fn a_row_with_no_identity_fails_alone() {
-        let content = "id,date,kind\n\
-                       ,2024-01-02,buy\n\
-                       b,2024-01-03,buy\n";
-
-        let import = run(content);
-
-        assert_eq!(import.counts().failed, 1);
-        assert_eq!(import.counts().derived, 1);
-    }
-
-    /// A row that cannot be ordered stops the import: leaving it out would change the `order`
-    /// of every row after it, and order is a cost-basis input [DOM-040].
-    #[test]
-    fn a_row_that_cannot_be_ordered_stops_the_import() {
-        let content = "id,date,kind\n\
-                       a,not-a-date,buy\n";
+                       b,not-a-date,buy\n\
+                       c,2024-01-03,nonsense\n\
+                       d,2024-01-04,cash dividend\n\
+                       ,2024-01-05,buy\n\
+                       f,,split\n\
+                       g,2024-01-06,split\n";
 
         let error = import(&FakeImporter::new(), &account(), content.as_bytes())
-            .expect_err("an unorderable row refuses the file");
+            .expect_err("a failed row refuses the file");
 
-        assert!(
-            matches!(error, ImportError::Unorderable { position: 0, .. }),
-            "{error:?}"
+        assert_eq!(
+            error,
+            ImportError::FailedRows {
+                failures: vec![
+                    RowFailure {
+                        position: 1,
+                        error: RowError::new("not-a-date is not a date"),
+                    },
+                    RowFailure {
+                        position: 2,
+                        error: RowError::new("unknown kind Some(\"nonsense\")"),
+                    },
+                    RowFailure {
+                        position: 4,
+                        error: RowError::new("no id"),
+                    },
+                    RowFailure {
+                        position: 5,
+                        error: RowError::new(" is not a date"),
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "4 rows could not be read: row 1: not-a-date is not a date; \
+             row 2: unknown kind Some(\"nonsense\"); row 4: no id; row 5:  is not a date"
+        );
+    }
+
+    /// A row failing on more than one value is named once, for its ordering key, which is read
+    /// first; the refusal is per row, not per value [SRV-058].
+    #[test]
+    fn a_row_failing_twice_is_named_once() {
+        let content = "id,date,kind\n\
+                       ,not-a-date,nonsense\n";
+
+        let error = import(&FakeImporter::new(), &account(), content.as_bytes())
+            .expect_err("a failed row refuses the file");
+
+        assert_eq!(
+            error,
+            ImportError::FailedRows {
+                failures: vec![RowFailure {
+                    position: 0,
+                    error: RowError::new("not-a-date is not a date"),
+                }],
+            }
         );
     }
 

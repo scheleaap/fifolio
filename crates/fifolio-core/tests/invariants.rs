@@ -204,7 +204,6 @@ fn import(filename: &str) -> ImportBatch {
             derived: 1,
             pending: 0,
             non_position: 0,
-            failed: 0,
         },
     )
 }

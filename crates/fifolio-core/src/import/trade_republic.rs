@@ -256,8 +256,8 @@ pub fn booking_instant(row: &SourceRow) -> Result<i64, TradeRepublicError> {
 ///
 /// # Errors
 ///
-/// When either column cannot be read, which stops the import: a row that cannot be placed would
-/// change the `order` of every row after it.
+/// When either column cannot be read, which makes the row a failed row and refuses the import
+/// [SRV-058]: a row that cannot be placed would change the `order` of every row after it.
 pub fn ordering_key(row: &SourceRow) -> Result<RowOrderingKey, TradeRepublicError> {
     Ok(RowOrderingKey {
         trade_date: trade_date(row)?,

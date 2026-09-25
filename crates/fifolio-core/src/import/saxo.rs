@@ -27,7 +27,7 @@
 //!   spanning three sheets has no rendering the specification defines;
 //! * every row is ordered on `Transactiedatum` [IMP-SAXO-026], which neither detail sheet
 //!   carries — `_Transacties` has `Aangepaste transactiedatum` and `Bookings` `Boekingsdatum` —
-//!   and a row whose ordering key cannot be read stops the import;
+//!   and a row whose ordering key cannot be read refuses the import [SRV-058];
 //! * identity is the first populated of four `Transacties` columns [IMP-SAXO-007], and a detail
 //!   row shares those values with the ledger row it belongs to, so records per physical row
 //!   would collide by construction.
@@ -269,8 +269,9 @@ pub enum SaxoError {
     /// price over a zero divisor, or an overflow. Reported rather than produced [ARC-009].
     #[error("the row's money cannot be derived: {reason}")]
     UnderivableMoney { reason: &'static str },
-    /// A row populating none of the four identity columns [IMP-SAXO-007]. It is a failed row
-    /// and not a refusal of the file: every row of the sample carries one of the four.
+    /// A row populating none of the four identity columns [IMP-SAXO-007]. It is a failed row,
+    /// which refuses the file together with every other failed row [SRV-058]: every row of the
+    /// sample carries one of the four.
     #[error(
         "the row populates none of Transactie-ID, Bk Record Id, Booking Id and \
          Corporate action-Id, so it cannot be identified"

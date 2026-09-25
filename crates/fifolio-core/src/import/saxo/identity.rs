@@ -80,8 +80,9 @@ pub fn account(row: &SourceRow) -> Result<&str, SaxoError> {
 /// # Errors
 ///
 /// When the row populates none of them. That is a row that cannot be identified, which the
-/// import framework counts as a failed row rather than a refusal of the file: every row of the
-/// sample carries one, so such a row is a shape neither `design/` nor the sample describes.
+/// import framework reports as a failed row, refusing the file with every other failed row
+/// named [SRV-058]: every row of the sample carries one, so such a row is a shape neither
+/// `design/` nor the sample describes.
 pub fn identity(row: &SourceRow) -> Result<&str, SaxoError> {
     IDENTITY_COLUMNS
         .iter()
