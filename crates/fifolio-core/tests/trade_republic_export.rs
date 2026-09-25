@@ -21,7 +21,6 @@ use fifolio_core::import::trade_republic::{
     is_outflow, ordering_key, read, trade_date,
 };
 use fifolio_core::ordering::assign_orders;
-use fifolio_core::valuation::RateSource;
 use rust_decimal::Decimal;
 
 /// Every committed Trade Republic fixture, with its path.
@@ -345,9 +344,7 @@ fn every_fixture_receipt_states_its_money_as_an_inflow() {
 }
 
 /// Every row of every fixture states money this reader understands [IMP-TR-005]: a blank cell is
-/// an absent figure, and a populated one parses. No fixture trade states a foreign side, so
-/// none of them meets the refusal of IMP-TR-017 — the files import, and the refusal is a unit
-/// test's.
+/// an absent figure, and a populated one parses.
 #[test]
 fn every_fixture_row_states_money_the_reader_understands() {
     for (path, rows) in exports() {
@@ -397,12 +394,51 @@ fn every_fixture_buy_grosses_its_amount_with_the_fee_beside_it() {
     assert_eq!(buys, 7, "the fixtures' seven buys");
 }
 
-/// The foreign dividends carry the `original_*` triple, and their `fx_rate` is stored as the
-/// file states it — foreign units per EUR already [IMP-TR-006], [DOM-086]. The rate is not an
-/// amount, so it is not perturbed [TST-028]; that a USD rate near 1 is a rate *per EUR* is what
-/// an inversion would break.
+/// On every row stating an amount, gross = |amount| and fees = |fee| + |tax|, both in the row's
+/// `currency` [IMP-TR-016], [IMP-TR-007]. Asserted as the relation and not as figures: the
+/// fixtures' amounts are perturbed [TST-014].
 #[test]
-fn the_fixture_dividends_carry_their_conversion_uninverted() {
+fn every_fixture_row_grosses_its_amount_and_sums_its_fee_and_tax() {
+    let mut rows_with_tax = 0;
+    for (path, rows) in exports() {
+        for row in rows.iter().filter(|row| figure(row, "amount").is_some()) {
+            let booked = Booked::read(row).expect("a fixture row states readable money");
+            let magnitude = |column| figure(row, column).unwrap_or_default().abs();
+            rows_with_tax += usize::from(figure(row, "tax").is_some());
+
+            assert_eq!(
+                booked.gross().map(Scaled::get),
+                Some(magnitude("amount")),
+                "{}: {} grosses its amount",
+                path.display(),
+                identity(row).expect("a fixture row is identified")
+            );
+            assert_eq!(
+                booked.fees().map(Scaled::get),
+                Ok(magnitude("fee") + magnitude("tax")),
+                "{}: {} sums its fee and tax",
+                path.display(),
+                identity(row).expect("a fixture row is identified")
+            );
+            assert_eq!(
+                booked.currency().map(|currency| currency.code()),
+                Some(field(row, "currency").expect("the column is carried")),
+                "{}: the figures are in the row's own currency",
+                path.display()
+            );
+        }
+    }
+
+    // Without a taxed row the tax half of the relation would be asserted on nothing.
+    assert!(rows_with_tax > 0, "the fixtures carry taxed rows");
+}
+
+/// The foreign dividends' `original_*` triple is read as the file states it, `fx_rate`
+/// verbatim, and none of it reaches the settlement figures: the gross stays `|amount|` in the
+/// row's EUR `currency` [IMP-TR-006], (DEC-073). This replaces an assertion that the rate was
+/// already foreign units per EUR, which DEC-073 makes true only up to 2024-07-02.
+#[test]
+fn the_fixture_dividends_carry_their_foreign_side_as_stated() {
     let mut dividends = 0;
     for (path, rows) in exports() {
         for row in rows
@@ -411,23 +447,32 @@ fn the_fixture_dividends_carry_their_conversion_uninverted() {
         {
             dividends += 1;
             let booked = Booked::read(row).expect("a dividend states readable money");
-            let conversion = booked
-                .conversion(trade_date(row).expect("a dividend states a date"))
-                .expect("a dividend states a rate");
 
             assert_eq!(
-                conversion.currency().code(),
-                field(row, "original_currency").expect("the column is carried"),
-                "{}: the conversion names the row's own currency",
+                booked.original_amount(),
+                figure(row, "original_amount"),
+                "{}: the foreign amount is the file's",
                 path.display()
             );
             assert_eq!(
-                conversion.rate().get(),
-                figure(row, "fx_rate").expect("a dividend states a rate"),
-                "{}: the rate is the file's, uninverted",
+                booked.original_currency().map(|currency| currency.code()),
+                Some(field(row, "original_currency").expect("the column is carried")),
+                "{}: the foreign currency is the file's",
                 path.display()
             );
-            assert_eq!(conversion.source(), RateSource::Broker);
+            assert_eq!(
+                booked.fx_rate(),
+                figure(row, "fx_rate"),
+                "{}: the rate is the file's, untouched",
+                path.display()
+            );
+            assert_eq!(
+                booked.gross().map(Scaled::get),
+                figure(row, "amount").map(|amount| amount.abs()),
+                "{}: the foreign side values nothing",
+                path.display()
+            );
+            assert!(booked.fx_rate().is_some() && booked.original_currency().is_some());
         }
     }
 

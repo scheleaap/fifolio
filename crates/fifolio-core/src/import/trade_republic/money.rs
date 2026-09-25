@@ -1,5 +1,5 @@
 //! What a Trade Republic money column is worth: the native figures, the gross and the fees they
-//! imply, and the conversion a row states.
+//! imply, and the foreign side a row states.
 //!
 //! Five columns carry the row's own money [IMP-TR-005]:
 //!
@@ -11,8 +11,10 @@
 //! | `tax` | withholding, negative |
 //! | `currency` | what the four above are denominated in |
 //!
-//! Three more carry the foreign side, populated together when the row was in another currency
-//! [IMP-TR-006]: `original_amount`, `original_currency` and `fx_rate`.
+//! Three more carry the foreign side, populated where the row was in another currency
+//! [IMP-TR-006]: `original_amount`, `original_currency` and `fx_rate`. Each is read on its own:
+//! no requirement says what a row carrying some of them and not the others means, so none is
+//! refused for it.
 //!
 //! # `amount` excludes the fee, the opposite of Saxo
 //!
@@ -30,25 +32,14 @@
 //! `|amount|` exactly, with its `fee` of −1.00 carried beside it and never subtracted from it.
 //! Subtracting it would understate every buy's cost basis by the fee.
 //!
-//! # `fx_rate` is already the stored convention
+//! # `fx_rate` values nothing
 //!
-//! This crate stores foreign units per EUR, `EUR = native / rate` [DOM-086], and that is what
-//! Trade Republic quotes — 1.06239 USD per EUR on the 2024-01-02 dividend. So the rate is used
-//! as stated and [`rate_from_inverse_quote`](crate::valuation::rate_from_inverse_quote), which
-//! the Saxo importer needs, is deliberately not called here: inverting an already-correct rate
-//! would misvalue every foreign row by the square of the rate.
-//!
-//! # A foreign-currency trade refuses the file
-//!
-//! No `TRADING` row with `original_*` populated appears in four years of exports, so what the
-//! `price` and `amount` of one would be denominated in is unspecified. Such a row **rejects the
-//! import** rather than being read under a guess [IMP-TR-017], consistent with the unknown-type
-//! rule: a wrong currency on a trade is a cost basis wrong by the exchange rate, permanently and
-//! invisibly.
-//!
-//! That guard reads the `category` cell verbatim. It is not the row classification of
-//! IMP-TR-008, which is FIF-029's and maps `category` and `type` together onto the domain's
-//! three outcomes; it is the one literal the requirement names.
+//! `fx_rate` was foreign units per EUR up to 2024-07-02 and its reciprocal from 2024-10-01 on,
+//! so it has no convention a reader could apply (DEC-073). It is read where populated, verbatim
+//! and as a bare decimal rather than an [`FxRate`](crate::decimal::FxRate), which would claim the
+//! stored convention [DOM-086] for it. Nothing here converts with it: every figure above is the
+//! row's own, in its settlement `currency`. Refusing a *stored* row that carries the triple is
+//! IMP-TR-017's and needs the row's classification, so it is FIF-029's, not this module's.
 //!
 //! # A blank cell is an absent figure, not a zero
 //!
@@ -59,13 +50,12 @@
 //! contributes nothing to the sum of IMP-TR-007, which is the same figure a zero would give;
 //! the distinction is kept out of the sum rather than invented for it.
 
-use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
 use super::{TradeRepublicError, UNIT_PRICE_COLUMN, field};
-use crate::decimal::{FxRate, Money, QuotedPrice};
+use crate::decimal::{Money, QuotedPrice};
 use crate::import::reader::SourceRow;
-use crate::valuation::{Conversion, Currency, RateSource};
+use crate::valuation::Currency;
 
 /// The cash movement, fee excluded [IMP-TR-016].
 const AMOUNT: &str = "amount";
@@ -79,59 +69,16 @@ const TAX: &str = "tax";
 /// What the row's own figures are denominated in [IMP-TR-005].
 const CURRENCY: &str = "currency";
 
-/// The three columns of the foreign side, populated together [IMP-TR-006].
+/// The three columns of the foreign side [IMP-TR-006].
 const ORIGINAL_AMOUNT: &str = "original_amount";
 const ORIGINAL_CURRENCY: &str = "original_currency";
 const FX_RATE: &str = "fx_rate";
 
-/// The column whose value IMP-TR-017 names. Classifying a row is FIF-029's; this is the literal
-/// the foreign-trade refusal is stated in terms of.
-const CATEGORY: &str = "category";
-
-/// The `category` value that makes a row a trade [IMP-TR-017].
-const TRADE: &str = "TRADING";
-
 /// A figure outside the range a decimal can hold [ARC-009].
 const OVERFLOW: &str = "the figure is outside the range of a decimal";
 
-/// A row denominated in a foreign currency that states no rate, so its EUR side is underivable
-/// [IMP-TR-024].
-const NO_RATE: &str = "the row is not in EUR and states no fx_rate, so no conversion exists";
-
-/// The foreign side of a row, as the export states it [IMP-TR-006].
-///
-/// Held as a triple because the export populates it as one: a row carrying some of the three and
-/// not the others is refused rather than half-read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Original {
-    amount: Decimal,
-    currency: Currency,
-    rate: FxRate,
-}
-
-impl Original {
-    /// The amount in the foreign currency, exactly as stated: the sign is the row's cash-flow
-    /// sign [IMP-TR-004] and is left on it.
-    #[must_use]
-    pub fn amount(&self) -> Decimal {
-        self.amount
-    }
-
-    /// The currency the foreign amount is denominated in.
-    #[must_use]
-    pub fn currency(&self) -> &Currency {
-        &self.currency
-    }
-
-    /// `fx_rate`, foreign units per EUR, exactly as the file states it: the stored convention
-    /// already [DOM-086], so it is never inverted.
-    #[must_use]
-    pub fn rate(&self) -> FxRate {
-        self.rate
-    }
-}
-
-/// The money columns of a Trade Republic row, as the file states them [IMP-TR-005].
+/// The money columns of a Trade Republic row, as the file states them [IMP-TR-005],
+/// [IMP-TR-006].
 ///
 /// Each is optional because the export leaves most of them blank on most rows; what each one
 /// *means* is the accessors below, not the column.
@@ -142,7 +89,9 @@ pub struct Booked {
     amount: Option<Decimal>,
     fee: Option<Decimal>,
     tax: Option<Decimal>,
-    original: Option<Original>,
+    original_amount: Option<Decimal>,
+    original_currency: Option<Currency>,
+    fx_rate: Option<Decimal>,
 }
 
 impl Booked {
@@ -150,27 +99,17 @@ impl Booked {
     ///
     /// # Errors
     ///
-    /// When the row carries no such column, when a populated money cell is not a number, when
-    /// the `original_*` triple is populated in part, or when a `TRADING` row states a foreign
-    /// side at all [IMP-TR-017].
+    /// When the row carries no such column, or a populated money cell is not a number.
     pub fn read(row: &SourceRow) -> Result<Self, TradeRepublicError> {
-        let original = original(row)?;
-        if let Some(foreign) = &original
-            && field(row, CATEGORY)? == TRADE
-        {
-            return Err(TradeRepublicError::ForeignCurrencyTrade {
-                currency: foreign.currency.code().to_owned(),
-                transaction_id: field(row, super::IDENTITY_COLUMN)?.to_owned(),
-            });
-        }
-
         Ok(Self {
             currency: text(row, CURRENCY)?.map(Currency::new),
             unit_price: amount(row, UNIT_PRICE_COLUMN)?.map(QuotedPrice::new),
             amount: amount(row, AMOUNT)?,
             fee: amount(row, FEE)?,
             tax: amount(row, TAX)?,
-            original,
+            original_amount: amount(row, ORIGINAL_AMOUNT)?,
+            original_currency: text(row, ORIGINAL_CURRENCY)?.map(Currency::new),
+            fx_rate: amount(row, FX_RATE)?,
         })
     }
 
@@ -191,8 +130,8 @@ impl Booked {
         self.unit_price
     }
 
-    /// The traded value, fee excluded: `|amount|` [IMP-TR-016]. `None` on a row that states no
-    /// amount.
+    /// The traded value, fee excluded: `|amount|` [IMP-TR-016], in [`currency`](Self::currency).
+    /// `None` on a row that states no amount.
     ///
     /// The magnitude, because the sign is the direction of the cash flow [IMP-TR-004] and the
     /// domain stores a gross as a positive figure.
@@ -201,8 +140,8 @@ impl Booked {
         self.amount.map(|amount| Money::new(amount.abs()))
     }
 
-    /// The costs the row carried: `|fee| + |tax|`, in the settlement currency [IMP-TR-007],
-    /// [IMP-TR-016].
+    /// The costs the row carried: `|fee| + |tax|`, in [`currency`](Self::currency)
+    /// [IMP-TR-007], [IMP-TR-016].
     ///
     /// Zero where the row states neither, which is every observed trade's `tax` and every
     /// receipt's `fee`.
@@ -218,68 +157,23 @@ impl Booked {
             .ok_or(TradeRepublicError::UnderivableMoney { reason: OVERFLOW })
     }
 
-    /// The foreign side of the row, where it has one [IMP-TR-006].
+    /// `original_amount` exactly as stated, cash-flow sign included [IMP-TR-004], [IMP-TR-006].
     #[must_use]
-    pub fn original(&self) -> Option<&Original> {
-        self.original.as_ref()
+    pub fn original_amount(&self) -> Option<Decimal> {
+        self.original_amount
     }
 
-    /// The conversion the row's figures were booked under [DOM-028].
-    ///
-    /// `fx_rate` is used verbatim, the file already quoting foreign units per EUR [DOM-086], and
-    /// the source is `broker`: the export states both sides of the movement, so the rate records
-    /// what was actually paid rather than converting anything [DOM-031]. A row stating no
-    /// foreign side is in EUR and converts natively [DOM-033] — as does a row stating no
-    /// currency at all, which moves no money to convert.
-    ///
-    /// # Errors
-    ///
-    /// When the row states a non-EUR `currency` and no rate [IMP-TR-024], a shape no export
-    /// carries and that no requirement gives a rate for.
-    pub fn conversion(&self, trade_date: NaiveDate) -> Result<Conversion, TradeRepublicError> {
-        match &self.original {
-            Some(foreign) => Ok(Conversion::new(
-                foreign.currency.clone(),
-                foreign.rate,
-                RateSource::Broker,
-                trade_date,
-            )),
-            None if self.currency.as_ref().is_none_or(Currency::is_eur) => {
-                Ok(Conversion::native(trade_date))
-            }
-            None => Err(TradeRepublicError::UnderivableMoney { reason: NO_RATE }),
-        }
+    /// `original_currency` as stated [IMP-TR-006].
+    #[must_use]
+    pub fn original_currency(&self) -> Option<&Currency> {
+        self.original_currency.as_ref()
     }
-}
 
-/// The `original_*` triple of `row`, `None` where all three are blank.
-///
-/// All three or none: the export populates them together [IMP-TR-006], so a row carrying two of
-/// them is a shape neither `design/` nor the export describes, and reading it would put a rate
-/// against an amount that is not the one it converts.
-fn original(row: &SourceRow) -> Result<Option<Original>, TradeRepublicError> {
-    let foreign = amount(row, ORIGINAL_AMOUNT)?;
-    let currency = text(row, ORIGINAL_CURRENCY)?;
-    let rate = amount(row, FX_RATE)?;
-
-    match (foreign, currency, rate) {
-        (None, None, None) => Ok(None),
-        (Some(amount), Some(currency), Some(rate)) => Ok(Some(Original {
-            amount,
-            currency: Currency::new(currency),
-            rate: FxRate::new(rate),
-        })),
-        (foreign, currency, rate) => Err(TradeRepublicError::PartialConversion {
-            absent: [
-                (ORIGINAL_AMOUNT, foreign.is_none()),
-                (ORIGINAL_CURRENCY, currency.is_none()),
-                (FX_RATE, rate.is_none()),
-            ]
-            .into_iter()
-            .filter(|&(_, blank)| blank)
-            .map(|(header, _)| header.to_owned())
-            .collect(),
-        }),
+    /// `fx_rate` exactly as stated [IMP-TR-006]. Its convention changed in late 2024, so it
+    /// must never value anything (DEC-073); it is kept only as the file's own statement.
+    #[must_use]
+    pub fn fx_rate(&self) -> Option<Decimal> {
+        self.fx_rate
     }
 }
 
@@ -309,14 +203,10 @@ mod tests {
     use crate::decimal::Scaled as _;
     use rust_decimal_macros::dec;
 
-    fn trade_date() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2024, 5, 2).expect("a real date")
-    }
-
     /// The sample buy: 35 at 75.09 for 2628.15, with a fee of 1.00 beside it.
     fn sample() -> Booked {
         Booked::read(&row(&[
-            (CATEGORY, TRADE),
+            ("category", "TRADING"),
             ("type", "BUY"),
             ("shares", "35.0000000000"),
             (UNIT_PRICE_COLUMN, "75.090000"),
@@ -325,6 +215,21 @@ mod tests {
             (CURRENCY, "EUR"),
         ]))
         .expect("the sample row's money reads")
+    }
+
+    /// A dividend as the fixtures state it: settled in EUR, with a USD foreign side.
+    fn foreign_dividend() -> Booked {
+        Booked::read(&row(&[
+            ("category", "CASH"),
+            ("type", "DIVIDEND"),
+            (AMOUNT, "0.032946"),
+            (TAX, "-0.02"),
+            (CURRENCY, "EUR"),
+            (ORIGINAL_AMOUNT, "0.05"),
+            (ORIGINAL_CURRENCY, "USD"),
+            (FX_RATE, "0.860751"),
+        ]))
+        .expect("the row's money reads")
     }
 
     /// The five native columns map onto the figures the domain stores [IMP-TR-005],
@@ -357,7 +262,7 @@ mod tests {
     #[test]
     fn the_gross_of_an_inflow_is_its_magnitude_too() {
         let booked = Booked::read(&row(&[
-            (CATEGORY, TRADE),
+            ("category", "TRADING"),
             ("type", "SELL"),
             ("shares", "-35.0000000000"),
             (UNIT_PRICE_COLUMN, "75.090000"),
@@ -400,7 +305,7 @@ mod tests {
     #[test]
     fn a_row_stating_no_money_at_all_reads_as_absent_figures() {
         let booked = Booked::read(&row(&[
-            (CATEGORY, "CORPORATE_ACTION"),
+            ("category", "CORPORATE_ACTION"),
             ("type", "TAX_EXCHANGE"),
             ("shares", "-60.0000000000"),
         ]))
@@ -410,13 +315,9 @@ mod tests {
         assert_eq!(booked.unit_price(), None);
         assert_eq!(booked.gross(), None);
         assert_eq!(booked.fees(), Ok(Money::zero()));
-        assert_eq!(booked.original(), None);
-        // A row moving no money has nothing to convert, so it converts natively rather than
-        // refusing the file for want of a currency [DOM-033].
-        assert_eq!(
-            booked.conversion(trade_date()),
-            Ok(Conversion::native(trade_date()))
-        );
+        assert_eq!(booked.original_amount(), None);
+        assert_eq!(booked.original_currency(), None);
+        assert_eq!(booked.fx_rate(), None);
     }
 
     /// A populated money cell that is not a number refuses the file, naming the column and the
@@ -435,175 +336,58 @@ mod tests {
         );
     }
 
-    /// The foreign side arrives as the triple the export populates together [IMP-TR-006].
+    /// The foreign side is read as the file states it, `fx_rate` verbatim and never inverted
+    /// or otherwise normalized: it has no reliable convention [IMP-TR-006], (DEC-073).
     #[test]
-    fn the_original_columns_arrive_as_one_triple() {
+    fn the_original_columns_are_read_as_stated() {
+        let booked = foreign_dividend();
+
+        assert_eq!(booked.original_amount(), Some(dec!(0.05)));
+        assert_eq!(booked.original_currency(), Some(&Currency::new("USD")));
+        assert_eq!(booked.fx_rate(), Some(dec!(0.860751)));
+    }
+
+    /// A populated foreign side values nothing: the gross and the fees stay the settlement
+    /// currency's own figures, and no product or quotient of `fx_rate` reaches them
+    /// [IMP-TR-016], (DEC-073).
+    #[test]
+    fn a_foreign_side_leaves_the_settlement_figures_alone() {
+        let booked = foreign_dividend();
+
+        assert_eq!(booked.currency(), Some(&Currency::new("EUR")));
+        assert_eq!(booked.gross(), Some(Money::new(dec!(0.032946))));
+        assert_eq!(booked.fees(), Ok(Money::new(dec!(0.02))));
+    }
+
+    /// A foreign side populated in part is read as far as it goes: no requirement makes that
+    /// shape a refusal [IMP-TR-006].
+    #[test]
+    fn a_partly_populated_foreign_side_reads_as_stated() {
         let booked = Booked::read(&row(&[
-            (CATEGORY, "CASH"),
-            ("type", "DIVIDEND"),
             (AMOUNT, "0.032946"),
             (CURRENCY, "EUR"),
             (ORIGINAL_AMOUNT, "0.04"),
-            (ORIGINAL_CURRENCY, "USD"),
-            (FX_RATE, "1.062390"),
         ]))
         .expect("the row's money reads");
 
-        let original = booked.original().expect("the row states a foreign side");
-        assert_eq!(original.amount(), dec!(0.04));
-        assert_eq!(original.currency(), &Currency::new("USD"));
+        assert_eq!(booked.original_amount(), Some(dec!(0.04)));
+        assert_eq!(booked.original_currency(), None);
+        assert_eq!(booked.fx_rate(), None);
     }
 
-    /// `fx_rate` is foreign units per EUR already, so it is stored as stated and never inverted
-    /// [IMP-TR-006], [DOM-086].
+    /// A populated `fx_rate` that is not a number is a parse failure like any other money cell
+    /// [IMP-TR-006], (DEC-074).
     #[test]
-    fn the_fx_rate_is_stored_without_inversion() {
-        let booked = Booked::read(&row(&[
-            (CATEGORY, "CASH"),
-            ("type", "DIVIDEND"),
-            (AMOUNT, "0.032946"),
-            (CURRENCY, "EUR"),
-            (ORIGINAL_AMOUNT, "0.04"),
-            (ORIGINAL_CURRENCY, "USD"),
-            (FX_RATE, "1.062390"),
-        ]))
-        .expect("the row's money reads");
-
-        let conversion = booked
-            .conversion(trade_date())
-            .expect("the row states a rate");
-        assert_eq!(conversion.rate(), FxRate::new(dec!(1.062390)));
-        // The inverse, 0.941345…, is what a Saxo-style inversion would have stored.
-        assert_ne!(conversion.rate().get(), Decimal::ONE / dec!(1.062390));
-        assert_eq!(conversion.currency(), &Currency::new("USD"));
-        assert_eq!(conversion.source(), RateSource::Broker);
-        assert_eq!(conversion.rate_date(), trade_date());
-    }
-
-    /// A row in EUR converts natively: rate 1, source `native` [DOM-033].
-    #[test]
-    fn a_row_in_euros_converts_natively() {
-        let conversion = sample()
-            .conversion(trade_date())
-            .expect("an EUR row converts");
-
-        assert_eq!(conversion, Conversion::native(trade_date()));
-    }
-
-    /// A `TRADING` row stating a foreign side rejects the import, naming the currency and the
-    /// row [IMP-TR-017].
-    #[test]
-    fn a_foreign_currency_trade_rejects_the_import() {
-        let refusal = Booked::read(&row(&[
-            (CATEGORY, TRADE),
-            ("type", "BUY"),
-            ("shares", "35.0000000000"),
-            (UNIT_PRICE_COLUMN, "75.090000"),
-            (AMOUNT, "-2628.150000"),
-            (FEE, "-1.00"),
-            (CURRENCY, "EUR"),
-            (ORIGINAL_AMOUNT, "-2800.00"),
-            (ORIGINAL_CURRENCY, "USD"),
-            (FX_RATE, "1.062390"),
-            ("transaction_id", "bf751ce3-33c9-539c-96d7-1428cc7bdde9"),
-        ]))
-        .expect_err("a foreign-currency trade is unspecified");
+    fn an_fx_rate_that_is_not_a_number_refuses_the_file() {
+        let refusal = Booked::read(&row(&[(FX_RATE, "1,06"), (CURRENCY, "EUR")]))
+            .expect_err("the rate is not a number");
 
         assert_eq!(
             refusal,
-            TradeRepublicError::ForeignCurrencyTrade {
-                currency: "USD".to_owned(),
-                transaction_id: "bf751ce3-33c9-539c-96d7-1428cc7bdde9".to_owned(),
+            TradeRepublicError::NotAnAmount {
+                header: FX_RATE.to_owned(),
+                value: "1,06".to_owned(),
             }
-        );
-    }
-
-    /// The refusal keys on `category`, not on `type`: a `SELL` is refused as a `BUY` is, while
-    /// the same triple on a `CORPORATE_ACTION` row reads [IMP-TR-017].
-    #[test]
-    fn the_refusal_keys_on_the_category_and_not_on_the_type() {
-        let foreign = |category: &str, kind: &str| {
-            Booked::read(&row(&[
-                (CATEGORY, category),
-                ("type", kind),
-                (AMOUNT, "2628.150000"),
-                (CURRENCY, "EUR"),
-                (ORIGINAL_AMOUNT, "2800.00"),
-                (ORIGINAL_CURRENCY, "USD"),
-                (FX_RATE, "1.062390"),
-                ("transaction_id", "bf751ce3-33c9-539c-96d7-1428cc7bdde9"),
-            ]))
-        };
-
-        assert_eq!(
-            foreign(TRADE, "SELL").expect_err("a foreign-currency sell is unspecified"),
-            TradeRepublicError::ForeignCurrencyTrade {
-                currency: "USD".to_owned(),
-                transaction_id: "bf751ce3-33c9-539c-96d7-1428cc7bdde9".to_owned(),
-            }
-        );
-        assert!(
-            foreign("CORPORATE_ACTION", "TAX_EXCHANGE")
-                .expect("only a trade is refused")
-                .original()
-                .is_some()
-        );
-    }
-
-    /// A partly populated `original_*` triple refuses the file, naming what is absent: the
-    /// export populates the three together [IMP-TR-006].
-    #[test]
-    fn a_partly_populated_conversion_refuses_the_file() {
-        let refusal = Booked::read(&row(&[
-            (CATEGORY, "CASH"),
-            ("type", "DIVIDEND"),
-            (AMOUNT, "0.032946"),
-            (CURRENCY, "EUR"),
-            (ORIGINAL_AMOUNT, "0.04"),
-        ]))
-        .expect_err("two of the three columns are blank");
-
-        assert_eq!(
-            refusal,
-            TradeRepublicError::PartialConversion {
-                absent: vec![ORIGINAL_CURRENCY.to_owned(), FX_RATE.to_owned()],
-            }
-        );
-    }
-
-    /// The refusal names the *blank* columns, so a row truncated after two of the three reports
-    /// the one it lacks and not the two it carries [IMP-TR-006].
-    #[test]
-    fn a_conversion_missing_only_the_rate_names_that_one_column() {
-        let refusal = Booked::read(&row(&[
-            (CATEGORY, "CASH"),
-            ("type", "DIVIDEND"),
-            (AMOUNT, "0.032946"),
-            (CURRENCY, "EUR"),
-            (ORIGINAL_AMOUNT, "0.04"),
-            (ORIGINAL_CURRENCY, "USD"),
-        ]))
-        .expect_err("the rate is blank");
-
-        assert_eq!(
-            refusal,
-            TradeRepublicError::PartialConversion {
-                absent: vec![FX_RATE.to_owned()],
-            }
-        );
-    }
-
-    /// A row denominated in a foreign currency that states no rate has no EUR side, and is
-    /// reported rather than converted at a rate of 1. No export carries this shape
-    /// [IMP-TR-024].
-    #[test]
-    fn a_foreign_row_without_a_rate_has_no_conversion() {
-        let booked = Booked::read(&row(&[(AMOUNT, "100.00"), (CURRENCY, "USD")]))
-            .expect("the row's money reads");
-
-        assert_eq!(
-            booked.conversion(trade_date()),
-            Err(TradeRepublicError::UnderivableMoney { reason: NO_RATE })
         );
     }
 

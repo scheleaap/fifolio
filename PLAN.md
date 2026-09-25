@@ -711,12 +711,17 @@ That commit also carried revision 33's own PLAN.md edits, which is why the plan 
 showed this item as `todo`; the record is corrected here rather than by rewriting that commit.
 
 ## FIF-084 Saxo: corporate action row identity
-Status: todo
+Status: done
 Requirements: IMP-SAXO-008
 Depends on: FIF-020, FIF-083
 Acceptance: when identity falls through to `Corporate action-Id`, that id plus `Acties` plus `Boekingsbedrag` plus **the row's ordinal within its `Corporate action-Id` group in normalized, oldest-first order** (FIF-083), not the file's newest-first order form the identity, so the three TransAlta rows stay distinct across re-imports, and a row a later export adds to a group takes the next ordinal without shifting the existing rows' identities. If two rows still share an identity the file is rejected (IMP-SAXO-024, already built).
 Notes: Split out of FIF-020 in revision 3. Without the ordinal, two rows sharing a label and an amount deduplicate as a re-import and money vanishes from the event; DEC-033 records why the ordinal and not a hash of the row.
 Unblocked in revision 47: DEC-082 corrects DEC-033's "in file order". In the file's newest-first order, a row added by a later export of the same year shifts every existing ordinal, which breaks SRV-015.
+Revision 63: **done**, committed as `18cf73a`. `crates/fifolio-core/src/import/saxo/identity.rs`
+composes a `Corporate action-Id` fallback identity from the id, `Acties`, `Boekingsbedrag` and the
+row's ordinal within its group counted oldest first (DEC-082); a colliding identity is still refused
+[IMP-SAXO-024]. Integration cases in `fifolio-core/tests/saxo_export.rs`. `cargo test --workspace`:
+**618 passed, 0 failed**.
 
 ## FIF-021 Saxo: money derivation
 Status: done
@@ -1321,6 +1326,18 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 63.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-084**, committed as `18cf73a`; suite 618 passed, 0 failed.
+* No item added, split, retired, blocked or unblocked. 101 items: **44 `done`, 43 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-028.** Its dependencies are `done` and none of its requirements is blocked.
+  It is the first ready `todo` in document order. Also ready: FIF-069, FIF-034, FIF-041, FIF-042.
 
 **Revision 62.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
 `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
@@ -2362,7 +2379,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 62** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 63** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2428,6 +2445,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 63: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `18cf73a`. One hundred and one items: 44 `done`, 43 `todo`, 14 `blocked`.
 
 Revision 62: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `f9a718c`. One hundred and one items: 43 `done`, 44 `todo`, 14 `blocked`.
