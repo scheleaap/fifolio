@@ -1086,12 +1086,16 @@ Acceptance: the importer derives **only** the `transfer_out`, from the negative-
 Notes: Split out of FIF-029 in revision 2 and blocked then; both ids left the undecided list in revision 3. Still gated on FIF-063. DEC-032 records that tax-neutral treatment is inference from the absence of any monetary figure, to be settled against the user's TR tax report; that reasoning belongs in the code comment. IMP-TR-019 was restated in revision 7 (DEC-055): the ratio is an integer pair, the same representation a `split` carries in FIF-061, so the two must agree.
 
 ## FIF-069 Trade Republic: security type mapping
-Status: todo
+Status: done
 Requirements: IMP-TR-020, IMP-TR-021
 Depends on: FIF-027, FIF-005
 Acceptance: `asset_class` `STOCK` → `stock`, `FUND` → `fund`, anything else rejects the import; ETFs arrive as `FUND` and are recorded as funds, flagged auto-created for review; no `asset_class` value maps to `bond`, so a Trade Republic bond is rejected by that catch-all, naming the ISIN; nothing creates it pending review.
 Notes: New in this revision.
 Unblocked in revision 47: DEC-077 closed OQ-006. It corrects DEC-031, which had a Trade Republic bond created pending review. IMP-TR-021 states why `bond` must never be mapped, and IMP-TR-020's catch-all enforces it. The reason belongs in a code comment.
+Revision 66: **done**, committed as `ce6e6d4`. `import/trade_republic/security.rs` maps `STOCK` to
+`stock` and `FUND` to `fund`; any other `asset_class`, blank included, refuses the file naming the
+ISIN, so no value reaches `bond` [IMP-TR-020, IMP-TR-021]. `cargo test --workspace`: **640 passed,
+0 failed**.
 
 ## FIF-030 Income tax overview report
 Status: todo
@@ -1134,8 +1138,9 @@ Notes: Named next to build in revision 43. FIF-032 (`8964f18`) left `fifolio-ser
 Status: todo
 Requirements: SRV-007, SRV-008, SRV-009, SRV-010, SRV-011, SRV-057, DOM-126
 Depends on: FIF-033
-Acceptance: CRUDL for accounts and securities; deleting an account or a security referenced by any source record is refused; creating a security with an existing ISIN is a conflict; type and quotation are editable, which is how an auto-created security is corrected; a security carries `auto_created` (provenance, never changed) and `needs_review` as separate fields; only marking the security reviewed clears `needs_review`, and an edit leaves it set.
+Acceptance: CRUDL for accounts and securities; deleting an account, or changing its broker or id, is refused while a source record, an import batch, a manual entry or a transaction references it (SRV-008 as amended by DEC-089); deleting a security referenced by any source record is refused; creating a security with an existing ISIN is a conflict; type and quotation are editable, which is how an auto-created security is corrected; a security carries `auto_created` (provenance, never changed) and `needs_review` as separate fields; only marking the security reviewed clears `needs_review`, and an edit leaves it set.
 Notes: Named next to build in revision 44. Its cases go into the in-process harness FIF-033 left in `crates/fifolio-server/tests/http_surface.rs`, and each refusal maps to a `ProblemType` in `fifolio-server/src/problem.rs`. Revision 54: this item's partial, **unreviewed** code was committed at the user's instruction so the tree is clean; build on it and review it against the specification as if uncommitted.
+Revision 67: SRV-008 was **widened** in `e98430a` (DEC-089): the account guard now also covers batches, manual entries and transactions, and refuses a change of broker or id, not only deletion. Acceptance restated. The working tree holds further uncommitted FIF-034 work (`0005_needs_review.sql`, `entities.rs`, `securities.rs`, tests); it is unreviewed, so review it against the specification like the rest.
 
 ## FIF-035 Import endpoint
 Status: todo
@@ -1340,6 +1345,30 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 67.** `design/` **changed** in `e98430a` (DEC-089): SRV-008 now refuses deleting an
+account, or changing its broker or id, while a source record, batch, manual entry or transaction
+references it. No new id. `open-questions.md` unchanged: the same **18** ids, and the 14 items
+carrying one are exactly the 14 `blocked` (checked by script).
+
+* **Amended: FIF-034** (`todo`), which carries SRV-008; acceptance restated. No `done` item carries
+  SRV-008, so no completed work is invalidated.
+* No item added, split, retired, blocked or unblocked. 101 items: **47 `done`, 40 `todo`, 14
+  `blocked`**. Coverage: **352** live ids, each on exactly one item.
+* **Next to build: FIF-034.** Also ready: FIF-041, FIF-042.
+
+**Revision 66.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-069**, committed as `ce6e6d4`; suite 640 passed, 0 failed.
+* No item added, split, retired, blocked or unblocked. 101 items: **47 `done`, 40 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-034.** Its dependency FIF-033 is `done`, and none of its requirements is
+  blocked. Every `todo` before it waits on a `blocked` item, directly or transitively (FIF-058,
+  FIF-061, FIF-063 via FIF-015, FIF-023, FIF-076). Also ready: FIF-041, FIF-042.
 
 **Revision 65.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
 `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
@@ -2420,7 +2449,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 65** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 67** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2486,6 +2515,12 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 67: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `e98430a`. One hundred and one items: 47 `done`, 40 `todo`, 14 `blocked`.
+
+Revision 66: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `ce6e6d4`. One hundred and one items: 47 `done`, 40 `todo`, 14 `blocked`.
 
 Revision 65: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `365fefd`. One hundred and one items: 46 `done`, 41 `todo`, 14 `blocked`.

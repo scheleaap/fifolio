@@ -20,6 +20,7 @@ use fifolio_core::entities::{
     SourceFormat, SourceRecord,
 };
 use fifolio_core::identity::{IdentitySource, identify};
+use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
 use fifolio_core::storage::Database;
 use fifolio_server::problem::{ABOUT_BLANK, CONTENT_TYPE};
 use fifolio_test_support::TempDb;
@@ -325,9 +326,60 @@ async fn deleting_an_account_a_source_record_references_is_refused() {
     assert_eq!(harness.request(Method::GET, SAXO).await.body, saxo());
 }
 
-/// Securities are created, read, listed, edited and deleted; a user-created security is not
-/// flagged as auto-created, and a lowercase ISIN in the path names the same security
-/// [SRV-007, DOM-006, TST-005].
+/// A manual entry alone holds an account against deletion and a change of key, as a record
+/// does; writing the account back under its own key is no change and succeeds [SRV-008,
+/// DEC-089, TST-005].
+#[tokio::test]
+async fn an_account_a_manual_entry_names_keeps_its_key() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    let account = Account::new("Saxo", "69900/1000000");
+    harness
+        .database
+        .manual_entries()
+        .insert(&ManualEntry::new(
+            account.clone(),
+            Isin::new("NL0000009538"),
+            Supplied::Election(Election::Cash),
+            [identify(&account, &IdentitySource::BrokerReference("r1"))],
+        ))
+        .await
+        .expect("insert the entry");
+
+    let refused = harness.request(Method::DELETE, SAXO).await;
+    let detail = refused.assert_problem(
+        StatusCode::CONFLICT,
+        "urn:fifolio:problem:account-referenced",
+    );
+    assert!(
+        detail.is_some_and(|detail| detail.contains("1 manual entries")),
+        "{}",
+        refused.body
+    );
+    harness
+        .json(
+            Method::PUT,
+            SAXO,
+            &json!({"broker": "IBKR", "id": "69900/1000000"}),
+        )
+        .await
+        .assert_problem(
+            StatusCode::CONFLICT,
+            "urn:fifolio:problem:account-referenced",
+        );
+
+    let unchanged = harness.json(Method::PUT, SAXO, &saxo()).await;
+    assert_eq!(unchanged.status, StatusCode::OK, "{}", unchanged.body);
+    assert_eq!(unchanged.body, saxo());
+    assert_eq!(
+        harness.request(Method::GET, "/accounts").await.body,
+        json!([saxo()])
+    );
+}
+
+/// Securities are created, read, listed, edited and deleted; a user-created security is
+/// flagged neither as auto-created nor as needing review, and a lowercase ISIN in the path
+/// names the same security [SRV-007, DOM-006, DOM-126, TST-005].
 #[tokio::test]
 async fn securities_have_create_read_update_delete_and_list() {
     let harness = Harness::new().await;
@@ -336,6 +388,7 @@ async fn securities_have_create_read_update_delete_and_list() {
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     let mut stored = philips();
     stored["auto_created"] = json!(false);
+    stored["needs_review"] = json!(false);
     assert_eq!(created.body, stored);
 
     let read = harness
@@ -457,9 +510,94 @@ async fn an_auto_created_security_is_corrected_through_type_and_quotation() {
             "security_type": "bond",
             "quotation": "percent_of_par",
             "auto_created": true,
+            "needs_review": true,
         })
     );
     assert_eq!(harness.request(Method::GET, uri).await.body, requoted.body);
+}
+
+/// An imported security needs review; an edit leaves it needing review even when the body
+/// says otherwise, and marking it reviewed clears that and leaves auto-created and everything
+/// else as it was, however often it is asked. Marking an absent security is a 404, and marking
+/// a user-entered one changes nothing [SRV-057, DOM-126, DOM-006, TST-005].
+#[tokio::test]
+async fn only_marking_a_security_reviewed_clears_needs_review() {
+    let harness = Harness::new().await;
+    harness
+        .database
+        .securities()
+        .insert(&Security::auto_created(
+            Isin::new("IE00B4L5Y983"),
+            "iShares Core MSCI World",
+            SecurityType::Fund,
+            Quotation::PerUnit,
+        ))
+        .await
+        .expect("insert");
+    let uri = "/securities/IE00B4L5Y983";
+    assert_eq!(
+        harness.request(Method::GET, uri).await.body["needs_review"],
+        true
+    );
+
+    let edited = harness
+        .json(
+            Method::PUT,
+            uri,
+            &json!({
+                "name": "iShares Core MSCI World",
+                "security_type": "etf",
+                "quotation": "per_unit",
+                "needs_review": false,
+            }),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.body);
+    assert_eq!(edited.body["needs_review"], true);
+
+    let mut expected = edited.body.clone();
+    expected["needs_review"] = json!(false);
+    for _ in 0..2 {
+        let reviewed = harness
+            .request(Method::POST, "/securities/ie00b4l5y983/reviewed")
+            .await;
+        assert_eq!(reviewed.status, StatusCode::OK, "{}", reviewed.body);
+        assert_eq!(reviewed.body, expected);
+    }
+    assert_eq!(harness.request(Method::GET, uri).await.body, expected);
+    assert_eq!(expected["auto_created"], true);
+    assert_eq!(expected["security_type"], "etf");
+
+    let absent = harness
+        .request(Method::POST, "/securities/NL0000009538/reviewed")
+        .await;
+    let detail = absent.assert_problem(
+        StatusCode::NOT_FOUND,
+        "urn:fifolio:problem:unknown-security",
+    );
+    assert!(detail.is_some_and(|detail| detail.contains("NL0000009538")));
+
+    let by_user = harness.json(Method::POST, "/securities", &philips()).await;
+    assert_eq!(by_user.status, StatusCode::CREATED, "{}", by_user.body);
+    let reviewed = harness
+        .request(Method::POST, "/securities/NL0000009538/reviewed")
+        .await;
+    assert_eq!(reviewed.status, StatusCode::OK, "{}", reviewed.body);
+    assert_eq!(reviewed.body, by_user.body);
+    assert_eq!(
+        (
+            &reviewed.body["auto_created"],
+            &reviewed.body["needs_review"]
+        ),
+        (&json!(false), &json!(false))
+    );
+    assert_eq!(
+        harness
+            .request(Method::GET, "/securities/NL0000009538")
+            .await
+            .body,
+        by_user.body
+    );
 }
 
 /// Editing or deleting a security that is not stored is a 404, and a type outside the fixed set
@@ -547,6 +685,7 @@ async fn the_endpoints_are_documented() {
         "/accounts/{broker}/{id}",
         "/securities",
         "/securities/{isin}",
+        "/securities/{isin}/reviewed",
     ] {
         assert!(spec["paths"].get(path).is_some(), "{path} is undocumented");
     }

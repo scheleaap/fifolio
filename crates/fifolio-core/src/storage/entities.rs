@@ -1,7 +1,7 @@
 //! Repositories for the reference entities: accounts, securities, source records and import
 //! batches.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sqlx::sqlite::{SqliteConnection, SqlitePool, SqliteRow};
 use sqlx::{Row, query};
@@ -63,13 +63,23 @@ impl<'a> AccountRepository<'a> {
             .collect())
     }
 
-    /// Gives `from` the key `to`, refused while anything refers to it.
+    /// Gives `from` the key `to`, refused while anything refers to it [SRV-008].
     ///
     /// An account is nothing but its key, so this is the only edit it has. It is refused on the
     /// same grounds as a deletion because a stored record's identity is scoped to the account
     /// it was imported into [DOM-024]: renaming under it would make the next import of the
-    /// same file miss every record it already holds.
+    /// same file miss every record it already holds [DEC-089].
+    ///
+    /// `to` equal to `from` changes neither broker nor id, which is what SRV-008 refuses, so a
+    /// client writing an account back unchanged is not refused over its references.
     pub async fn rename(&self, from: &Account, to: &Account) -> Result<(), StorageError> {
+        if from == to {
+            return self
+                .find(from.broker(), from.id())
+                .await?
+                .map(|_| ())
+                .ok_or_else(|| unknown_account(from));
+        }
         let mut tx = self.pool.begin().await?;
         refuse_if_account_referenced(&mut tx, from).await?;
         query("update account set broker = ?, id = ? where broker = ? and id = ?")
@@ -84,10 +94,11 @@ impl<'a> AccountRepository<'a> {
         Ok(())
     }
 
-    /// Deletes an account, refused while any source record was imported into it [SRV-008].
+    /// Deletes an account, refused while a source record, a batch, a manual entry or a
+    /// transaction references it [SRV-008].
     ///
-    /// Refused too while a batch, a manual entry or a transaction names it: those carry a
-    /// foreign key to the account, and the alternative to refusing is deleting them with it.
+    /// Those carry a foreign key to the account, and the alternative to refusing is deleting or
+    /// orphaning them with it [DEC-089].
     pub async fn delete(&self, account: &Account) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
         refuse_if_account_referenced(&mut tx, account).await?;
@@ -205,14 +216,16 @@ impl<'a> SecurityRepository<'a> {
     /// reports as [`StorageError::DuplicateIsin`] rather than as a driver error [DOM-071].
     pub async fn insert(&self, security: &Security) -> Result<(), StorageError> {
         query(
-            "insert into security (isin, name, security_type, quotation, auto_created)
-             values (?, ?, ?, ?, ?)",
+            "insert into security (isin, name, security_type, quotation, auto_created,
+                                   needs_review)
+             values (?, ?, ?, ?, ?, ?)",
         )
         .bind(security.isin().as_str())
         .bind(security.name())
         .bind(security_type_code(security.security_type()))
         .bind(quotation_code(security.quotation()))
         .bind(security.is_auto_created())
+        .bind(security.needs_review())
         .execute(self.pool)
         .await
         .map_err(|error| match &error {
@@ -228,7 +241,7 @@ impl<'a> SecurityRepository<'a> {
 
     pub async fn find(&self, isin: &Isin) -> Result<Option<Security>, StorageError> {
         query(
-            "select isin, name, security_type, quotation, auto_created
+            "select isin, name, security_type, quotation, auto_created, needs_review
              from security where isin = ?",
         )
         .bind(isin.as_str())
@@ -242,7 +255,7 @@ impl<'a> SecurityRepository<'a> {
     /// Every security, in ISIN order.
     pub async fn list(&self) -> Result<Vec<Security>, StorageError> {
         query(
-            "select isin, name, security_type, quotation, auto_created
+            "select isin, name, security_type, quotation, auto_created, needs_review
              from security order by isin",
         )
         .fetch_all(self.pool)
@@ -257,7 +270,7 @@ impl<'a> SecurityRepository<'a> {
     /// Type and quotation are editable so that an auto-created record can be corrected
     /// [SRV-011], and each moves without the other [DOM-037]. The auto-created flag is left
     /// alone: it records where the security came from, not whether anyone has looked at it
-    /// [DOM-006].
+    /// [DOM-006]. So is needs review, which only [`Self::mark_reviewed`] clears [DOM-126].
     pub async fn update(
         &self,
         isin: &Isin,
@@ -267,11 +280,28 @@ impl<'a> SecurityRepository<'a> {
     ) -> Result<Security, StorageError> {
         query(
             "update security set name = ?, security_type = ?, quotation = ? where isin = ?
-             returning isin, name, security_type, quotation, auto_created",
+             returning isin, name, security_type, quotation, auto_created,
+                       needs_review",
         )
         .bind(name)
         .bind(security_type_code(security_type))
         .bind(quotation_code(quotation))
+        .bind(isin.as_str())
+        .fetch_optional(self.pool)
+        .await?
+        .as_ref()
+        .map(security_from_row)
+        .transpose()?
+        .ok_or_else(|| unknown_security(isin))
+    }
+
+    /// Clears needs review and returns the security as stored [SRV-057]. Marking a security
+    /// that does not need review changes nothing, so asking twice is not an error.
+    pub async fn mark_reviewed(&self, isin: &Isin) -> Result<Security, StorageError> {
+        query(
+            "update security set needs_review = 0 where isin = ?
+             returning isin, name, security_type, quotation, auto_created, needs_review",
+        )
         .bind(isin.as_str())
         .fetch_optional(self.pool)
         .await?
@@ -291,14 +321,9 @@ impl<'a> SecurityRepository<'a> {
     /// does, and it needs no list of column names that a new format would have to extend.
     pub async fn delete(&self, isin: &Isin) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
-        // Values are normalized as `Isin::new` normalizes, so a lowercase or padded spelling
-        // in a file still counts as naming the security.
         let row = query(
             "select
                  (select count(*) from security where isin = ?1) as stored,
-                 (select count(*) from source_record r
-                   where exists (select 1 from json_each(r.parsed)
-                                  where upper(trim(json_each.value)) = ?1)) as source_records,
                  (select count(*) from transaction_placement
                    where security_isin = ?1) as transactions",
         )
@@ -309,8 +334,29 @@ impl<'a> SecurityRepository<'a> {
         if row.get::<i64, _>("stored") == 0 {
             return Err(unknown_security(isin));
         }
+
+        // A value names the security when `Isin::new` makes it the ISIN, since that is how the
+        // importer created the security from it. The comparison is done here, not in SQL,
+        // because SQLite's `trim` strips only ASCII spaces where `str::trim` strips every
+        // Unicode space: a non-breaking space [DOM-120] or a tab would otherwise hide a record.
+        // The `instr` filter only narrows the candidates: normalizing removes characters and
+        // uppercases ASCII as SQLite's `upper` does, so a value it turns into the ISIN contains
+        // the ISIN once uppercased.
+        let source_records = query(
+            "select distinct r.identity, j.value from source_record r, json_each(r.parsed) j
+              where j.type = 'text' and instr(upper(j.value), ?1) > 0",
+        )
+        .bind(isin.as_str())
+        .fetch_all(&mut *tx)
+        .await?
+        .iter()
+        .filter(|row| Isin::new(row.get::<String, _>("value")) == *isin)
+        .map(|row| row.get::<String, _>("identity"))
+        .collect::<BTreeSet<_>>()
+        .len();
+
         match (
-            reference_count(&row, "source_records")?,
+            u64::try_from(source_records).expect("a record count fits in u64"),
             reference_count(&row, "transactions")?,
         ) {
             (0, 0) => {}
@@ -338,11 +384,15 @@ fn security_from_row(row: &SqliteRow) -> Result<Security, StorageError> {
     let security_type = security_type(&row.get::<String, _>("security_type"))?;
     let quotation = quotation(&row.get::<String, _>("quotation"))?;
 
-    Ok(if row.get::<bool, _>("auto_created") {
-        Security::auto_created(isin, name, security_type, quotation)
-    } else {
-        Security::new(isin, name, security_type, quotation)
-    })
+    // Needs review is stored rather than implied by provenance [DOM-126].
+    Ok(Security::stored(
+        isin,
+        name,
+        security_type,
+        quotation,
+        row.get::<bool, _>("auto_created"),
+        row.get::<bool, _>("needs_review"),
+    ))
 }
 
 fn unknown_security(isin: &Isin) -> StorageError {

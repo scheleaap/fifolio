@@ -95,6 +95,9 @@ pub struct SecurityBody {
     /// Whether an import created the security rather than the user; kept through edits
     /// [DOM-006].
     pub auto_created: bool,
+    /// Whether the user has yet to mark the security reviewed. Set on import, cleared only by
+    /// `POST /securities/{isin}/reviewed`, and left alone by an edit [DOM-126, SRV-057].
+    pub needs_review: bool,
 }
 
 impl From<&Security> for SecurityBody {
@@ -105,6 +108,7 @@ impl From<&Security> for SecurityBody {
             security_type: security.security_type().into(),
             quotation: security.quotation().into(),
             auto_created: security.is_auto_created(),
+            needs_review: security.needs_review(),
         }
     }
 }
@@ -119,7 +123,9 @@ pub struct NewSecurity {
     pub quotation: QuotationBody,
 }
 
-/// Everything about a security but its ISIN, which is its key and not editable.
+/// Everything about a security but its ISIN, which is its key and not editable, and its two
+/// flags: provenance never changes [DOM-006], and needs review is cleared only by marking the
+/// security reviewed [DOM-126].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SecurityEdit {
     pub name: String,
@@ -131,6 +137,7 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_securities, create_security))
         .routes(routes!(get_security, update_security, delete_security))
+        .routes(routes!(mark_security_reviewed))
 }
 
 /// Every security, ordered by ISIN [SRV-007].
@@ -231,6 +238,32 @@ async fn update_security(
             body.security_type.into(),
             body.quotation.into(),
         )
+        .await?;
+    Ok(Json(SecurityBody::from(&security)))
+}
+
+/// Marks a security reviewed, clearing needs review and nothing else [SRV-057, DOM-126].
+///
+/// An action rather than a field of the edit, because an edit must leave needs review set.
+/// Marking a security that is already reviewed succeeds and changes nothing.
+#[utoipa::path(
+    post,
+    path = "/securities/{isin}/reviewed",
+    tag = "securities",
+    params(("isin" = String, Path, description = "The ISIN")),
+    responses(
+        (status = 200, description = "The security, as stored", body = SecurityBody),
+        (status = 404, description = "No such security", body = Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+async fn mark_security_reviewed(
+    State(database): State<Database>,
+    Path(isin): Path<String>,
+) -> Result<Json<SecurityBody>, Problem> {
+    let security = database
+        .securities()
+        .mark_reviewed(&Isin::new(isin))
         .await?;
     Ok(Json(SecurityBody::from(&security)))
 }

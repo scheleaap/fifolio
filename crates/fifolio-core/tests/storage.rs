@@ -1517,6 +1517,102 @@ async fn an_account_is_renamed_only_while_unreferenced() {
     );
 }
 
+/// A batch that owns no record, or a manual entry, holds an account against a change of key as
+/// against a deletion: SRV-008 names each as a ground of its own [SRV-008], [DEC-089],
+/// [TST-004].
+#[tokio::test]
+async fn a_batch_or_an_entry_alone_holds_an_account_against_rename_and_delete() {
+    let (_db, database) = open().await;
+    database
+        .accounts()
+        .insert(&account())
+        .await
+        .expect("insert");
+    database
+        .import_batches()
+        .insert(&batch(SourceFormat::SaxoNlXlsx))
+        .await
+        .expect("a batch owning no record");
+    let renamed = Account::new("Saxo", "renamed");
+
+    for refused in [
+        database.accounts().delete(&account()).await,
+        database.accounts().rename(&account(), &renamed).await,
+    ] {
+        assert!(
+            matches!(
+                refused,
+                Err(StorageError::AccountReferenced {
+                    source_records: 0,
+                    batches: 1,
+                    manual_entries: 0,
+                    transactions: 0,
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    let (_db, database) = open().await;
+    database
+        .accounts()
+        .insert(&account())
+        .await
+        .expect("insert");
+    database
+        .manual_entries()
+        .insert(&ManualEntry::new(
+            account(),
+            isin(),
+            Supplied::Election(Election::Cash),
+            [cite("r1")],
+        ))
+        .await
+        .expect("insert the entry");
+    let refused = database.accounts().rename(&account(), &renamed).await;
+    assert!(
+        matches!(
+            refused,
+            Err(StorageError::AccountReferenced {
+                manual_entries: 1,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        database.accounts().list().await.expect("list"),
+        vec![account()]
+    );
+}
+
+/// Writing a referenced account back under the key it already has changes neither broker nor
+/// id, so it is not the change SRV-008 refuses; an absent account is still a 404's error
+/// [SRV-008], [DEC-089], [TST-004].
+#[tokio::test]
+async fn a_referenced_account_renamed_to_its_own_key_is_unchanged() {
+    let (_db, database) = open().await;
+    let (_placement, batch) = place(&database).await;
+    store_record(&database, batch, "r1", &[]).await;
+
+    database
+        .accounts()
+        .rename(&account(), &account())
+        .await
+        .expect("the same key is not a change");
+    assert_eq!(
+        database.accounts().list().await.expect("list"),
+        vec![account()]
+    );
+
+    let absent = Account::new("Saxo", "absent");
+    assert!(matches!(
+        database.accounts().rename(&absent, &absent).await,
+        Err(StorageError::UnknownAccount { .. })
+    ));
+}
+
 /// Name, type and quotation are replaced, each independently of the others, and the
 /// auto-created flag survives the edit [SRV-011], [DOM-006], [DOM-037], [TST-004].
 #[tokio::test]
@@ -1572,6 +1668,169 @@ async fn a_security_is_updated_and_keeps_its_provenance() {
             .await,
         Err(StorageError::UnknownSecurity { isin }) if isin == "XS0000000001"
     ));
+}
+
+/// An imported security is stored needing review; an edit leaves it so, and marking it
+/// reviewed clears it and nothing else, however often it is asked [DOM-126], [SRV-057],
+/// [DOM-006], [TST-004].
+#[tokio::test]
+async fn only_marking_a_security_reviewed_clears_needs_review() {
+    let (_db, database) = open().await;
+    database
+        .securities()
+        .insert(&Security::auto_created(
+            isin(),
+            "NL 7.5% 2023",
+            SecurityType::Other,
+            Quotation::PerUnit,
+        ))
+        .await
+        .expect("insert");
+
+    let edited = database
+        .securities()
+        .update(
+            &isin(),
+            "NL 7.5% 2023",
+            SecurityType::Bond,
+            Quotation::PercentOfPar,
+        )
+        .await
+        .expect("update");
+    assert!(edited.needs_review());
+
+    let expected = Security::auto_created(
+        isin(),
+        "NL 7.5% 2023",
+        SecurityType::Bond,
+        Quotation::PercentOfPar,
+    )
+    .reviewed();
+    for _ in 0..2 {
+        assert_eq!(
+            database
+                .securities()
+                .mark_reviewed(&isin())
+                .await
+                .expect("mark reviewed"),
+            expected
+        );
+    }
+    assert_eq!(
+        database.securities().list().await.expect("list"),
+        vec![expected.clone()]
+    );
+
+    let edited_again = database
+        .securities()
+        .update(
+            &isin(),
+            "NL 7.5% 2023",
+            SecurityType::Bond,
+            Quotation::PerUnit,
+        )
+        .await
+        .expect("update");
+    assert!(
+        !edited_again.needs_review(),
+        "an edit does not set it either"
+    );
+    assert!(matches!(
+        database
+            .securities()
+            .mark_reviewed(&Isin::new("XS0000000001"))
+            .await,
+        Err(StorageError::UnknownSecurity { isin }) if isin == "XS0000000001"
+    ));
+}
+
+/// Needs review is independent of provenance, so a user-entered security carrying it reads
+/// back as it is stored, and marking it reviewed clears it [DOM-126], [SRV-057], [TST-004].
+#[tokio::test]
+async fn a_user_entered_security_needing_review_is_read_as_stored() {
+    let (db, database) = open().await;
+    let by_user = Security::new(isin(), "Philips", SecurityType::Stock, Quotation::PerUnit);
+    database
+        .securities()
+        .insert(&by_user)
+        .await
+        .expect("insert");
+
+    query("update security set needs_review = 1")
+        .execute(&raw(&db).await)
+        .await
+        .expect("edit the row by hand");
+
+    let found = database
+        .securities()
+        .find(&isin())
+        .await
+        .expect("find")
+        .expect("the security is stored");
+    assert!(found.needs_review());
+    assert!(!found.is_auto_created());
+    assert_eq!(found.reviewed(), by_user);
+    assert_eq!(
+        database
+            .securities()
+            .mark_reviewed(&isin())
+            .await
+            .expect("mark reviewed"),
+        by_user
+    );
+}
+
+/// A security auto-created before needs review was stored had never been reviewed, so the
+/// migration leaves it needing review, and a user-entered one not [DOM-126], [TST-004].
+#[tokio::test]
+async fn the_migration_marks_earlier_auto_created_securities_as_needing_review() {
+    let db = TempDb::new();
+    let earlier = tempfile::tempdir().expect("a directory for the earlier migrations");
+    let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for name in [
+        "0001_initial.sql",
+        "0002_fx_rate.sql",
+        "0003_invariants.sql",
+        "0004_no_failed_count.sql",
+    ] {
+        std::fs::copy(migrations.join(name), earlier.path().join(name)).expect("copy a migration");
+    }
+    let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.path().display()))
+        .await
+        .expect("create the database");
+    sqlx::migrate::Migrator::new(earlier.path())
+        .await
+        .expect("read the earlier migrations")
+        .run(&pool)
+        .await
+        .expect("migrate to the schema before needs review");
+    query(
+        "insert into security (isin, name, security_type, quotation, auto_created)
+         values ('NL0000009538', 'Philips', 'stock', 'per_unit', 1),
+                ('US0378331005', 'Apple', 'stock', 'per_unit', 0)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert securities under the earlier schema");
+    pool.close().await;
+
+    let database = Database::open(db.path()).await.expect("migrate to current");
+
+    let needs_review: Vec<_> = database
+        .securities()
+        .list()
+        .await
+        .expect("list")
+        .iter()
+        .map(|security| (security.isin().as_str().to_owned(), security.needs_review()))
+        .collect();
+    assert_eq!(
+        needs_review,
+        vec![
+            ("NL0000009538".to_owned(), true),
+            ("US0378331005".to_owned(), false),
+        ]
+    );
 }
 
 /// Securities list in ISIN order, and one nothing names is deleted [SRV-007], [TST-004].
@@ -1670,6 +1929,37 @@ async fn a_security_a_source_record_names_is_not_deleted() {
         .delete(&unnamed)
         .await
         .expect("a security no record names is deleted");
+}
+
+/// A value padded with whitespace SQLite's `trim` leaves alone — a non-breaking space, as Saxo
+/// files carry [DOM-120], or a tab — still names the security, because the importer's
+/// `Isin::new` strips it and so created the security under the bare ISIN [SRV-009], [TST-004].
+#[tokio::test]
+async fn a_security_named_with_unicode_padding_is_not_deleted() {
+    let (_db, database) = open().await;
+    let (_placement, batch) = place(&database).await;
+    store_record(
+        &database,
+        batch,
+        "nbsp",
+        &[("Instrument ISIN", "NL0000009538\u{a0}")],
+    )
+    .await;
+    store_record(&database, batch, "tab", &[("symbol", "\tnl0000009538")]).await;
+
+    let refused = database.securities().delete(&isin()).await;
+
+    assert!(
+        matches!(
+            refused,
+            Err(StorageError::SecurityReferenced {
+                source_records: 2,
+                transactions: 0,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
 }
 
 /// A transaction placed on a security holds it even with no record naming it, as an emitted

@@ -109,6 +109,7 @@ pub struct Security {
     security_type: SecurityType,
     quotation: Quotation,
     auto_created: bool,
+    needs_review: bool,
 }
 
 impl Security {
@@ -126,11 +127,12 @@ impl Security {
             security_type,
             quotation,
             auto_created: false,
+            needs_review: false,
         }
     }
 
-    /// A security an importer created from a file, flagged so the user can review and correct
-    /// it [DOM-006].
+    /// A security an importer created from a file, flagged as auto-created [DOM-006] and as
+    /// needing review, so the user can check and correct it [DOM-126].
     ///
     /// The defaulting of `quotation` from the broker's instrument type belongs to FIF-055; this
     /// constructor takes whatever the caller decided.
@@ -143,6 +145,28 @@ impl Security {
     ) -> Self {
         Self {
             auto_created: true,
+            needs_review: true,
+            ..Self::new(isin, name, security_type, quotation)
+        }
+    }
+
+    /// A security as storage holds it, with both flags as stored. Needs review is independent
+    /// of provenance [DOM-126], so every combination is a security: only imports set it
+    /// [SRV-014], but nothing in the specification makes a user-entered one needing review
+    /// invalid. Crate-private so that, outside storage, [`Self::reviewed`] stays the only way
+    /// the flag is cleared.
+    #[must_use]
+    pub(crate) fn stored(
+        isin: Isin,
+        name: impl Into<String>,
+        security_type: SecurityType,
+        quotation: Quotation,
+        auto_created: bool,
+        needs_review: bool,
+    ) -> Self {
+        Self {
+            auto_created,
+            needs_review,
             ..Self::new(isin, name, security_type, quotation)
         }
     }
@@ -171,6 +195,25 @@ impl Security {
     #[must_use]
     pub fn is_auto_created(&self) -> bool {
         self.auto_created
+    }
+
+    /// Whether the user has yet to mark this security reviewed [DOM-126].
+    #[must_use]
+    pub fn needs_review(&self) -> bool {
+        self.needs_review
+    }
+
+    /// The same security marked reviewed by the user [SRV-057].
+    ///
+    /// The only way `needs_review` is cleared: [`Self::with_quotation`] and
+    /// [`Self::with_security_type`] leave it as it is, because correcting a security is not the
+    /// user saying it is right [DOM-126]. Provenance is untouched [DOM-006].
+    #[must_use]
+    pub fn reviewed(self) -> Self {
+        Self {
+            needs_review: false,
+            ..self
+        }
     }
 
     /// The same security with a different quotation [DOM-037].
@@ -505,6 +548,29 @@ mod tests {
                 .with_quotation(Quotation::PercentOfPar);
 
         assert!(security.is_auto_created());
+    }
+
+    /// An imported security needs review and a user-entered one does not; correcting type and
+    /// quotation leaves it needing review, and only marking it reviewed clears it, provenance
+    /// untouched [DOM-126], [DOM-006].
+    #[test]
+    fn only_marking_reviewed_clears_needs_review() {
+        let by_user = Security::new(isin(), "Philips", SecurityType::Stock, Quotation::PerUnit);
+        assert!(!by_user.needs_review());
+
+        let corrected =
+            Security::auto_created(isin(), "A bond", SecurityType::Other, Quotation::PerUnit)
+                .with_security_type(SecurityType::Bond)
+                .with_quotation(Quotation::PercentOfPar);
+        assert!(corrected.needs_review());
+
+        let reviewed = corrected.reviewed();
+        assert!(!reviewed.needs_review());
+        assert!(reviewed.is_auto_created());
+        assert_eq!(
+            (reviewed.security_type(), reviewed.quotation()),
+            (SecurityType::Bond, Quotation::PercentOfPar)
+        );
     }
 
     /// A source record keeps the row verbatim beside its parsed fields [DOM-007].

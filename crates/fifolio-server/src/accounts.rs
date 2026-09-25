@@ -113,7 +113,8 @@ async fn get_account(
 /// Gives an account another broker and id, the only edit an account has [SRV-007].
 ///
 /// Refused while anything refers to the account, as a deletion is: every stored record's
-/// identity is scoped to the account it was imported into [DOM-024].
+/// identity is scoped to the account it was imported into [DOM-024], [SRV-008], [DEC-089]. A
+/// body repeating the current key changes nothing and is not refused.
 #[utoipa::path(
     put,
     path = "/accounts/{broker}/{id}",
@@ -144,7 +145,8 @@ async fn rename_account(
     Ok(Json(AccountBody::from(&renamed)))
 }
 
-/// Deletes an account, refused while any source record references it [SRV-008].
+/// Deletes an account, refused while a source record, an import batch, a manual entry or a
+/// transaction references it [SRV-008].
 #[utoipa::path(
     delete,
     path = "/accounts/{broker}/{id}",
