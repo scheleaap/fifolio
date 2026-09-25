@@ -286,14 +286,16 @@ async fn seeding_after_a_top_up_adds_the_older_days_alone() {
 }
 
 /// Once seeded, an import resolves rates from the cache alone [ARC-016], including across the
-/// Easter publication gap the fragment reproduces [DOM-034]. Nothing in the resolution path
+/// Easter publication gap the fragments reproduce [DOM-034]. Nothing in the resolution path
 /// takes a feed, so nothing in it can reach a socket [TST-019].
 #[tokio::test]
 async fn once_seeded_a_resolution_reads_the_cache_and_nothing_else() {
     let (_db, database) = open().await;
-    seed(&database, &RecordedFeed::new())
-        .await
-        .expect("seeding");
+    let feed = RecordedFeed::new();
+    seed(&database, &feed).await.expect("seeding");
+    // The historical fragment ends on the Thursday; the window's Tuesday is the later
+    // publication that proves the Saturday was skipped rather than not yet published [DEC-085].
+    top_up(&database, &feed).await.expect("top up");
 
     let cached = database.rates().snapshot().await.expect("read back");
     database.close().await;

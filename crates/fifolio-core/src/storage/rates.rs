@@ -113,4 +113,8 @@ impl RateTable for CachedRates {
                 date: *date,
             })
     }
+
+    fn newest_publication(&self) -> Option<NaiveDate> {
+        self.rates.keys().map(|(_, date)| *date).max()
+    }
 }

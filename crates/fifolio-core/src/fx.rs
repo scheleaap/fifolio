@@ -29,6 +29,13 @@
 //! [`Conversion::rate_date`] is that publication's own date, which is what makes the
 //! substitution visible [DOM-034].
 //!
+//! A day counts as skipped only once a later publication proves it [DEC-085]. A date after the
+//! newest publication the table holds may still be published — a weekday before its 16:00 CET
+//! release looks the same to the table as a Saturday — so it has no rate yet and fails with
+//! [`RateError::Unavailable`] rather than taking the newest rate as a guess. The rule is
+//! enforced here rather than in each table, so it holds for every [`RateTable`] an import
+//! resolves against. No weekend or holiday calendar is consulted: DEC-085 rejects one.
+//!
 //! It is bounded on both sides [ARC-027]: nothing before the series begins in 1999, and a
 //! substitution more than [`MAX_SUBSTITUTION_DAYS`] days stale is an error rather than a silent
 //! approximation. A rate that is missing outright is an error too, naming the currency and the
@@ -90,6 +97,13 @@ pub trait RateTable {
     /// Returns the rate *of* `date` when one was published, which is the ordinary case
     /// [DOM-032].
     fn latest_on_or_before(&self, currency: &Currency, date: NaiveDate) -> Option<PublishedRate>;
+
+    /// The newest publication day the table holds, across every currency; `None` when empty.
+    ///
+    /// Across currencies because the ECB states them all in one daily document: a later day
+    /// holding any currency proves the ECB published after an earlier one, which is the proof
+    /// DEC-085 asks for before a gap may be substituted.
+    fn newest_publication(&self) -> Option<NaiveDate>;
 }
 
 /// What the source file says about a leg's EUR value, which is what decides the rate source
@@ -177,12 +191,22 @@ fn resolve_ecb(
         });
     }
 
+    let unavailable = || RateError::Unavailable {
+        currency: currency.clone(),
+        date: trade_date,
+    };
+
+    // Nothing after the date proves it was skipped, so it may yet be published [DEC-085].
+    if table
+        .newest_publication()
+        .is_none_or(|newest| trade_date > newest)
+    {
+        return Err(unavailable());
+    }
+
     let published = table
         .latest_on_or_before(currency, trade_date)
-        .ok_or_else(|| RateError::Unavailable {
-            currency: currency.clone(),
-            date: trade_date,
-        })?;
+        .ok_or_else(unavailable)?;
 
     if (trade_date - published.date).num_days() > MAX_SUBSTITUTION_DAYS {
         return Err(RateError::StaleSubstitute {
@@ -272,6 +296,10 @@ mod tests {
                     rate: *rate,
                     date: *date,
                 })
+        }
+
+        fn newest_publication(&self) -> Option<NaiveDate> {
+            self.rates.keys().map(|(_, date)| *date).max()
         }
     }
 
@@ -418,7 +446,12 @@ mod tests {
     #[test]
     fn a_substitution_is_bounded_at_seven_days() {
         let published = day(2024, 3, 28);
-        let table = easter_2024();
+        // A later USD publication proves the CAD dates below were published past, so the
+        // bound is what decides them and not DEC-085's "no rate yet".
+        let table = FakeTable::with(&[
+            ("CAD", published, dec!(1.4645)),
+            ("USD", day(2024, 4, 8), dec!(1.0823)),
+        ]);
         let resolve_cad = |trade_date| {
             resolve(
                 &table,
@@ -440,6 +473,66 @@ mod tests {
                 rate_date: published,
             }),
             "eight days is an approximation, not a publication"
+        );
+    }
+
+    /// Friday 5 April 2024, and optionally the Monday after it. Each value is a real ECB USD
+    /// fixing.
+    fn friday_then(monday: bool) -> FakeTable {
+        let both = [
+            ("USD", day(2024, 4, 5), dec!(1.0841)),
+            ("USD", day(2024, 4, 8), dec!(1.0823)),
+        ];
+        FakeTable::with(&both[..if monday { 2 } else { 1 }])
+    }
+
+    fn resolve_usd(table: &FakeTable, trade_date: NaiveDate) -> Result<Conversion, RateError> {
+        resolve(table, &Currency::new("USD"), trade_date, Stated::NativeOnly)
+    }
+
+    /// A Saturday followed by a published Monday is a proven gap, so it takes Friday's rate
+    /// and stores Friday's date [DOM-034, DEC-085].
+    #[test]
+    fn a_gap_with_a_later_publication_takes_the_preceding_rate() {
+        let conversion = resolve_usd(&friday_then(true), day(2024, 4, 6))
+            .expect("Monday's publication proves Saturday was skipped");
+
+        assert_eq!(conversion.rate(), FxRate::new(dec!(1.0841)));
+        assert_eq!(conversion.rate_date(), day(2024, 4, 5));
+    }
+
+    /// The same Saturday with Friday as the newest publication has no rate yet: nothing
+    /// proves it was skipped, so the Friday rate is not substituted [DOM-034, DEC-085,
+    /// ARC-019].
+    #[test]
+    fn a_date_after_the_newest_publication_is_unavailable() {
+        assert_eq!(
+            resolve_usd(&friday_then(false), day(2024, 4, 6)),
+            Err(RateError::Unavailable {
+                currency: Currency::new("USD"),
+                date: day(2024, 4, 6),
+            })
+        );
+    }
+
+    /// A weekday imported before its own publication is not a gap either: Monday with only
+    /// Friday published is unavailable, even though Friday is within the seven-day bound
+    /// [DEC-085, ARC-019].
+    #[test]
+    fn a_weekday_before_its_own_publication_is_unavailable() {
+        assert_eq!(
+            resolve_usd(&friday_then(false), day(2024, 4, 8)),
+            Err(RateError::Unavailable {
+                currency: Currency::new("USD"),
+                date: day(2024, 4, 8),
+            })
+        );
+        assert_eq!(
+            resolve_usd(&friday_then(true), day(2024, 4, 8))
+                .expect("published")
+                .rate_date(),
+            day(2024, 4, 8),
+            "once published, the day resolves to its own rate"
         );
     }
 
