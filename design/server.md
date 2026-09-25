@@ -37,6 +37,7 @@ CLI:
 * Rows that carry no position effect are recognized and not stored [SRV-016]
 * The response summarizes: derived automatically, pending, recognized as non-position, and securities auto-created [SRV-017]
 * A row that fails to parse rejects the whole import, and the refusal names every failed row, not only the first. A row fails to parse when any value the import reads from it cannot be read: its ordering key, its identity or its classification [SRV-058]
+* An import refused on several grounds, such as trade dates in more than one year and failed rows, reports every ground in one refusal [SRV-059]
 * The summary names every unrecognized row type it met and how many rows carried it, so a new broker type becomes visible on its first appearance [SRV-049]
 * A sell that exceeds the holdings does not block import. It surfaces later, at attribution [SRV-018]
 

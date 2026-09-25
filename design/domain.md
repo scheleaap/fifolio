@@ -76,7 +76,7 @@ Transaction
 
 Import batch
 * Records one import of one file into one account, so that an import can be undone as a unit [DOM-017]
-* Fields: account, source filename, format, timestamp, counts (derived, pending, recognized as non-position, failed)
+* Fields: account, source filename, format, timestamp, counts (derived, pending, recognized as non-position)
 * Relations: has: >= 0 source records
 
 Attribution

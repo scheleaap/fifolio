@@ -609,3 +609,10 @@ so an unreadable trade date could be read as a file-level refusal naming only th
 DEC-074 names every failed row "so that one round of fixes suffices", which a first-row refusal
 defeats. Any row-level value the import cannot read, its ordering key, identity or classification,
 makes the row a failed row, and all of them are named together. [DEC-087, SRV-058]
+
+**DEC-088 — One refusal reports every ground; a batch has no failed count.** A file with trade dates
+in two years and a failed row was refused on the years alone, so the user needed a second round to
+learn of the row, which DEC-074's "one round of fixes" rules out. Every ground the import can
+determine is reported together. And since a failed row refuses the whole import (SRV-058), a stored
+batch can never have failed rows, so the batch's `failed` count is removed from its fields, as it
+already was from the response summary (SRV-017). [DEC-088, SRV-059]
