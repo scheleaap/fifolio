@@ -603,11 +603,16 @@ read is a failed row. Tested in `fifolio-core/tests/import_account_guard.rs` aga
 failed**. The combination with the other guards stays FIF-103.
 
 ## FIF-103 One refusal reports every ground
-Status: todo
+Status: done
 Requirements: SRV-059
 Depends on: FIF-099, FIF-089
 Acceptance: an import refused on more than one ground reports every ground it can determine in one refusal: trade dates in more than one year (IMP-002), a file account differing from the target or several accounts in one file (IMP-003), and failed rows (SRV-058), in any combination. No guard short-circuits another. Nothing is stored. Tested with synthetic files carrying each pair of grounds and all three together, each refusal naming every ground and, for failed rows, every row.
 Notes: New in revision 58 (DEC-088, `951cb67`). **This puts completed work in question**: FIF-065 (`done`) refuses on the years as soon as it sees them, so a file with two years and a failed row is refused on the years alone, which DEC-088 names as the defect. FIF-065's record is left as built; the correction is here. Built at the core level, where all three guards live in `import::import`. The endpoint shape of a combined refusal reaches the caller through FIF-070 and FIF-090, which now depend on this item. A row whose ordering key is unreadable has no trade date, so it is a failed row and contributes no year; whether it should also be counted toward the year check is not stated, and if the implementer finds the two requirements conflict, that is a `spec-auditor` finding.
+
+Revision 61: **done**, committed as `5e225eb`. All three guards now report into one
+`ImportError::Refused`, none short-circuiting another; tested in
+`fifolio-core/tests/import_refusal_grounds.rs` (each pair of grounds and all three). This resolves
+the FIF-065 defect DEC-088 names. `cargo test --workspace`: **609 passed, 0 failed**.
 
 ## FIF-019 Saxo: file reading and header normalization
 Status: done
@@ -1312,6 +1317,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 61.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-103**, committed as `5e225eb`; suite 609 passed, 0 failed.
+* No item added, split, retired, blocked or unblocked. 101 items: **42 `done`, 45 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-083.** Its dependencies FIF-019 and FIF-006 are `done`, and IMP-SAXO-025 is
+  not blocked. It is the first ready `todo` in document order. Also ready: FIF-028, FIF-069,
+  FIF-034, FIF-041, FIF-042.
 
 **Revision 60.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
 `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
@@ -2327,7 +2345,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 60** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 61** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2393,6 +2411,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 61: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `5e225eb`. One hundred and one items: 42 `done`, 45 `todo`, 14 `blocked`.
 
 Revision 60: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `d086bf8`. One hundred and one items: 41 `done`, 46 `todo`, 14 `blocked`.

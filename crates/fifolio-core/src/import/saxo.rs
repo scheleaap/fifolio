@@ -54,6 +54,14 @@
 //! same reason: its four columns are `Transacties` columns, and it reads them through this
 //! module's [`field`].
 //!
+//! # Newest first
+//!
+//! Saxo emits its rows newest first [IMP-SAXO-025], so [`DIRECTION`] says so and the file's
+//! position is reversed before it breaks a tie in ordering [DOM-040]: the last row of a date is
+//! that date's oldest. [`SaxoWorkbook::rows`] still answers the rows in file order, because
+//! [`assign_orders`](crate::ordering::assign_orders) takes them that way and does the reversal
+//! itself; reversing here as well would undo it.
+//!
 //! # Blank cells
 //!
 //! A blank cell arrives in two shapes — a zero-length shared string, as Saxo writes it, and an
@@ -71,6 +79,7 @@ use thiserror::Error;
 
 use super::reader::{ReadError, SheetRows, SourceRow, SpreadsheetReader};
 use crate::entities::SecurityType;
+use crate::ordering::FileDirection;
 
 pub mod identity;
 pub mod legs;
@@ -78,6 +87,10 @@ pub mod money;
 pub mod quantity;
 pub mod reversal;
 pub mod security;
+
+/// Which end of the file holds the oldest row: the first row is the newest [IMP-SAXO-025],
+/// [DOM-040].
+pub const DIRECTION: FileDirection = FileDirection::NewestFirst;
 
 /// One of the three sheets a Saxo export carries [IMP-SAXO-001].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -407,7 +420,8 @@ impl SaxoWorkbook {
         })
     }
 
-    /// The rows an import turns into source records: the `Transacties` rows, in file order.
+    /// The rows an import turns into source records: the `Transacties` rows, in file order,
+    /// which is newest first [`DIRECTION`].
     #[must_use]
     pub fn rows(&self) -> &[SourceRow] {
         &self.transacties
@@ -585,7 +599,9 @@ fn check_claimed(sheet: Sheet, rows: usize, joins: &[Vec<usize>]) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::Order;
     use crate::import::test_workbook::{Cell, SheetContent, workbook};
+    use crate::ordering::{RowOrderingKey, assign_orders};
 
     /// A `Transacties` row as the export writes one, with only the columns a test varies filled
     /// in; the rest are blank cells, which is what most of the ledger holds anyway.
@@ -1024,6 +1040,50 @@ mod tests {
             NaiveDate::from_ymd_opt(1900, 3, 1),
             "the first serial that is a real date on both calendars"
         );
+    }
+
+    /// The file runs newest first, so its position is reversed before ordering uses it
+    /// [IMP-SAXO-025].
+    #[test]
+    fn the_file_runs_newest_first() {
+        assert_eq!(DIRECTION, FileDirection::NewestFirst);
+    }
+
+    /// Rows of one date that no ordering column separates are ordered by position taken in
+    /// reverse: the last row of the file is the oldest [IMP-SAXO-025], [DOM-040].
+    #[test]
+    fn file_position_breaks_a_tie_oldest_first() {
+        let on_one_date = |label: &str| {
+            transacties_row(&[
+                ("Transactiedatum", Cell::Number("45208".to_owned())),
+                ("Acties", Cell::text(label)),
+            ])
+        };
+        let content = saxo(
+            vec![
+                on_one_date("written first"),
+                on_one_date("written second"),
+                on_one_date("written third"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let export = SaxoWorkbook::read(&content).expect("the sample reads");
+        let keys: Vec<RowOrderingKey> = export
+            .rows()
+            .iter()
+            .map(|row| RowOrderingKey {
+                trade_date: date(row, "Transactiedatum").expect("a serial date"),
+                columns: Vec::new(),
+            })
+            .collect();
+
+        let orders: Vec<u32> = assign_orders(&keys, DIRECTION)
+            .into_iter()
+            .map(Order::get)
+            .collect();
+
+        assert_eq!(orders, [2, 1, 0]);
     }
 
     /// A column the row does not carry is named rather than read as a missing date.

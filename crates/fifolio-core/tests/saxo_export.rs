@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{Datelike as _, NaiveDate};
 use fifolio_core::decimal::Scaled as _;
-use fifolio_core::entities::{Account, Quotation, RecordIdentity, SecurityType};
+use fifolio_core::entities::{Account, Order, Quotation, RecordIdentity, SecurityType};
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::reader::SourceRow;
 use fifolio_core::import::saxo::identity::{account, check_identities, identity};
@@ -22,7 +22,8 @@ use fifolio_core::import::saxo::money::Booked;
 use fifolio_core::import::saxo::quantity::{Label, StatedBy, traded};
 use fifolio_core::import::saxo::reversal::Reversible;
 use fifolio_core::import::saxo::security::{Instrument, securities};
-use fifolio_core::import::saxo::{SaxoError, SaxoWorkbook, Sheet, date, field};
+use fifolio_core::import::saxo::{DIRECTION, SaxoError, SaxoWorkbook, Sheet, date, field};
+use fifolio_core::ordering::{RowOrderingKey, assign_orders};
 use rust_decimal::Decimal;
 
 /// Every committed Saxo fixture, with the year its filename names.
@@ -184,6 +185,48 @@ fn every_transaction_date_converts_from_its_serial() {
         for row in export.sheet(Sheet::Detail) {
             date(row, "Aangepaste transactiedatum").expect("a _Transacties row carries its date");
         }
+    }
+}
+
+/// Every fixture runs newest first, the fact [`DIRECTION`] states, and ordering normalizes it:
+/// with the trade date as the only column, each row's order is its position counted from the
+/// end, so a tie on a date goes to the row written last [IMP-SAXO-025], [DOM-040].
+///
+/// Exact rather than "ascends by date", which a file ordered oldest first by position would also
+/// pass on its distinct dates; the ties are where a direction left unnormalized shows.
+#[test]
+fn every_fixture_runs_newest_first_and_is_ordered_oldest_first() {
+    for (path, export) in exports() {
+        let keys: Vec<RowOrderingKey> = export
+            .rows()
+            .iter()
+            .map(|row| RowOrderingKey {
+                trade_date: date(row, "Transactiedatum").expect("a fixture row dates itself"),
+                columns: Vec::new(),
+            })
+            .collect();
+
+        assert!(
+            keys.windows(2)
+                .all(|pair| pair[0].trade_date >= pair[1].trade_date),
+            "{} is not newest first",
+            path.display()
+        );
+        assert!(
+            keys.windows(2)
+                .any(|pair| pair[0].trade_date == pair[1].trade_date),
+            "{} carries no tie on a date, so it cannot show the direction",
+            path.display()
+        );
+
+        let orders: Vec<u32> = assign_orders(&keys, DIRECTION)
+            .into_iter()
+            .map(Order::get)
+            .collect();
+        let count = u32::try_from(keys.len()).expect("a fixture is small");
+        let from_the_end: Vec<u32> = (0..count).rev().collect();
+
+        assert_eq!(orders, from_the_end, "{}", path.display());
     }
 }
 
