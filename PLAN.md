@@ -477,11 +477,11 @@ Notes: Added in revision 52 by the user's decision. Found by FIF-081's implement
 Named next to build in revision 53: the first `todo` in document order whose dependency, FIF-012, is `done`; it carries no blocked id. Everything ahead of it is `done`, `blocked`, or waits on a `blocked` item (FIF-060 on FIF-058; FIF-013, FIF-014, FIF-015, FIF-063 and FIF-016 on FIF-076 and FIF-061). The uncommitted working tree already rewrites the two emission tests in `invariants.rs` to cite their emitter; review that against this item before writing anew.
 
 ## FIF-081 Nothing is created from nothing
-Status: todo
+Status: done
 Requirements: DOM-047
 Depends on: FIF-017, FIF-102
 Acceptance: there is no path, in core or at any surface, that creates a transaction other than from source records; the absence is structural rather than a check, and a test asserts it for every construction path.
-Notes: Split out of FIF-017 in revision 3. Revision 54: this item's partial, **unreviewed** code was committed at the user's instruction so the tree is clean; build on it and review it against the specification as if uncommitted.
+Notes: Split out of FIF-017 in revision 3. Revision 54: this item's partial, **unreviewed** code was committed at the user's instruction so the tree is clean; build on it and review it against the specification as if uncommitted. Done in revision 55: passed conformance and test review; committed as `fdad876`, `6a8b5ba`, `35b3374`.
 Unblocked in revision 47: DEC-079 closed OQ-002. An emitted `transfer_in` cites the source records of the `transfer_out` that produced it (FIF-063), so the emission path is derivation from source records too. The test must cover it once FIF-063 exists; until then it covers every path that exists.
 Named next to build in revision 55: the first `todo` in document order whose dependencies are all `done` and which carries no blocked id.
 
