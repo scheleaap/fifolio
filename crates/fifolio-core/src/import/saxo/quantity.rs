@@ -290,7 +290,9 @@ pub fn traded(label: &Label, leg: Option<&SourceRow>) -> Result<Traded, SaxoErro
 }
 
 /// The signed `Traded Quantity` of a leg [IMP-SAXO-038].
-fn leg_quantity(leg: &SourceRow) -> Result<Quantity, SaxoError> {
+///
+/// Visible to [`super::legs`], which sums a side's legs over the same column.
+pub(super) fn leg_quantity(leg: &SourceRow) -> Result<Quantity, SaxoError> {
     let value = field(leg, TRADED_QUANTITY).ok_or_else(|| SaxoError::MissingColumn {
         header: TRADED_QUANTITY.to_owned(),
     })?;

@@ -72,6 +72,7 @@ use thiserror::Error;
 use super::reader::{ReadError, SheetRows, SourceRow, SpreadsheetReader};
 
 pub mod identity;
+pub mod legs;
 pub mod money;
 pub mod quantity;
 pub mod reversal;
@@ -307,6 +308,26 @@ pub enum SaxoError {
          the file is refused rather than choosing one"
     )]
     QuantityDisagreement { label: String, column: String },
+    /// A `_Transacties` leg whose `Trade Event Type` is none of the three sides a group has
+    /// [IMP-SAXO-048]. There is no side to sum it into, and dropping it would lose the position
+    /// it moves, so the group is refused.
+    #[error(
+        "the corporate action's leg states the Trade Event Type {value:?}, \
+         which is neither Gekocht, Verkocht nor Deponering"
+    )]
+    UnknownSide { value: String },
+    /// A `_Transacties` leg carrying a blank `Instrumentvaluta`, so naming no currency for its
+    /// traded value [IMP-SAXO-047].
+    #[error("the corporate action's leg carries a blank Instrumentvaluta, so it names no currency")]
+    NoInstrumentCurrency,
+    /// A `Corporate action-Id` group whose legs disagree on instrument currency. A side's traded
+    /// values are summable only because a group carries one instrument and so one currency, so
+    /// the group is refused rather than summed [IMP-SAXO-047].
+    #[error(
+        "the corporate action's legs name the instrument currencies {first} and {second}; \
+         a group's traded values are summed only because it carries one of them"
+    )]
+    MixedLegCurrency { first: String, second: String },
     /// A column asked for that the row does not carry, which a header check makes unreachable
     /// for a column of the sheet and reachable for a caller naming the wrong sheet's.
     #[error("the row carries no column {header}")]

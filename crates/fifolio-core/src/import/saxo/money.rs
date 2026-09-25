@@ -316,7 +316,10 @@ fn gross(movement: Decimal, fees: Decimal, direction: Direction) -> Result<Decim
 }
 
 /// One money column of `row` as a decimal.
-fn amount(row: &SourceRow, header: &str) -> Result<Decimal, SaxoError> {
+///
+/// Visible to [`super::legs`], which reads the price and the traded value of a `_Transacties`
+/// leg and reports an unreadable one the same way.
+pub(super) fn amount(row: &SourceRow, header: &str) -> Result<Decimal, SaxoError> {
     let value = field(row, header).ok_or_else(|| SaxoError::MissingColumn {
         header: header.to_owned(),
     })?;

@@ -701,38 +701,86 @@ suffixed reversals and no bare one; the summation is unit tested on the specific
 the fixture's being perturbed [TST-014]. `cargo test --workspace` gives **436 passed, 0 failed**,
 up from 425; patch coverage on `fifolio-core` is 100%.
 
-## FIF-096 Saxo: a corporate action's legs, summed per side and cancelled in pairs
-Status: todo
-Requirements: IMP-SAXO-044, IMP-SAXO-045
+## FIF-096 Saxo: a corporate action's legs, summed per side and cancelled by label
+Status: done
+Requirements: IMP-SAXO-044, IMP-SAXO-045, IMP-SAXO-046, IMP-SAXO-047, IMP-SAXO-048
 Depends on: FIF-019
 Acceptance: given the `_Transacties` legs of one `Corporate action-Id`, two rules applied in this
-order and nowhere else: **first**, a leg whose quantity, price and traded value are the exact
-negatives of another leg in the same group cancels with it, both removed, reproducing the
-DeVolksbank tender — `Verkocht 2000 @ 999.03`, `Gekocht 2000 @ 999.03`, `Verkocht 2000 @ 99.90`
-leaves one disposal of 2000 at 99.90 for 1998.07, the figure `Bookings` and the cash ledger both
-show; **second**, each side's quantity is the **sum** of that side's remaining legs and is never
-taken by indexing one of them, reproducing the 2023 Philips dividend as **2** shares at 34.74 and
-not 1. No caller may read "the `Gekocht` leg": the shape returned offers a summed side and no way to
-ask for a single leg, so the error DEC-071 closes is unreachable rather than merely tested for. Unit
-tests cover every leg shape the table in `importers.md` lists — one `Gekocht`, one `Verkocht` plus
-one `Gekocht`, one `Verkocht`, two `Gekocht`, two `Verkocht` plus one `Gekocht`, one `Deponering`
-whose event type is neither — and a test asserts that a near-miss pair, equal in quantity and
-opposite in price, does **not** cancel.
+order and nowhere else: **first**, a leg whose `Acties` carries the `- Terugboeking` suffix cancels
+against the leg in the same group with the same absolute quantity, the **same** price and the
+opposite-signed traded value, both removed; a group with no suffixed leg cancels nothing, however
+its legs are shaped. This reproduces the DeVolksbank tender — the suffixed `Gekocht 2000 @ 999.03 /
+-19980.65` cancels `Verkocht -2000 @ 999.03 / 19980.65`, leaving one disposal of 2000 at 99.90 for
+1998.07, the figure `Bookings` and the cash ledger both show — and, in the same test, leaves the
+sample's one `Omwisseling` (`Gekocht 3 @ 168.63 / -505.89` against `Verkocht -3 @ 168.63 / 505.89`)
+**intact**, that group carrying no suffix although its legs have the identical shape
+[IMP-SAXO-045, IMP-SAXO-046]. **Second**, each side's quantity and traded value are the **sum** of
+that side's remaining legs and are never taken by indexing one of them, reproducing the 2023 Philips
+dividend as **2** shares at 34.74 and not 1 [IMP-SAXO-044]; a summed quantity keeps the file's sign,
+so a `Verkocht` side is negative [IMP-SAXO-048]. There are **three** sides, not two: `Deponering` is
+its own side and is neither bought nor sold, so all 13 transfer legs survive a grouping
+[IMP-SAXO-048]. Summing a side's traded value is permitted only because a group carries one
+instrument and so one currency; a group whose legs disagree on instrument currency is **refused**
+with an error rather than summed [IMP-SAXO-047]. No caller may read "the `Gekocht` leg": the shape
+returned offers summed sides and no way to ask for a single leg, so the error DEC-071 closes is
+unreachable rather than merely tested for. Unit tests cover every leg shape the table in
+`importers.md` lists — one `Gekocht`, one `Verkocht` plus one `Gekocht`, one `Verkocht`, two
+`Gekocht`, two `Verkocht` plus one `Gekocht`, one `Deponering` — plus the mixed-currency refusal.
 Notes: New in revision 32, carrying the two identifiers `importers.md` gained in `786cfd2`
 (DEC-071). Cut as its own item rather than folded into FIF-067, FIF-094 or FIF-025 because all three
 read it — the split ratio is a summed `Gekocht` over a summed `Verkocht`, the tender's disposal is a
 summed side after cancellation, the stock election's share count is a summed `Gekocht` — and two of
 them are gated on the blocked FIF-023 while this rule is decided and reviewable on its own against
 the Legs table.
-It is the `_Transacties` counterpart of **FIF-088**, which sums a group's *cash* on `Transacties`
-and matches `Terugboeking` as an `Acties` suffix. The two are deliberately separate: FIF-088 reads a
-label and subtracts money, this item reads quantities and removes rows, and a reversal shows up in
-both places. Whoever builds the second of the two should say in the code which half it is.
-Cancellation is exact-negation on three figures and not on quantity alone, because a legitimate
-`Verkocht 2000` against a `Gekocht 2000` at a different price is an exchange and not a reversal.
+**Rewritten in revision 38 by DEC-072 (`79b82de`), before the item was started, so nothing built is
+invalidated.** The acceptance revision 32 wrote cancelled a pair whose quantity, price *and* traded
+value were exact negatives; DEC-072 establishes that the price on a cancelling pair is **equal**, so
+that rule matched nothing in five years of exports, and that a shape-only reading matches the one
+genuine `Omwisseling` and would destroy it. The old wording is replaced rather than annotated,
+because building it would silently produce wrong parcels. The item gains IMP-SAXO-046 (the label is
+the signal, not the shape), IMP-SAXO-047 (one currency per group, or refuse) and IMP-SAXO-048
+(`Deponering` is a third side; a summed quantity keeps its sign) — all three new in that commit and
+all three clauses of the same question this item already answers, which is what a group's sides are.
+It is the `_Transacties` counterpart of **FIF-088**, which sums a group's *cash* on `Transacties` and
+matches `Terugboeking` as an `Acties` suffix. The two are deliberately separate: FIF-088 reads a
+label and subtracts money, this item reads the same label and removes rows, and a reversal shows up
+in both places. FIF-088 is `done` (`0050f03`), so its suffix matching exists; whether this item
+reuses that predicate or states its own is an implementation choice, but the module must say in its
+header which half it is.
+`Openen/sluiten` (`Te openen` / `Te sluiten`) corroborates a reversal and is explicitly **not** the
+rule; a build that keys on it instead of on the suffix does not meet this acceptance.
+One discrepancy the implementer will meet and must not silently resolve: the Legs table calls the
+DeVolksbank tender "two `Verkocht` + one `Gekocht`", while DEC-072's worked figures give its
+reversal as the `Gekocht` leg cancelling a `Verkocht`. Both readings leave the same single disposal
+of 2000 at 99.90, so the outcome this acceptance asserts is unaffected; check the fixture rather
+than the prose, and if the fixture disagrees with both, stop and report it.
 This item does not classify, derive or emit anything: it answers what a group's sides are. What is
 done with them is FIF-067's, FIF-094's and FIF-025's, and their acceptance lines now read the sides
 from here.
+Done in revision 38, in the same commit as this status flip.
+`import/saxo/legs.rs` carries `Sides::of`, which takes one `Corporate action-Id`'s `_Transacties`
+rows and answers the three sides summed [IMP-SAXO-044], [IMP-SAXO-048]. `Side` is `Acquired` /
+`Disposed` / `Deposited`, so the sample's 13 transfer legs land on a side of their own rather than
+being dropped; a summed quantity keeps the file's sign. `SideTotal` answers a quantity and a traded
+value and holds no leg, and `Leg` is private, so "the `Gekocht` leg" is not a question a caller can
+ask — the error DEC-071 closes is unreachable and not merely tested for.
+Cancellation reads the `- Terugboeking` suffix through `Reversible::read`, FIF-088's predicate,
+reused rather than restated; the module header says which half of a reversal it is
+[IMP-SAXO-045], [IMP-SAXO-046]. A cancelling pair matches on equal absolute quantity, **equal**
+price and opposite traded value, so the fixture's tender cancels and its one `Omwisseling` of the
+identical shape survives, both asserted in the same integration test. `Openen/sluiten` is read by
+nothing. A group's legs must agree on `Instrumentvaluta` or the group is refused
+[IMP-SAXO-047].
+Four points the specification leaves open are decided in the module header rather than in code
+comments scattered about: an unmatched reversal survives instead of refusing the file, the 2023
+export carrying exactly that; a reversal never cancels another reversal; a fourth `Trade Event Type`
+refuses the group; a blank `Instrumentvaluta` refuses it. Each is named as a choice, not as a
+reading of the specification.
+The Legs table's "two `Verkocht` + one `Gekocht`" against DEC-072's worked figures was checked
+against the fixture, as the note above requires: the fixture agrees with DEC-072 — the suffixed leg
+is the `Gekocht` — and both readings leave the one disposal of 2000, so nothing is reported.
+`cargo test --workspace` gives **461 passed, 0 failed**, up from 436; patch coverage on
+`fifolio-core` is 100%.
 
 ## FIF-023 Saxo: row classification
 Status: blocked
@@ -1072,6 +1120,62 @@ Ids are never reused.
 * **FIF-018 — Corporate action engine.** Dropped in this revision. `domain.md` replaced the separate corporate-action entity with transaction variants (DEC-024, DEC-025), retiring DOM-014, DOM-015 and DOM-050 to DOM-053. Its two halves became FIF-061 (splits and effective quantity) and FIF-063 (transfer out emission, basis and decomposition); DOM-016, the citation rule, moved to FIF-056.
 
 # Revision history
+
+**Revision 38 (this run).** `design/` **changed**: commit `79b82de` (DEC-072) landed after the
+working-tree revision 37 below was written, which is why that entry's claim that `design/` is
+unchanged and `HEAD` is `0050f03` is wrong — it was true when written and had stopped being true
+before it was read. `HEAD` is now `79b82de`. `cargo test --workspace` gives **436 passed, 0
+failed**, unchanged, the commit touching `design/decisions.md` and `design/importers.md` only. The
+tracked working tree carries this file's revision 37 and 38 edits and nothing else (`docs/` and
+`tmp/` are the user's, untracked).
+
+* **Three new identifiers**, all in `importers.md`: IMP-SAXO-046, IMP-SAXO-047, IMP-SAXO-048.
+  Coverage is now **348** ids, each on exactly one `Requirements:` line and together precisely the
+  live ids in `design/` less the nine retired ones. Nothing is uncovered.
+* **FIF-096 rewritten, not annotated.** DEC-072 corrects DEC-071: a reversal is identified by the
+  `- Terugboeking` suffix and not by an opposing shape, because the price on a cancelling pair is
+  *equal* and a shape-only rule both matches nothing as literally written and, read charitably,
+  destroys the sample's one genuine `Omwisseling`. The item had not been started, so no completed
+  work is invalidated and no correction item is needed; the three new ids join it because each is a
+  clause of the one question it answers — what a group's sides are. Its title changed with it.
+* No item added, split, retired or completed. No status changed. 95 items: **29 `done`, 42 `todo`,
+  24 `blocked`**.
+* `open-questions.md` is byte-identical to revision 32's: **34** blocked requirements across OQ-001
+  to OQ-019 (OQ-020 blocks nothing), carried by exactly the 24 `blocked` items and no others,
+  checked by script. None of the three new ids appears on a `Blocks:` line.
+* **Next to build: FIF-096**, under its new acceptance. It is still the first `todo` in document
+  order whose only dependency, FIF-019, is `done`, and everything ahead of it is `done`, `blocked`,
+  or waiting on a `blocked` item: FIF-060 on FIF-058 (DOM-101), FIF-013 on FIF-076 (DOM-011,
+  DOM-013, DOM-111), FIF-014 and FIF-015 behind FIF-013 and the blocked FIF-061, FIF-016 behind
+  FIF-061 and FIF-063.
+
+**Revision 37 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
+design/` is empty), so no requirement was added, restated or retired and coverage is untouched at
+**345** ids, each named on exactly one `Requirements:` line and together precisely the live ids in
+`design/` less the nine retired ones (DOM-009, DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to
+DOM-053). `HEAD` is `0050f03`; the working tree carries no tracked change (only the user's untracked
+`docs/` and `tmp/`); `cargo test --workspace` gives **436 passed, 0 failed**, which is the figure
+FIF-088's completion note states, so the committed tree is the tree that note describes.
+
+* **Completed:** none this revision. **FIF-088** was completed in `0050f03` **with its status flip
+  in the same commit**, which is the first time in eight revisions that the plan and the
+  implementation landed together. The pattern revisions 33 to 36 kept recording has stopped; nothing
+  needed correcting here.
+* No item added, split, retired or re-scoped. No status changed.
+* `open-questions.md` is byte-identical to revision 32's: **34** blocked requirements across OQ-001
+  to OQ-019 (OQ-020 blocks nothing), **24** `blocked` items, every one carrying a blocked id and no
+  other item carrying one, and no item blocked in an earlier revision has been released. 95 items:
+  **29 `done`, 42 `todo`, 24 `blocked`**.
+* **Next to build: FIF-096**, a corporate action's legs summed per side and cancelled in pairs. It
+  is the first `todo` in document order whose only dependency, FIF-019, is `done` (`a97004e`) and
+  neither of whose requirements — IMP-SAXO-044, IMP-SAXO-045 — appears on a `Blocks:` line.
+  Everything ahead of it in document order is `done`, `blocked`, or waits on a `blocked` item:
+  FIF-060 on FIF-058 (DOM-101), FIF-013 on FIF-076 (DOM-011, DOM-013, DOM-111), FIF-014 and FIF-015
+  behind FIF-013 and the blocked FIF-061, FIF-016 behind FIF-061 and FIF-063.
+* The caveat for that implementer is already in the item and is worth repeating: this rule reads
+  `_Transacties` quantities and removes rows, where the just-finished FIF-088 reads `Transacties`
+  labels and subtracts money. A reversal appears in both places, so the new module should say in its
+  header which half it is. It classifies nothing — IMP-SAXO-013 stays blocked in FIF-023.
 
 **Revision 36 (this run).** `design/` is unchanged since revision 32 (`git diff 786cfd2..HEAD --
 design/` is empty), so no requirement was added, restated or retired and coverage is untouched at
@@ -1698,6 +1802,21 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Re-verified in revision 38 against `design/` at `79b82de`, which added three identifiers:
+**348** ids on the `Requirements:` lines, each exactly once, and together precisely the live ids in
+`design/` less the nine retired ones (DOM-009, DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to
+DOM-053), which are assigned to nothing. The three additions — IMP-SAXO-046, IMP-SAXO-047,
+IMP-SAXO-048 — are all on **FIF-096**, whose acceptance DEC-072 rewrote; none of them is on a
+`Blocks:` line. **Nothing is uncovered and nothing is deferred.** Every item carrying one of the
+thirty-four blocked ids is `blocked`, and no other item is — twenty-four items of ninety-five.
+
+Unchanged in revision 37, verified by script against `design/` at `0050f03`: **345** ids on the
+`Requirements:` lines, each exactly once, and together precisely the live ids in `design/` less the
+nine retired ones (DOM-009, DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to DOM-053), which are
+assigned to nothing. **Nothing is uncovered and nothing is deferred.** Every item carrying one of the
+thirty-four ids on a `Blocks:` line of `open-questions.md` is `blocked`, and no other item is —
+twenty-four items of ninety-five.
 
 Unchanged in revision 33: `design/` did not change, so the figures below stand as verified.
 

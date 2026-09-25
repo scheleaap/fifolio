@@ -9,13 +9,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{Datelike as _, NaiveDate};
+use fifolio_core::decimal::Scaled as _;
 use fifolio_core::entities::{Account, RecordIdentity};
 use fifolio_core::identity::{IdentitySource, identify};
+use fifolio_core::import::reader::SourceRow;
 use fifolio_core::import::saxo::identity::{account, check_identities, identity};
+use fifolio_core::import::saxo::legs::{Side, Sides};
 use fifolio_core::import::saxo::money::Booked;
 use fifolio_core::import::saxo::quantity::{Label, StatedBy, traded};
 use fifolio_core::import::saxo::reversal::Reversible;
 use fifolio_core::import::saxo::{SaxoError, SaxoWorkbook, Sheet, date, field};
+use rust_decimal::Decimal;
 
 /// Every committed Saxo fixture, with the year its filename names.
 fn exports() -> Vec<(PathBuf, SaxoWorkbook)> {
@@ -55,6 +59,17 @@ fn importable() -> Vec<(PathBuf, SaxoWorkbook)> {
 /// The `Acties` label of a `Transacties` row.
 fn action(export: &SaxoWorkbook, index: usize) -> &str {
     field(&export.sheet(Sheet::Transacties)[index], "Acties").expect("Transacties carries Acties")
+}
+
+/// Whether a `_Transacties` leg's `Acties` carries the reversal suffix [IMP-SAXO-045].
+fn reversing(leg: &SourceRow) -> bool {
+    let acties = field(leg, "Acties").expect("_Transacties carries Acties");
+    Reversible::read(
+        Label::parse(acties)
+            .expect("a fixture label reads")
+            .action(),
+    )
+    .reversing()
 }
 
 /// All three sheets are read, each with its one header row and its own width
@@ -561,4 +576,84 @@ fn every_reversal_in_the_corpus_is_a_suffixed_action() {
     reversals.sort();
 
     assert_eq!(reversals, ["Dividend", "Terugkoopaanbod"]);
+}
+
+/// Every `_Transacties` group in the corpus reads as sides, and all 13 transfer legs land on the
+/// `Deponering` side rather than being dropped by a two-sided reading [IMP-SAXO-047],
+/// [IMP-SAXO-048].
+///
+/// The corpus's one cancelling group cancels and the one of the same shape without a suffix does
+/// not [IMP-SAXO-045], [IMP-SAXO-046].
+///
+/// Quantities are asserted and amounts are not: anonymization preserves the first and perturbs
+/// the second [TST-014], [TST-028]. What a cancellation leaves is unit tested on the
+/// specification's own figures; the quantities it leaves in the fixture are the fixture's own.
+#[test]
+fn every_group_in_the_corpus_reads_as_sides() {
+    let mut transferred = Vec::new();
+    let mut deposited_legs = Vec::new();
+    let mut cancelling = Vec::new();
+    let mut exchanged = Vec::new();
+    for (path, export) in exports() {
+        for index in 0..export.rows().len() {
+            let sides = Sides::of(export.detail_of(index)).unwrap_or_else(|error| {
+                panic!("{} row {} has no sides: {error}", path.display(), index + 2)
+            });
+            let Some(sides) = sides else {
+                continue;
+            };
+            let quantities = |sides: &Sides| {
+                Side::ALL.map(|side| sides.side(side).map(|total| total.quantity().get()))
+            };
+            let legs: Vec<&_> = export.detail_of(index).collect();
+            // The lone `Dividend - Terugboeking` group cancels nothing, having no second leg;
+            // the multi-leg suffixed group is the tender, and only it exercises cancellation.
+            if legs.len() > 1 && legs.iter().any(|leg| reversing(leg)) {
+                cancelling.push(quantities(&sides));
+            }
+            if action(&export, index).starts_with("Omwisseling") {
+                exchanged.push(quantities(&sides));
+            }
+            if let Some(transfer) = sides.side(Side::Deposited) {
+                assert_eq!(
+                    (sides.side(Side::Acquired), sides.side(Side::Disposed)),
+                    (None, None),
+                    "{} joins {} to a transfer and to another side",
+                    path.display(),
+                    action(&export, index)
+                );
+                transferred.push(transfer.quantity().get());
+            }
+        }
+
+        deposited_legs.extend(
+            export
+                .sheet(Sheet::Detail)
+                .iter()
+                .filter(|leg| field(leg, "Trade Event Type") == Some("Deponering"))
+                .map(|leg| {
+                    field(leg, "Traded Quantity")
+                        .expect("a leg states its quantity")
+                        .parse::<Decimal>()
+                        .expect("a leg's quantity is a number")
+                }),
+        );
+    }
+    transferred.sort();
+    deposited_legs.sort();
+
+    // Each of the thirteen is its own group of one leg, so the side is that leg's own quantity.
+    assert_eq!(transferred.len(), 13);
+    assert_eq!(transferred, deposited_legs);
+
+    // The tender: its suffixed `Gekocht 2000` cancels one of the two `Verkocht -2000` legs and
+    // leaves the other, so one disposal of 2000 and no acquisition. Two `Transacties` rows join
+    // the group, which is therefore read twice.
+    let disposal = [None, Some(Decimal::from(-2000)), None];
+    assert_eq!(cancelling, [disposal, disposal]);
+    // The exchange has the identical shape and no suffix, so it keeps both of its legs.
+    assert_eq!(
+        exchanged,
+        [[Some(Decimal::from(3)), Some(Decimal::from(-3)), None]]
+    );
 }
