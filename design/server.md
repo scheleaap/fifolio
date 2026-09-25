@@ -24,6 +24,7 @@ CLI:
 * A security cannot be deleted if it is referenced by any source record [SRV-009]
 * A security's ISIN is unique; creating a duplicate is a conflict [SRV-010]
 * A security's type and quotation are editable, which is how an auto-created record is corrected [SRV-011]
+* A security needing review can be marked reviewed, which clears needs review and leaves auto-created unchanged [SRV-057]
 
 ## Import
 
@@ -31,7 +32,7 @@ CLI:
 * Supported formats: Saxo NL XLSX, Trade Republic DE CSV [SRV-013]
 * A file whose rows carry trade dates in more than one calendar year is refused [SRV-051]
 * The file's account id is checked against the target account; a mismatch, or a file carrying rows from more than one account, refuses the import [SRV-056]
-* Unknown ISINs are created automatically and flagged as auto-created for later review [SRV-014]
+* Unknown ISINs are created automatically, flagged as auto-created and as needing review [SRV-014]
 * Import is idempotent, on the identity rules in `domain.md` [SRV-015]
 * Rows that carry no position effect are recognized and not stored [SRV-016]
 * The response summarizes: derived automatically, pending, recognized as non-position, failed to parse, and securities auto-created [SRV-017]

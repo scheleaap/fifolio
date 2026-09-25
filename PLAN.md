@@ -1033,9 +1033,10 @@ Notes: Named next to build in revision 43. FIF-032 (`8964f18`) left `fifolio-ser
 
 ## FIF-034 Accounts and securities endpoints
 Status: todo
-Requirements: SRV-007, SRV-008, SRV-009, SRV-010, SRV-011
+Requirements: SRV-007, SRV-008, SRV-009, SRV-010, SRV-011, SRV-057, DOM-126
 Depends on: FIF-033
-Acceptance: CRUDL for accounts and securities; deleting an account or a security referenced by any source record is refused; creating a security with an existing ISIN is a conflict; type and quotation are editable, which is how an auto-created security is corrected.
+Acceptance: CRUDL for accounts and securities; deleting an account or a security referenced by any source record is refused; creating a security with an existing ISIN is a conflict; type and quotation are editable, which is how an auto-created security is corrected; a security carries `auto_created` (provenance, never changed) and `needs_review` as separate fields; only marking the security reviewed clears `needs_review`, and an edit leaves it set.
+Notes: Named next to build in revision 44. Its cases go into the in-process harness FIF-033 left in `crates/fifolio-server/tests/http_surface.rs`, and each refusal maps to a `ProblemType` in `fifolio-server/src/problem.rs`.
 
 ## FIF-035 Import endpoint
 Status: todo
@@ -1236,7 +1237,29 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 43 (this run).** A status reconciliation. `design/` is **unchanged** since revision 42:
+**Revision 45.** `design/` amended by the user: DOM-006 now states that `auto_created` is provenance
+only; new DOM-126 adds `needs_review`, a separate field cleared only by marking the security
+reviewed; new SRV-057 is that action; SRV-014 now sets both flags on import. FIF-034 gains SRV-057
+and DOM-126, and stays next to build. DOM-006 stays on FIF-005, whose stored flag already matches
+its new wording. The coverage count is for the planner to re-verify.
+
+**Revision 44 (this run).** A status reconciliation. `design/` is **unchanged** since revision 42:
+`git log -- design/` still ends at `b9017d8`, and `open-questions.md` names the same 37 ids. `HEAD`
+is `0ddf90d`; the working tree still carries the uncommitted, unreviewed FIF-028 implementation
+(`import/trade_republic/money.rs` and its tests), untouched. FIF-028 stays `blocked` by OQ-021.
+
+* **Completed: FIF-033**, problem+json errors and the HTTP test harness, committed as `0ddf90d`
+  with its status flip in the same commit.
+* No item added, split, retired or re-scoped. Nothing blocked or unblocked. 96 items: **34
+  `done`, 36 `todo`, 26 `blocked`**, counted by script.
+* Coverage re-verified by script: **348** ids on the `Requirements:` lines, each exactly once, equal
+  to the live ids in `design/` less the nine retired. Nothing uncovered, nothing deferred. The 26
+  items carrying one of the 37 blocked ids are exactly the 26 `blocked`.
+* **Next to build: FIF-034**, accounts and securities endpoints. It is the first `todo` in document
+  order whose dependencies are all `done` (FIF-033) and none of whose requirements (SRV-007 to
+  SRV-011) is blocked. FIF-041 and FIF-042 are the other ready items.
+
+**Revision 43.** A status reconciliation. `design/` is **unchanged** since revision 42:
 `git log -- design/` still ends at `b9017d8`, and `open-questions.md` is byte-identical. `HEAD` is
 `8964f18`; the working tree still carries the uncommitted, unreviewed FIF-028 implementation
 revision 42 described (`import/trade_republic/money.rs`, error variants, fixture tests), untouched.
@@ -2072,6 +2095,10 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Unchanged in revision 44, re-verified by script against `design/` at `b9017d8`: **348** ids, each
+exactly once, nothing uncovered, nothing deferred; the 26 items carrying one of the 37 blocked ids
+are exactly the 26 `blocked`, of ninety-six items, thirty-four now `done`.
 
 Re-verified in revision 43 by script against `design/` at `b9017d8`: **348** ids on the
 `Requirements:` lines, each exactly once, and together precisely the live ids in `design/` less the

@@ -31,10 +31,11 @@ Account
 * One account is one Depot. Where a broker splits a Depot into per-currency sub-accounts, the importer normalizes them onto the single account, because FIFO applies per Depot [DOM-003]
 
 Security
-* Fields: ISIN (natural key), name, type, quotation
+* Fields: ISIN (natural key), name, type, quotation, auto-created, needs review
 * Type is a fixed enum: `stock`, `bond`, `etf`, `fund`, `derivative`, `other` [DOM-004]
 * Quotation is a fixed enum: `per_unit` (default) or `percent_of_par` [DOM-005] (see Quotation)
-* Securities may be created automatically during import; such records are flagged so the user can review and correct them [DOM-006]
+* Securities may be created automatically during import; such records are flagged as auto-created. The flag records provenance only and never changes [DOM-006]
+* A security auto-created during import also needs review, so the user can check and correct it. Needs review is separate from auto-created and is cleared only by the user marking the security reviewed; editing it does not clear it [DOM-126]
 
 Source record
 * One parsed row of a broker export, stored verbatim alongside its parsed fields. [DOM-007] Never edited after creation [DOM-008]
