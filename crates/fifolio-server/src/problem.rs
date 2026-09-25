@@ -60,6 +60,7 @@ pub enum ProblemType {
     DuplicateAccount,
     UnknownAccount,
     UnknownSecurity,
+    UnknownRecord,
     AccountReferenced,
     SecurityReferenced,
     UnscaledValue,
@@ -108,6 +109,7 @@ impl ProblemType {
             ),
             Self::UnknownAccount => ("unknown-account", S::NOT_FOUND, "No such account"),
             Self::UnknownSecurity => ("unknown-security", S::NOT_FOUND, "No such security"),
+            Self::UnknownRecord => ("unknown-record", S::NOT_FOUND, "No such source record"),
             Self::AccountReferenced => (
                 "account-referenced",
                 S::CONFLICT,
@@ -253,6 +255,7 @@ impl From<&StorageError> for ProblemType {
             StorageError::DuplicateAccount { .. } => Self::DuplicateAccount,
             StorageError::UnknownAccount { .. } => Self::UnknownAccount,
             StorageError::UnknownSecurity { .. } => Self::UnknownSecurity,
+            StorageError::UnknownRecord { .. } => Self::UnknownRecord,
             StorageError::AccountReferenced { .. } => Self::AccountReferenced,
             StorageError::SecurityReferenced { .. } => Self::SecurityReferenced,
             StorageError::UnscaledValue { .. } => Self::UnscaledValue,
@@ -461,6 +464,11 @@ mod tests {
             404,
         ),
         (
+            ProblemType::UnknownRecord,
+            "urn:fifolio:problem:unknown-record",
+            404,
+        ),
+        (
             ProblemType::AccountReferenced,
             "urn:fifolio:problem:account-referenced",
             409,
@@ -640,6 +648,12 @@ mod tests {
                     isin: "NL0000009538".into(),
                 },
                 ProblemType::UnknownSecurity,
+            ),
+            (
+                StorageError::UnknownRecord {
+                    identity: "r1".into(),
+                },
+                ProblemType::UnknownRecord,
             ),
             (
                 StorageError::AccountReferenced {

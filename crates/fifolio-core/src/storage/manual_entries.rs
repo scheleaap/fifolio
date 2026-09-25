@@ -27,6 +27,7 @@ use std::num::NonZeroU32;
 
 use sqlx::sqlite::{SqlitePool, SqliteRow};
 use sqlx::{Row, query};
+use vec1::Vec1;
 
 use crate::entities::{Isin, RecordIdentity, SourceRecord};
 use crate::manual_entry::{Election, ManualEntry, Ratio, Supplied};
@@ -178,12 +179,15 @@ impl<'a> ManualEntryRepository<'a> {
                 continue;
             };
             // `collect` over `Result` stops at the first absent identity, which is the entry
-            // still waiting rather than a failure.
-            if let Ok(records) = self
+            // still waiting rather than a failure. The entry was found through a record the batch
+            // owns, so it names at least one and the empty case cannot arise here.
+            if let Some(records) = self
                 .resolve(&entry)
                 .await?
                 .into_iter()
                 .collect::<Result<Vec<SourceRecord>, RecordIdentity>>()
+                .ok()
+                .and_then(|records| Vec1::try_from_vec(records).ok())
             {
                 reconnected.push(ReconnectedEntry { id, entry, records });
             }
@@ -273,7 +277,7 @@ impl WaitingEntry {
 pub struct ReconnectedEntry {
     id: ManualEntryId,
     entry: ManualEntry,
-    records: Vec<SourceRecord>,
+    records: Vec1<SourceRecord>,
 }
 
 impl ReconnectedEntry {
@@ -298,11 +302,9 @@ impl ReconnectedEntry {
     /// entry completed can be derived again from records storage has just read [DOM-047],
     /// [DOM-108].
     #[must_use]
-    pub fn handles(&self) -> Vec<RecordHandle> {
+    pub fn handles(&self) -> Vec1<RecordHandle> {
         self.records
-            .iter()
-            .map(|record| RecordHandle::new(record.identity().clone()))
-            .collect()
+            .mapped_ref(|record| RecordHandle::new(record.identity().clone()))
     }
 }
 

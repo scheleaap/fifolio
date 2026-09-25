@@ -96,6 +96,9 @@ impl<'a> TransactionRepository<'a> {
 
     /// Stores `transaction` at `placement`, header, detail, citations and placement in one
     /// SQLite transaction, so a stored transaction is never half stored and never unplaced.
+    ///
+    /// Refused with [`StorageError::UnknownRecord`] when a citation names no record this
+    /// database holds [DOM-047].
     pub async fn insert(
         &self,
         placement: &Placement,
@@ -234,16 +237,26 @@ impl<'a> TransactionRepository<'a> {
             Transaction::Split(_) => {}
         }
 
+        // A handle says its record was stored when the handle was issued; an import undo since,
+        // or a handle from another database, leaves it naming nothing stored here. The citation
+        // is therefore written only from a stored record, in this SQLite transaction, so a
+        // derivation is never created from a record that is gone [DOM-047]. The column stays a
+        // value rather than a foreign key because the record may go afterwards [DOM-099].
         for (ordinal, identity) in (0i64..).zip(transaction.cites()) {
-            query(
+            let written = query(
                 "insert into transaction_citation (transaction_id, ordinal, record_identity)
-                 values (?, ?, ?)",
+                 select ?, ?, identity from source_record where identity = ?",
             )
             .bind(id)
             .bind(ordinal)
             .bind(identity.as_str())
             .execute(&mut *tx)
             .await?;
+            if written.rows_affected() == 0 {
+                return Err(StorageError::UnknownRecord {
+                    identity: identity.as_str().to_owned(),
+                });
+            }
         }
 
         query(

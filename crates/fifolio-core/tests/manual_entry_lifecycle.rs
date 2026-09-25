@@ -512,13 +512,7 @@ async fn an_undo_followed_by_a_re_import_returns_the_account_where_it_was() {
         .expect("list what the import reconnected")
     {
         // The reconnection's own handles, since storage has just read those records back.
-        let restored = stock_dividend(
-            reconnection.entry(),
-            reconnection
-                .handles()
-                .try_into()
-                .expect("an entry answers at least one record"),
-        );
+        let restored = stock_dividend(reconnection.entry(), reconnection.handles());
         let id = store(&database, reimported_batch, &restored).await;
         after.push(
             database
@@ -677,7 +671,8 @@ async fn an_import_reconnects_only_the_entries_its_own_records_answer() {
 }
 
 /// An entry answering several records reconnects with all of them, in the order it names them and
-/// not the order they are stored in [DOM-108], [DOM-098], [TST-004].
+/// not the order they are stored in, and with a handle on each in that order [DOM-108], [DOM-098],
+/// [DOM-047], [TST-004].
 #[tokio::test]
 async fn an_entry_naming_several_records_reconnects_with_them_in_the_order_it_names() {
     let (_db, database) = open().await;
@@ -709,6 +704,15 @@ async fn an_entry_naming_several_records_reconnects_with_them_in_the_order_it_na
         reconnected[0].records(),
         named.as_slice(),
         "every record it names returns, in the order it names them"
+    );
+    assert_eq!(
+        reconnected[0]
+            .handles()
+            .iter()
+            .map(RecordHandle::identity)
+            .collect::<Vec<_>>(),
+        named.iter().map(SourceRecord::identity).collect::<Vec<_>>(),
+        "a handle for every record it names, in the order it names them [DOM-047]"
     );
 }
 

@@ -523,8 +523,8 @@ async fn every_transaction_variant_round_trips() {
 }
 
 /// Nothing is created from nothing: the handle a transaction is derived from is issued by storing
-/// the record, a record that was not stored yields none, and the stored transaction cites the
-/// record the handle was issued for [DOM-047], [TST-004].
+/// the record, and the stored transaction cites the record the handle was issued for [DOM-047],
+/// [TST-004].
 ///
 /// That a derivation cannot be written from no handle, from a bare identity or from a handle
 /// made by hand is asserted by the `compile_fail` examples on `Derivation::new`; this is the
@@ -541,14 +541,6 @@ async fn a_transaction_is_derived_only_from_a_record_storage_holds() {
         .await
         .expect("the record");
     assert_eq!(handle.identity(), record.identity());
-    assert!(
-        database
-            .source_records()
-            .insert(batch, &record)
-            .await
-            .is_err(),
-        "a record that is not written again is issued no second handle"
-    );
 
     let id = database
         .transactions()
@@ -566,6 +558,67 @@ async fn a_transaction_is_derived_only_from_a_record_storage_holds() {
         .expect("a stored transaction");
 
     assert_eq!(stored.cites(), [record.identity().clone()]);
+}
+
+/// A handle kept past an import undo of its batch names a record that is no longer stored, and a
+/// transaction derived from it is refused: a citation may outlive its record [DOM-099], but a
+/// derivation is made only from a record storage holds when it is stored [DOM-047].
+#[tokio::test]
+async fn a_transaction_derived_from_a_record_an_undo_removed_is_refused() {
+    let (_db, database) = open().await;
+    let (_, batch) = place(&database).await;
+    let record = SourceRecord::new(cite("4100200300"), Order::new(1), "raw", BTreeMap::new());
+    let handle = database
+        .source_records()
+        .insert(batch, &record)
+        .await
+        .expect("the record");
+    database
+        .import_batches()
+        .delete(batch)
+        .await
+        .expect("nothing cites the record yet, so the undo goes through");
+    // The batch is gone, so the transaction is placed against none.
+    let placement = Placement::emitted(account(), isin());
+
+    let refused = database
+        .transactions()
+        .insert(
+            &placement,
+            &Split::new(Derivation::new(date(), vec1![handle])).into(),
+        )
+        .await;
+
+    match refused {
+        Err(StorageError::UnknownRecord { identity }) => {
+            assert_eq!(identity, record.identity().as_str());
+        }
+        other => panic!("a derivation from a removed record must be refused, got {other:?}"),
+    }
+}
+
+/// A handle issued by one database names a record the other never stored, and is refused there
+/// on the same rule [DOM-047].
+#[tokio::test]
+async fn a_handle_issued_by_another_database_is_refused() {
+    let (_issuer_db, issuer) = open().await;
+    let (_, issuer_batch) = place(&issuer).await;
+    let handle = store_record(&issuer, issuer_batch, "4100200300", &[]).await;
+    let (_db, database) = open().await;
+    let (placement, _) = place(&database).await;
+
+    let refused = database
+        .transactions()
+        .insert(
+            &placement,
+            &Split::new(Derivation::new(date(), vec1![handle])).into(),
+        )
+        .await;
+
+    assert!(
+        matches!(refused, Err(StorageError::UnknownRecord { .. })),
+        "a record this database does not hold must be refused, got {refused:?}"
+    );
 }
 
 /// A transaction's citations keep the caller's order, which is the shape a multi-row corporate

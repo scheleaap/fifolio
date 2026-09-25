@@ -100,7 +100,9 @@ static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 ///
 /// A handle says the record was stored when it was issued, not that it stays stored: an import
 /// undo removes records together with what was derived from them, and refuses while anything
-/// else cites them [DOM-119].
+/// else cites them [DOM-119]. A handle is also not tied to the database that issued it. So
+/// [`TransactionRepository::insert`] refuses a citation of a record not stored at that moment,
+/// which closes both gaps where the transaction is created [DOM-047].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordHandle(RecordIdentity);
 
@@ -140,6 +142,10 @@ pub enum StorageError {
     UnknownAccount { broker: String, id: String },
     #[error("no security with ISIN {isin} is stored")]
     UnknownSecurity { isin: String },
+    /// A transaction is derived only from records storage holds at the moment it is stored
+    /// [DOM-047]; a citation may outlive its record afterwards [DOM-099], never precede it.
+    #[error("no source record {identity} is stored")]
+    UnknownRecord { identity: String },
     /// An account that anything stored refers to stays, and the refusal says what refers to it
     /// [SRV-008].
     #[error(

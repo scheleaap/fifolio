@@ -34,9 +34,11 @@
 //! whatever surface it starts at, with no check to forget. A `transfer_in` emitted on approval
 //! of a `transfer_out` is no exception: it cites the `transfer_out`'s records [DEC-079].
 //!
-//! A handle proves the record was stored when the transaction was derived, not that it stays
-//! so; what keeps a stored transaction's citations standing is the import undo's refusal
-//! [DOM-119]. Which cited record a transaction *relates to* in the sense of DOM-013 is FIF-076's.
+//! A handle proves the record was stored when it was issued, not that it still is: an import
+//! undo may have removed it since, or the handle may come from another database. Storing the
+//! transaction therefore refuses a citation of a record that is not stored at that moment
+//! [DOM-047]; what keeps a stored transaction's citations standing afterwards is the import
+//! undo's refusal [DOM-119]. Which cited record a transaction *relates to* in the sense of DOM-013 is FIF-076's.
 //!
 //! The distinction between **consuming** a record and merely **citing** it [DOM-101] is
 //! undecided (FIF-058). What every variant holds until then is the citation — the audit trail
@@ -121,12 +123,18 @@ impl Derivation {
     ///
     /// ```
     /// # use chrono::NaiveDate;
+    /// # use fifolio_core::entities::Account;
+    /// # use fifolio_core::identity::{IdentitySource, identify};
     /// # use fifolio_core::storage::RecordHandle;
     /// # use fifolio_core::transaction::Derivation;
     /// # use vec1::vec1;
     /// fn derive(date: NaiveDate, record: RecordHandle) -> Derivation {
     ///     Derivation::new(date, vec1![record])
     /// }
+    /// // The setup the failing examples below share, so that each fails for the reason named
+    /// // and not because an import or a signature drifted.
+    /// let account = Account::new("Saxo", "69900/1000000");
+    /// let _ = identify(&account, &IdentitySource::BrokerReference("r1"));
     /// ```
     ///
     /// From none it does not. Stable rustdoc does not check the error codes below, so the block
