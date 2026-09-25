@@ -468,10 +468,17 @@ DOM-124 is new in revision 14 (DEC-063) and sits here rather than in FIF-025 bec
 Done in revision 26, commit `bb09bb0`, which is the work revision 25 named and the session then stopped on. Verified against the code rather than the message: `import/reader.rs` puts `SpreadsheetReader` (calamine) and `DelimitedReader` (csv) behind one `RowReader` [ARC-023]; a delimited row keeps its verbatim line and a spreadsheet row the canonical JSON rendering — cell as the file holds it, an Excel serial staying the serial, keys in sheet column order — with a test that re-reading the same bytes reproduces the same string [DOM-120]. `import/mod.rs` carries the `Importer` trait and the `import` function that reads, orders and classifies; `RowClassification` is the three outcomes [DOM-044, DOM-045, DOM-046], `NonPositionKind` is the five cash kinds that are counted and not stored [DOM-002], a share-issuing dividend having no kind there because it is a position event [DOM-124]; `completion` is the only constructor of a `ManualEntry` on the import path [DOM-048]. Orders are assigned over every row the file holds, stored or not, so a row's `order` depends on the file alone. `cargo test --workspace` is green on the clean tree: **299 passed, 0 failed**, up from 254 at revision 25.
 Two things later items inherit. The trait's `classify` takes the whole row slice and answers one classification per row, because a Saxo corporate action is classified by its group and not by its row alone; an importer returning the wrong count is a refusal, not a silent truncation. And DOM-043's closed set shipped here as the `RowClassification` type, which is **FIF-064's** requirement, not this item's — FIF-064 is what must review it and say whether anything remains.
 
+## FIF-102 An emitted transfer_in does not block undoing its transfer's batch
+Status: todo
+Requirements: none (correction of DOM-119 under DEC-086; DOM-119 stays on FIF-012)
+Depends on: FIF-012
+Acceptance: `foreign_citations` treats a `transfer_in` emitted by a `transfer_out` as derived by the batch that derived that `transfer_out`; a failing test written first shows a batch whose `transfer_out` emitted records, each citing the batch's stored records, can be deleted; a batch whose records are cited by a genuinely foreign transaction is still refused; an emitted record consumed by an attributed disposal still refuses under SRV-022.
+Notes: Added in revision 52 by the user's decision. Found by FIF-081's implementer: `foreign_citations` (storage/entities.rs) reads an emitted `transfer_in`, which has no batch, as foreign, so under DEC-079 its batch could never be undone. Two emission tests in `invariants.rs` pass only because they cite records never stored; they should cite stored ones. FIF-081 then adds its stored-record handle to `Derivation::new`.
+
 ## FIF-081 Nothing is created from nothing
 Status: todo
 Requirements: DOM-047
-Depends on: FIF-017
+Depends on: FIF-017, FIF-102
 Acceptance: there is no path, in core or at any surface, that creates a transaction other than from source records; the absence is structural rather than a check, and a test asserts it for every construction path.
 Notes: Split out of FIF-017 in revision 3.
 Unblocked in revision 47: DEC-079 closed OQ-002. An emitted `transfer_in` cites the source records of the `transfer_out` that produced it (FIF-063), so the emission path is derivation from source records too. The test must cover it once FIF-063 exists; until then it covers every path that exists.
@@ -1270,7 +1277,26 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 50 (this run).** A status reconciliation. `design/` is **unchanged** since revision 49:
+**Revision 52.** DEC-086 (user's decision): an emitted `transfer_in` counts as derived by its
+`transfer_out`'s batch for DOM-119. New FIF-102 corrects `foreign_citations`; FIF-081 now depends
+on it and resumes after it.
+
+**Revision 51.** A status reconciliation. `design/` is **unchanged** since revision 49:
+`git log fca2736..HEAD -- design/` is empty, and `open-questions.md` names the same **18** ids.
+`HEAD` is `39eb756`. The working tree still carries the uncommitted, unreviewed FIF-028 and FIF-034
+work. None of it is touched, and both stay `todo`.
+
+* **Completed: FIF-095**, committed as `39eb756` with its status flip in the same commit.
+* No item added, split, retired, re-scoped, blocked or unblocked. 99 items: **37 `done`, 48
+  `todo`, 14 `blocked`**, counted by script. The 14 items carrying a blocked id are exactly the 14
+  `blocked`.
+* Coverage re-verified by script: **348** live ids each on exactly one item, none on an item without
+  being in `design/`. Uncovered: only the retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-081.** Its one dependency, FIF-017, is `done`, and DOM-047 is not blocked.
+  It is the first ready `todo` in document order. Also ready: FIF-099, FIF-089, FIF-083, FIF-028,
+  FIF-069, FIF-034, FIF-041, FIF-042.
+
+**Revision 50.** A status reconciliation. `design/` is **unchanged** since revision 49:
 `git log fca2736..HEAD -- design/` is empty, and `open-questions.md` names the same **18** ids.
 `HEAD` is `4f23d8e`. The working tree still carries the uncommitted, unreviewed FIF-028, FIF-034 and
 FIF-095 work. None of it is touched, and all three stay `todo`.
@@ -2156,7 +2182,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 49** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 51** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2222,6 +2248,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 51: unchanged. **348** live ids, each exactly once, re-verified by script against `design/`
+at `39eb756`. Ninety-nine items: 37 `done`, 48 `todo`, 14 `blocked`.
 
 Revision 49: unchanged in count. **351** ids, each exactly once, re-verified by script against `design/` at
 `fca2736`. FIF-101 carries no id of its own. Ninety-nine items: 35 `done`, 50 `todo`, 14 `blocked`.

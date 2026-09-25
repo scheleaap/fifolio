@@ -238,7 +238,7 @@ A gain is computed from the four **rounded** shares, not exactly and then rounde
 * A manual entry is never deleted by an import undo [DOM-110]
 * A security's ISIN is unique [DOM-071]
 * An import batch may only be deleted if none of the transactions derived from its source records participates in an attribution [DOM-072]
-* An import batch may only be deleted if none of the records it owns is cited by a transaction the batch did not derive; the deletion is refused naming those transactions [DOM-119]
+* An import batch may only be deleted if none of the records it owns is cited by a transaction the batch did not derive; the deletion is refused naming those transactions [DOM-119]. A `transfer_in` emitted by a `transfer_out` counts as derived by the batch that derived that `transfer_out`, since deleting the `transfer_out` takes it along (DOM-094, DEC-086)
 
 # Reports
 

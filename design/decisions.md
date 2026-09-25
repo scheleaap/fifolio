@@ -596,3 +596,10 @@ rate for the second fixes a guess into the transaction for good. A day counts as
 day under DOM-034 only when a later publication proves it was skipped; before that ARC-019 refuses.
 The cost is waiting a day, and imports are mostly of past years. Rejected: a calendar of weekends
 and TARGET holidays, correct in both cases but a table to maintain. [DEC-085, DOM-034, ARC-019]
+
+**DEC-086 — An emitted `transfer_in` counts as derived by its `transfer_out`'s batch.** DEC-079 has
+an emitted record cite the `transfer_out`'s source records. It has no batch of its own, so DOM-119
+read it as a foreign citation and refused, forever, to undo the batch holding the transfer. DOM-094
+already deletes emitted records with their `transfer_out`, so they belong to its batch for DOM-119.
+A later disposal that consumed one is still protected, by SRV-022's attribution refusal.
+[DEC-086, DOM-119]
