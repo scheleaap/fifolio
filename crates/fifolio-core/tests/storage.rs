@@ -16,7 +16,8 @@ use fifolio_core::entities::{
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use fifolio_core::storage::{
-    BatchId, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, StorageError, TransactionId,
+    BatchId, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, RecordHandle, StorageError,
+    TransactionId,
 };
 use fifolio_core::transaction::{
     Buy, BuyOrigin, DateProvenance, Derivation, Expiration, Sell, Split, Transaction, TransferIn,
@@ -45,8 +46,16 @@ fn cite(reference: &str) -> RecordIdentity {
     identify(&account(), &IdentitySource::BrokerReference(reference))
 }
 
-fn derivation() -> Derivation {
-    Derivation::new(date(), vec1![cite("4100200300"), cite("4100200301")])
+/// The derivation of the worked example's two rows, which are stored in `batch` first: a
+/// transaction is derived only from records storage holds [DOM-047].
+async fn derivation(database: &Database, batch: BatchId) -> Derivation {
+    Derivation::new(
+        date(),
+        vec1![
+            store_record(database, batch, "4100200300", &[]).await,
+            store_record(database, batch, "4100200301", &[]).await,
+        ],
+    )
 }
 
 /// The Saxo worked example's conversion: USD booked, the rate stated per EUR [DOM-086].
@@ -415,10 +424,12 @@ async fn a_batch_for_an_account_that_was_never_stored_is_refused() {
 #[tokio::test]
 async fn every_transaction_variant_round_trips() {
     let (_db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let derivation = derivation(&database, batch).await;
 
     let variants: Vec<Transaction> = vec![
         Buy::new(
-            derivation(),
+            derivation.clone(),
             Quantity::new(dec!(55)),
             price(dec!(4.18), dec!(3.89)),
             money(dec!(230.00), dec!(214.05)),
@@ -428,7 +439,7 @@ async fn every_transaction_variant_round_trips() {
         )
         .into(),
         Buy::new(
-            derivation(),
+            derivation.clone(),
             Quantity::new(dec!(3)),
             price(dec!(26.10), dec!(26.10)),
             money(dec!(78.30), dec!(78.30)),
@@ -438,7 +449,7 @@ async fn every_transaction_variant_round_trips() {
         )
         .into(),
         TransferIn::new(
-            derivation(),
+            derivation.clone(),
             Quantity::new(dec!(12.50000000)),
             money(dec!(1000.00), dec!(930.67)),
             money(dec!(0.00), dec!(0.00)),
@@ -451,7 +462,7 @@ async fn every_transaction_variant_round_trips() {
         // The other half of the three enums the transfer-in carries: a rename that collapsed
         // two codes into one would make this variant read back as the one above.
         TransferIn::new(
-            derivation(),
+            derivation.clone(),
             Quantity::new(dec!(12.50000000)),
             money(dec!(1000.00), dec!(930.67)),
             money(dec!(0.00), dec!(0.00)),
@@ -467,7 +478,7 @@ async fn every_transaction_variant_round_trips() {
         )
         .into(),
         Sell::new(
-            derivation(),
+            derivation.clone(),
             Quantity::new(dec!(55)),
             price(dec!(5.00), dec!(4.65)),
             money(dec!(275.00), dec!(255.93)),
@@ -476,23 +487,26 @@ async fn every_transaction_variant_round_trips() {
         )
         .into(),
         Expiration::new(
-            derivation(),
+            derivation.clone(),
             money(dec!(0.00), dec!(0.00)),
             money(dec!(0.00), dec!(0.00)),
             conversion(),
         )
         .into(),
         TransferOut::new(
-            derivation(),
+            derivation.clone(),
             Quantity::new(dec!(55)),
             money(dec!(15.00), dec!(13.96)),
             conversion(),
         )
         .into(),
-        Split::new(Derivation::new(date(), vec1![cite("4100200302")])).into(),
+        Split::new(Derivation::new(
+            date(),
+            vec1![store_record(&database, batch, "4100200302", &[]).await],
+        ))
+        .into(),
     ];
 
-    let (placement, _batch) = place(&database).await;
     for transaction in variants {
         let id = database
             .transactions()
@@ -508,15 +522,68 @@ async fn every_transaction_variant_round_trips() {
     }
 }
 
+/// Nothing is created from nothing: the handle a transaction is derived from is issued by storing
+/// the record, a record that was not stored yields none, and the stored transaction cites the
+/// record the handle was issued for [DOM-047], [TST-004].
+///
+/// That a derivation cannot be written from no handle, from a bare identity or from a handle
+/// made by hand is asserted by the `compile_fail` examples on `Derivation::new`; this is the
+/// other half, that the one way in leads from a stored record.
+#[tokio::test]
+async fn a_transaction_is_derived_only_from_a_record_storage_holds() {
+    let (_db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let record = SourceRecord::new(cite("4100200300"), Order::new(1), "raw", BTreeMap::new());
+
+    let handle = database
+        .source_records()
+        .insert(batch, &record)
+        .await
+        .expect("the record");
+    assert_eq!(handle.identity(), record.identity());
+    assert!(
+        database
+            .source_records()
+            .insert(batch, &record)
+            .await
+            .is_err(),
+        "a record that is not written again is issued no second handle"
+    );
+
+    let id = database
+        .transactions()
+        .insert(
+            &placement,
+            &Split::new(Derivation::new(date(), vec1![handle])).into(),
+        )
+        .await
+        .expect("insert");
+    let stored = database
+        .transactions()
+        .find(id)
+        .await
+        .expect("read back")
+        .expect("a stored transaction");
+
+    assert_eq!(stored.cites(), [record.identity().clone()]);
+}
+
 /// A transaction's citations keep the caller's order, which is the shape a multi-row corporate
 /// action had [DOM-016], [TST-004].
 #[tokio::test]
 async fn citations_keep_their_order() {
     let (_db, database) = open().await;
-    let cites = vec1![cite("c"), cite("a"), cite("b")];
-    let transaction: Transaction = Split::new(Derivation::new(date(), cites.clone())).into();
+    let (placement, batch) = place(&database).await;
+    let mut cites = Vec::new();
+    for reference in ["c", "a", "b"] {
+        cites.push(store_record(&database, batch, reference, &[]).await);
+    }
+    let transaction: Transaction = Split::new(Derivation::new(
+        date(),
+        cites.try_into().expect("three records"),
+    ))
+    .into();
 
-    let (placement, _batch) = place(&database).await;
     let id = database
         .transactions()
         .insert(&placement, &transaction)
@@ -529,17 +596,20 @@ async fn citations_keep_their_order() {
         .expect("read back")
         .expect("a stored transaction");
 
-    assert_eq!(stored.cites(), cites.as_slice());
+    assert_eq!(stored.cites(), [cite("c"), cite("a"), cite("b")]);
 }
 
 /// A transaction that was never stored is absent rather than an error [TST-004].
 #[tokio::test]
 async fn an_absent_transaction_reads_back_as_none() {
     let (_db, database) = open().await;
-    let (placement, _batch) = place(&database).await;
+    let (placement, batch) = place(&database).await;
     let id = database
         .transactions()
-        .insert(&placement, &Split::new(derivation()).into())
+        .insert(
+            &placement,
+            &Split::new(derivation(&database, batch).await).into(),
+        )
         .await
         .expect("insert");
     let absent = TransactionId::new(id.get() + 1);
@@ -612,11 +682,12 @@ async fn every_manual_entry_shape_round_trips() {
 #[tokio::test]
 async fn a_value_not_at_its_scale_is_refused_rather_than_truncated() {
     let (db, database) = open().await;
+    let (placement, batch) = place(&database).await;
 
     // 214.054 is four cents and a half of a cent; storing it would round a figure the caller
     // never rounded, and the stored gross is what every calculation reads [DOM-085].
     let unscaled: Transaction = Buy::new(
-        derivation(),
+        derivation(&database, batch).await,
         Quantity::new(dec!(55)),
         price(dec!(4.18), dec!(3.89)),
         money(dec!(230.00), dec!(214.054)),
@@ -626,7 +697,6 @@ async fn a_value_not_at_its_scale_is_refused_rather_than_truncated() {
     )
     .into();
 
-    let (placement, _batch) = place(&database).await;
     match database.transactions().insert(&placement, &unscaled).await {
         Err(StorageError::UnscaledValue {
             field,
@@ -689,9 +759,10 @@ async fn a_quantity_beyond_eight_decimals_is_refused() {
 #[tokio::test]
 async fn a_unit_price_beyond_six_decimals_is_refused() {
     let (_db, database) = open().await;
+    let (placement, batch) = place(&database).await;
 
     let transaction: Transaction = Sell::new(
-        derivation(),
+        derivation(&database, batch).await,
         Quantity::new(dec!(55)),
         price(dec!(4.1812345), dec!(3.89)),
         money(dec!(229.97), dec!(213.95)),
@@ -700,7 +771,6 @@ async fn a_unit_price_beyond_six_decimals_is_refused() {
     )
     .into();
 
-    let (placement, _batch) = place(&database).await;
     match database
         .transactions()
         .insert(&placement, &transaction)
@@ -719,9 +789,10 @@ async fn a_unit_price_beyond_six_decimals_is_refused() {
 #[tokio::test]
 async fn an_fx_rate_beyond_six_decimals_is_refused() {
     let (_db, database) = open().await;
+    let (placement, batch) = place(&database).await;
 
     let transaction: Transaction = Expiration::new(
-        derivation(),
+        derivation(&database, batch).await,
         money(dec!(0.00), dec!(0.00)),
         money(dec!(0.00), dec!(0.00)),
         Conversion::new(
@@ -733,7 +804,6 @@ async fn an_fx_rate_beyond_six_decimals_is_refused() {
     )
     .into();
 
-    let (placement, _batch) = place(&database).await;
     match database
         .transactions()
         .insert(&placement, &transaction)
@@ -752,15 +822,15 @@ async fn an_fx_rate_beyond_six_decimals_is_refused() {
 #[tokio::test]
 async fn a_short_money_figure_is_stored_padded() {
     let (db, database) = open().await;
+    let (placement, batch) = place(&database).await;
     let transaction: Transaction = Expiration::new(
-        derivation(),
+        derivation(&database, batch).await,
         money(dec!(1825.5), dec!(1825.5)),
         money(dec!(0), dec!(0)),
         Conversion::native(date()),
     )
     .into();
 
-    let (placement, _batch) = place(&database).await;
     database
         .transactions()
         .insert(&placement, &transaction)
@@ -842,11 +912,16 @@ async fn a_stored_code_this_version_cannot_read_is_reported() {
         .insert(&security)
         .await
         .expect("insert");
+    let batch = database
+        .import_batches()
+        .insert(&batch(SourceFormat::SaxoNlXlsx))
+        .await
+        .expect("the batch the cited records belong to");
     let transaction = database
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &Split::new(derivation()).into(),
+            &Split::new(derivation(&database, batch).await).into(),
         )
         .await
         .expect("insert");
@@ -901,13 +976,13 @@ async fn a_stored_code_this_version_cannot_read_is_reported() {
 #[tokio::test]
 async fn a_stored_figure_that_is_not_a_decimal_is_reported() {
     let (db, database) = open().await;
-    let (placement, _batch) = place(&database).await;
+    let (placement, batch) = place(&database).await;
     let id = database
         .transactions()
         .insert(
             &placement,
             &Sell::new(
-                derivation(),
+                derivation(&database, batch).await,
                 Quantity::new(dec!(55)),
                 price(dec!(5.00), dec!(4.65)),
                 money(dec!(275.00), dec!(255.93)),
@@ -941,10 +1016,13 @@ async fn a_stored_figure_that_is_not_a_decimal_is_reported() {
 #[tokio::test]
 async fn a_stored_transaction_without_citations_is_refused_on_reading_back() {
     let (db, database) = open().await;
-    let (placement, _batch) = place(&database).await;
+    let (placement, batch) = place(&database).await;
     let id = database
         .transactions()
-        .insert(&placement, &Split::new(derivation()).into())
+        .insert(
+            &placement,
+            &Split::new(derivation(&database, batch).await).into(),
+        )
         .await
         .expect("insert");
 
@@ -1080,13 +1158,13 @@ async fn a_driver_failure_is_not_reported_as_a_duplicate_isin() {
     );
 }
 
-/// A source record of `batch` whose parsed fields carry `fields`.
+/// A source record of `batch` whose parsed fields carry `fields`, and storage's handle on it.
 async fn store_record(
     database: &Database,
     batch: BatchId,
     reference: &str,
     fields: &[(&str, &str)],
-) {
+) -> RecordHandle {
     let record = SourceRecord::new(
         cite(reference),
         Order::new(1),
@@ -1100,7 +1178,7 @@ async fn store_record(
         .source_records()
         .insert(batch, &record)
         .await
-        .expect("insert the record");
+        .expect("insert the record")
 }
 
 /// A second account with the same broker and id is refused by name, not as a driver error;
@@ -1229,14 +1307,14 @@ async fn an_account_named_by_an_entry_or_a_transaction_is_not_deleted() {
     let (_db, database) = open().await;
     let other = Account::new("Saxo", "other");
     database.accounts().insert(&other).await.expect("insert");
-    let (_placement, _batch) = place(&database).await;
+    let (_placement, batch) = place(&database).await;
     // A transaction no import derived, as an emitted transfer_in is, holds an account that
     // owns no batch and no record.
     database
         .transactions()
         .insert(
             &Placement::emitted(other.clone(), isin()),
-            &Split::new(derivation()).into(),
+            &Split::new(derivation(&database, batch).await).into(),
         )
         .await
         .expect("insert the transaction");
@@ -1470,12 +1548,12 @@ async fn a_security_a_source_record_names_is_not_deleted() {
 #[tokio::test]
 async fn a_security_a_transaction_is_placed_on_is_not_deleted() {
     let (_db, database) = open().await;
-    let (_placement, _batch) = place(&database).await;
+    let (_placement, batch) = place(&database).await;
     database
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &Split::new(derivation()).into(),
+            &Split::new(derivation(&database, batch).await).into(),
         )
         .await
         .expect("insert the transaction");

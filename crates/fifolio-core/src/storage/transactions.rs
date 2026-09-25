@@ -17,7 +17,7 @@ use crate::storage::codec::{
     pair_at_scale, price_pair, quantity as read_quantity, rate, rate_source, rate_source_code,
     transfer_in_source, transfer_in_source_code,
 };
-use crate::storage::{AttributionId, BatchId, StorageError, row_id};
+use crate::storage::{AttributionId, BatchId, RecordHandle, StorageError, row_id};
 use crate::transaction::{
     Buy, Closing, Derivation, Expiration, Opening, Sell, Split, Transaction, TransferIn,
     TransferOut,
@@ -280,11 +280,12 @@ impl<'a> TransactionRepository<'a> {
         .fetch_all(self.pool)
         .await?
         .into_iter()
-        .map(|row| RecordIdentity::new(row.get::<String, _>("record_identity")))
+        .map(|row| RecordHandle::new(RecordIdentity::new(row.get::<String, _>("record_identity"))))
         .collect();
         // `insert` writes every citation a derivation holds, and a derivation holds at least one
         // [DOM-047], so a header without citations was not written by this code; it is refused
-        // rather than read back as a transaction derived from nothing.
+        // rather than read back as a transaction derived from nothing. The citations it does
+        // hold were written from handles, which is why they are handles again here.
         let cites = Vec1::try_from_vec(cites).map_err(|_| StorageError::CorruptValue {
             field: "transaction_citation",
             value: id.to_string(),

@@ -18,7 +18,8 @@ use fifolio_core::entities::{
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
 use fifolio_core::storage::{
-    Allocation, AttributionId, BatchId, Database, Placement, StorageError, TransactionId,
+    Allocation, AttributionId, BatchId, Database, Placement, RecordHandle, StorageError,
+    TransactionId,
 };
 use fifolio_core::transaction::DateProvenance;
 use fifolio_core::transaction::{
@@ -78,9 +79,9 @@ fn conversion() -> Conversion {
 }
 
 /// Each `_at` constructor takes the conversion; the unsuffixed helpers fix it to the native one.
-fn buy_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
+fn buy_at(on: NaiveDate, record: RecordHandle, conversion: Conversion) -> Transaction {
     Buy::new(
-        Derivation::new(on, vec1![cite(reference)]),
+        Derivation::new(on, vec1![record]),
         Quantity::new(dec!(100.00000000)),
         price(dec!(10.000000)),
         money(dec!(1000.00)),
@@ -91,13 +92,13 @@ fn buy_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction
     .into()
 }
 
-fn buy(on: NaiveDate, reference: &str) -> Transaction {
-    buy_at(on, reference, conversion())
+fn buy(on: NaiveDate, record: RecordHandle) -> Transaction {
+    buy_at(on, record, conversion())
 }
 
-fn sell_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
+fn sell_at(on: NaiveDate, record: RecordHandle, conversion: Conversion) -> Transaction {
     Sell::new(
-        Derivation::new(on, vec1![cite(reference)]),
+        Derivation::new(on, vec1![record]),
         Quantity::new(dec!(10.00000000)),
         price(dec!(12.000000)),
         money(dec!(120.00)),
@@ -107,13 +108,13 @@ fn sell_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transactio
     .into()
 }
 
-fn sell(on: NaiveDate, reference: &str) -> Transaction {
-    sell_at(on, reference, conversion())
+fn sell(on: NaiveDate, record: RecordHandle) -> Transaction {
+    sell_at(on, record, conversion())
 }
 
-fn transfer_out_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
+fn transfer_out_at(on: NaiveDate, record: RecordHandle, conversion: Conversion) -> Transaction {
     TransferOut::new(
-        Derivation::new(on, vec1![cite(reference)]),
+        Derivation::new(on, vec1![record]),
         Quantity::new(dec!(10.00000000)),
         money(dec!(0.00)),
         conversion,
@@ -121,13 +122,13 @@ fn transfer_out_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Tr
     .into()
 }
 
-fn transfer_out(on: NaiveDate, reference: &str) -> Transaction {
-    transfer_out_at(on, reference, conversion())
+fn transfer_out(on: NaiveDate, record: RecordHandle) -> Transaction {
+    transfer_out_at(on, record, conversion())
 }
 
-fn expiration_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
+fn expiration_at(on: NaiveDate, record: RecordHandle, conversion: Conversion) -> Transaction {
     Expiration::new(
-        Derivation::new(on, vec1![cite(reference)]),
+        Derivation::new(on, vec1![record]),
         money(dec!(0.00)),
         money(dec!(0.00)),
         conversion,
@@ -135,13 +136,13 @@ fn expiration_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Tran
     .into()
 }
 
-fn expiration(on: NaiveDate, reference: &str) -> Transaction {
-    expiration_at(on, reference, conversion())
+fn expiration(on: NaiveDate, record: RecordHandle) -> Transaction {
+    expiration_at(on, record, conversion())
 }
 
-fn transfer_in_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
+fn transfer_in_at(on: NaiveDate, record: RecordHandle, conversion: Conversion) -> Transaction {
     TransferIn::new(
-        Derivation::new(on, vec1![cite(reference)]),
+        Derivation::new(on, vec1![record]),
         Quantity::new(dec!(10.00000000)),
         money(dec!(100.00)),
         money(dec!(0.00)),
@@ -154,15 +155,15 @@ fn transfer_in_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Tra
 }
 
 /// A split carries no money and so no conversion [DOM-105].
-fn split(on: NaiveDate, reference: &str) -> Transaction {
-    Split::new(Derivation::new(on, vec1![cite(reference)])).into()
+fn split(on: NaiveDate, record: RecordHandle) -> Transaction {
+    Split::new(Derivation::new(on, vec1![record])).into()
 }
 
 /// The `transfer_in` a `transfer_out` emits on approval: derived from no row of its own
 /// [DOM-090], it cites the records of the `transfer_out` that emitted it [DEC-079].
-fn emitted_transfer_in(on: NaiveDate, emitter: &str) -> Transaction {
+fn emitted_transfer_in(on: NaiveDate, emitter: RecordHandle) -> Transaction {
     TransferIn::new(
-        Derivation::new(on, vec1![cite(emitter)]),
+        Derivation::new(on, vec1![emitter]),
         Quantity::new(dec!(10.00000000)),
         money(dec!(100.00)),
         money(dec!(0.00)),
@@ -181,6 +182,16 @@ fn record(reference: &str) -> SourceRecord {
         "\"2024-05-02\",\"BUY\"",
         BTreeMap::new(),
     )
+}
+
+/// Stores the record `reference` names in `batch` and hands back storage's handle on it, which is
+/// the only thing a transaction is derived from [DOM-047].
+async fn stored_record(database: &Database, batch: BatchId, reference: &str) -> RecordHandle {
+    database
+        .source_records()
+        .insert(batch, &record(reference))
+        .await
+        .expect("the record a transaction is derived from")
 }
 
 fn import(filename: &str) -> ImportBatch {
@@ -288,20 +299,65 @@ async fn a_later_closing_is_refused_while_an_earlier_one_is_unattributed() {
         batch,
         other_account(),
         isin(),
-        &sell(day(1), "s0"),
+        &sell(day(1), stored_record(&database, batch, "s0").await),
     )
     .await;
-    let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
     // One of each closing kind, so that narrowing the kinds the order is taken over is visible.
-    let expiry = store(&database, batch, isin(), &expiration(day(2), "e1")).await;
-    let out = store(&database, batch, isin(), &transfer_out(day(3), "t1")).await;
-    let earlier = store(&database, batch, isin(), &sell(day(4), "s1")).await;
-    let later = store(&database, batch, isin(), &sell(day(5), "s2")).await;
+    let expiry = store(
+        &database,
+        batch,
+        isin(),
+        &expiration(day(2), stored_record(&database, batch, "e1").await),
+    )
+    .await;
+    let out = store(
+        &database,
+        batch,
+        isin(),
+        &transfer_out(day(3), stored_record(&database, batch, "t1").await),
+    )
+    .await;
+    let earlier = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(4), stored_record(&database, batch, "s1").await),
+    )
+    .await;
+    let later = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(5), stored_record(&database, batch, "s2").await),
+    )
+    .await;
     // Written after `later` and dated before everything: the order is the trade date's, not the
     // one the rows happened to be written in, so this is the first closing named below.
-    let earliest = store(&database, batch, isin(), &sell(day_before_all(), "s4")).await;
+    let earliest = store(
+        &database,
+        batch,
+        isin(),
+        &sell(
+            day_before_all(),
+            stored_record(&database, batch, "s4").await,
+        ),
+    )
+    .await;
     // Same account, different security: FIFO never crosses the pair, so this must not block.
-    let elsewhere = store(&database, batch, other_isin(), &sell(day(2), "s3")).await;
+    let elsewhere = store(
+        &database,
+        batch,
+        other_isin(),
+        &sell(day(2), stored_record(&database, batch, "s3").await),
+    )
+    .await;
 
     let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
 
@@ -348,9 +404,27 @@ async fn a_later_closing_is_refused_while_an_earlier_one_is_unattributed() {
 #[tokio::test]
 async fn closings_on_one_trade_date_are_ordered_among_themselves() {
     let (_db, database, batch) = open().await;
-    let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
-    let first = store(&database, batch, isin(), &sell(day(2), "s1")).await;
-    let second = store(&database, batch, isin(), &sell(day(2), "s2")).await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
+    let first = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
+    let second = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s2").await),
+    )
+    .await;
     let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
 
     assert_eq!(
@@ -381,9 +455,27 @@ async fn closings_on_one_trade_date_are_ordered_among_themselves() {
 #[tokio::test]
 async fn an_approved_attribution_reads_back_with_its_allocations() {
     let (_db, database, batch) = open().await;
-    let first_opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
-    let second_opening = store(&database, batch, isin(), &buy(day(2), "b2")).await;
-    let closing = store(&database, batch, isin(), &sell(day(3), "s1")).await;
+    let first_opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
+    let second_opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(2), stored_record(&database, batch, "b2").await),
+    )
+    .await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(3), stored_record(&database, batch, "s1").await),
+    )
+    .await;
 
     // The later opening is allocated first, so the stored order is the approved one rather than
     // an id order the query might fall back on.
@@ -421,7 +513,13 @@ async fn an_approved_attribution_reads_back_with_its_allocations() {
 #[tokio::test]
 async fn an_attribution_approved_with_no_allocations_is_stored_empty() {
     let (_db, database, batch) = open().await;
-    let closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
 
     let attribution = database
         .attributions()
@@ -442,7 +540,13 @@ async fn an_attribution_approved_with_no_allocations_is_stored_empty() {
     );
 
     // The closing counts as attributed, which is the consequence DOM-065 will have to answer for.
-    let later = store(&database, batch, isin(), &sell(day(3), "s2")).await;
+    let later = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(3), stored_record(&database, batch, "s2").await),
+    )
+    .await;
     database
         .attributions()
         .approve(later, &[])
@@ -456,9 +560,27 @@ async fn an_attribution_approved_with_no_allocations_is_stored_empty() {
 #[tokio::test]
 async fn an_allocation_quantity_not_at_its_scale_is_refused() {
     let (_db, database, batch) = open().await;
-    let first_opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
-    let second_opening = store(&database, batch, isin(), &buy(day(1), "b2")).await;
-    let closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
+    let first_opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
+    let second_opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b2").await),
+    )
+    .await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
 
     // The unscaled quantity is the second of the two: a check made per insert rather than up
     // front would already have written the first allocation by the time it refused.
@@ -502,7 +624,13 @@ async fn an_allocation_quantity_not_at_its_scale_is_refused() {
 #[tokio::test]
 async fn only_a_closing_is_attributed_and_only_once() {
     let (_db, database, batch) = open().await;
-    let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
     let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
 
     let openings = [
@@ -512,13 +640,23 @@ async fn only_a_closing_is_attributed_and_only_once() {
                 &database,
                 batch,
                 isin(),
-                &transfer_in_at(day(1), "i1", conversion()),
+                &transfer_in_at(
+                    day(1),
+                    stored_record(&database, batch, "i1").await,
+                    conversion(),
+                ),
             )
             .await,
             "transfer_in",
         ),
         (
-            store(&database, batch, isin(), &split(day(1), "p1")).await,
+            store(
+                &database,
+                batch,
+                isin(),
+                &split(day(1), stored_record(&database, batch, "p1").await),
+            )
+            .await,
             "split",
         ),
     ];
@@ -536,7 +674,13 @@ async fn only_a_closing_is_attributed_and_only_once() {
         }
     }
 
-    let closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
     let attribution = database
         .attributions()
         .approve(closing, &allocation)
@@ -562,13 +706,31 @@ async fn only_a_closing_is_attributed_and_only_once() {
 #[tokio::test]
 async fn an_attribution_with_a_later_one_is_not_deleted() {
     let (_db, database, batch) = open().await;
-    let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
     let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
 
     // The later-dated closing is written first, so row-id order and trade-date order disagree:
     // the order the deletion is refused in is the trade date's, not the one they were written in.
-    let later_closing = store(&database, batch, isin(), &sell(day(3), "s2")).await;
-    let earlier_closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
+    let later_closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(3), stored_record(&database, batch, "s2").await),
+    )
+    .await;
+    let earlier_closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
     let earlier = database
         .attributions()
         .approve(earlier_closing, &allocation)
@@ -625,11 +787,29 @@ async fn an_attribution_with_a_later_one_is_not_deleted() {
 #[tokio::test]
 async fn attributions_of_one_trade_date_are_ordered_among_themselves() {
     let (_db, database, batch) = open().await;
-    let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
     let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
 
-    let first_closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
-    let second_closing = store(&database, batch, isin(), &sell(day(2), "s2")).await;
+    let first_closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
+    let second_closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s2").await),
+    )
+    .await;
     let first = database
         .attributions()
         .approve(first_closing, &allocation)
@@ -647,10 +827,16 @@ async fn attributions_of_one_trade_date_are_ordered_among_themselves() {
         batch,
         other_account(),
         isin(),
-        &sell(day(3), "s3"),
+        &sell(day(3), stored_record(&database, batch, "s3").await),
     )
     .await;
-    let across_securities = store(&database, batch, other_isin(), &sell(day(3), "s4")).await;
+    let across_securities = store(
+        &database,
+        batch,
+        other_isin(),
+        &sell(day(3), stored_record(&database, batch, "s4").await),
+    )
+    .await;
     for elsewhere in [across_accounts, across_securities] {
         database
             .attributions()
@@ -719,8 +905,15 @@ async fn an_unknown_attribution_and_an_unknown_transaction() {
 #[tokio::test]
 async fn an_attributed_transaction_is_not_deleted() {
     let (_db, database, batch) = open().await;
-    let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
-    let closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
+    let b1 = stored_record(&database, batch, "b1").await;
+    let opening = store(&database, batch, isin(), &buy(day(1), b1.clone())).await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
     let attribution = database
         .attributions()
         .approve(
@@ -754,7 +947,7 @@ async fn an_attributed_transaction_is_not_deleted() {
             .find(opening)
             .await
             .expect("read back"),
-        Some(buy(day(1), "b1")),
+        Some(buy(day(1), b1)),
         "a refused deletion leaves the transaction as it was"
     );
 
@@ -777,7 +970,8 @@ async fn an_attributed_transaction_is_not_deleted() {
 #[tokio::test]
 async fn an_emitted_transfer_in_is_not_deleted_independently_of_its_transfer_out() {
     let (_db, database, batch) = open().await;
-    let out = store(&database, batch, isin(), &transfer_out(day(2), "t1")).await;
+    let t1 = stored_record(&database, batch, "t1").await;
+    let out = store(&database, batch, isin(), &transfer_out(day(2), t1.clone())).await;
     // DOM-090 emits one transfer_in per consumed parcel, so two is the ordinary shape.
     let mut emitted = Vec::new();
     for _ in 0..2 {
@@ -785,7 +979,7 @@ async fn an_emitted_transfer_in_is_not_deleted_independently_of_its_transfer_out
             .transactions()
             .insert(
                 &Placement::emitted(account(), isin()),
-                &emitted_transfer_in(day(1), "t1"),
+                &emitted_transfer_in(day(1), t1.clone()),
             )
             .await
             .expect("the emitted record");
@@ -822,7 +1016,13 @@ async fn an_emitted_transfer_in_is_not_deleted_independently_of_its_transfer_out
     // An emitted record is an opening like any other, and while it is attributed the transfer_out
     // cannot take it down with it [DOM-069]. The closing is dated before the transfer_out, so
     // DOM-066 does not stand in the way of approving it.
-    let closing = store(&database, batch, isin(), &sell(day(1), "s1")).await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(1), stored_record(&database, batch, "s1").await),
+    )
+    .await;
     let attribution = database
         .attributions()
         .approve(
@@ -892,13 +1092,20 @@ async fn an_emitted_transfer_in_is_not_deleted_independently_of_its_transfer_out
 #[tokio::test]
 async fn an_emission_is_recorded_only_between_a_transfer_out_and_a_transfer_in() {
     let (_db, database, batch) = open().await;
-    let out = store(&database, batch, isin(), &transfer_out(day(2), "t1")).await;
-    let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
+    let t1 = stored_record(&database, batch, "t1").await;
+    let out = store(&database, batch, isin(), &transfer_out(day(2), t1.clone())).await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
     let emitted = database
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &emitted_transfer_in(day(1), "t1"),
+            &emitted_transfer_in(day(1), t1.clone()),
         )
         .await
         .expect("the emitted record");
@@ -951,24 +1158,32 @@ async fn an_emission_is_recorded_only_between_a_transfer_out_and_a_transfer_in()
 #[tokio::test]
 async fn a_batch_whose_transaction_is_attributed_is_not_deleted() {
     let (_db, database, batch) = open().await;
-    // The record the transfer_out and its emission cite is stored, so that the undo meets the
-    // emission's citation of it and must not read it as foreign [DOM-119], [DEC-086].
-    database
-        .source_records()
-        .insert(batch, &record("t1"))
-        .await
-        .expect("the record the transfer_out cites");
-    let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
-    let closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
+    // The record the transfer_out and its emission cite, owned by this batch, so that the undo
+    // meets the emission's citation of it and must not read it as foreign [DOM-119], [DEC-086].
+    let t1 = stored_record(&database, batch, "t1").await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record(&database, batch, "b1").await),
+    )
+    .await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
     // A transfer_out the batch derived, with the record it emitted. The emitted record belongs to
     // no batch [DOM-090], so an undo reaches it only through the group its transfer_out heads; it
     // is dated after the closing below so that DOM-066 does not stand in the way of approving it.
-    let out = store(&database, batch, isin(), &transfer_out(day(3), "t1")).await;
+    let out = store(&database, batch, isin(), &transfer_out(day(3), t1.clone())).await;
     let emitted = database
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &emitted_transfer_in(day(1), "t1"),
+            &emitted_transfer_in(day(1), t1.clone()),
         )
         .await
         .expect("the emitted record");
@@ -1048,19 +1263,16 @@ async fn a_batch_whose_transaction_is_attributed_is_not_deleted() {
 #[tokio::test]
 async fn a_batch_whose_emitted_record_is_attributed_is_not_deleted() {
     let (_db, database, batch) = open().await;
-    // Stored, so that the refusal below is SRV-022's attribution refusal and not DOM-119 reading
-    // the emission's citation of it as foreign [DEC-086].
-    database
-        .source_records()
-        .insert(batch, &record("t1"))
-        .await
-        .expect("the record the transfer_out cites");
-    let out = store(&database, batch, isin(), &transfer_out(day(3), "t1")).await;
+    // The record the transfer_out and its emission cite, owned by this batch, so that the refusal
+    // below is SRV-022's attribution refusal and not DOM-119 reading the emission's citation of
+    // it as foreign [DEC-086].
+    let t1 = stored_record(&database, batch, "t1").await;
+    let out = store(&database, batch, isin(), &transfer_out(day(3), t1.clone())).await;
     let emitted = database
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &emitted_transfer_in(day(1), "t1"),
+            &emitted_transfer_in(day(1), t1.clone()),
         )
         .await
         .expect("the emitted record");
@@ -1077,7 +1289,13 @@ async fn a_batch_whose_emitted_record_is_attributed_is_not_deleted() {
         .insert(&import("2025.xlsx"))
         .await
         .expect("the second import");
-    let closing = store(&database, second, isin(), &sell(day(1), "s1")).await;
+    let closing = store(
+        &database,
+        second,
+        isin(),
+        &sell(day(1), stored_record(&database, second, "s1").await),
+    )
+    .await;
     let attribution = database
         .attributions()
         .approve(
@@ -1147,11 +1365,7 @@ async fn a_batch_whose_emitted_record_is_attributed_is_not_deleted() {
 #[tokio::test]
 async fn a_batch_whose_records_a_foreign_transaction_cites_is_not_deleted() {
     let (_db, database, batch) = open().await;
-    database
-        .source_records()
-        .insert(batch, &record("r1"))
-        .await
-        .expect("the record this batch owns");
+    let r1 = stored_record(&database, batch, "r1").await;
 
     // A second import whose transaction cites the first import's record: the shape of a corporate
     // action booked across two files.
@@ -1160,21 +1374,21 @@ async fn a_batch_whose_records_a_foreign_transaction_cites_is_not_deleted() {
         .insert(&import("2025.xlsx"))
         .await
         .expect("the second import");
-    let citing = store(&database, second, isin(), &sell(day(2), "r1")).await;
+    let citing = store(&database, second, isin(), &sell(day(2), r1.clone())).await;
     // A second foreign citer, so that the refusal is seen naming more than one transaction.
-    let also_citing = store(&database, second, isin(), &sell(day(3), "r1")).await;
+    let also_citing = store(&database, second, isin(), &sell(day(3), r1.clone())).await;
     // A citer no batch derived at all — the emitted shape of DOM-090 — is a transaction this
     // batch did not derive just as much as one another batch derived, and holds it just as hard.
     let emitted_citer = database
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &transfer_in_at(day(4), "r1", conversion()),
+            &transfer_in_at(day(4), r1.clone(), conversion()),
         )
         .await
         .expect("the emitted citer");
     // The batch's own transaction cites the same record and must not be named.
-    let own = store(&database, batch, isin(), &buy(day(1), "r1")).await;
+    let own = store(&database, batch, isin(), &buy(day(1), r1)).await;
 
     match database.import_batches().delete(batch).await {
         Err(StorageError::BatchRecordsCited {
@@ -1225,12 +1439,8 @@ async fn a_batch_whose_records_a_foreign_transaction_cites_is_not_deleted() {
 #[tokio::test]
 async fn a_batch_whose_records_only_its_own_emissions_cite_is_deleted() {
     let (_db, database, batch) = open().await;
-    database
-        .source_records()
-        .insert(batch, &record("t1"))
-        .await
-        .expect("the record this batch owns");
-    let out = store(&database, batch, isin(), &transfer_out(day(3), "t1")).await;
+    let t1 = stored_record(&database, batch, "t1").await;
+    let out = store(&database, batch, isin(), &transfer_out(day(3), t1.clone())).await;
     // DOM-090 emits one transfer_in per consumed parcel, each citing the transfer_out's records.
     let mut emitted = Vec::new();
     for _ in 0..2 {
@@ -1238,7 +1448,7 @@ async fn a_batch_whose_records_only_its_own_emissions_cite_is_deleted() {
             .transactions()
             .insert(
                 &Placement::emitted(account(), isin()),
-                &emitted_transfer_in(day(1), "t1"),
+                &emitted_transfer_in(day(1), t1.clone()),
             )
             .await
             .expect("the emitted record");
@@ -1257,12 +1467,18 @@ async fn a_batch_whose_records_only_its_own_emissions_cite_is_deleted() {
         .insert(&import("2025.xlsx"))
         .await
         .expect("the second import");
-    let other_out = store(&database, second, isin(), &transfer_out(day(4), "t2")).await;
+    let other_out = store(
+        &database,
+        second,
+        isin(),
+        &transfer_out(day(4), stored_record(&database, second, "t2").await),
+    )
+    .await;
     let foreign = database
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &emitted_transfer_in(day(1), "t1"),
+            &emitted_transfer_in(day(1), t1.clone()),
         )
         .await
         .expect("the foreign emitted record");

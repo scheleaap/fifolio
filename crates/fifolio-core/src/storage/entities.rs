@@ -14,7 +14,7 @@ use crate::storage::codec::{
     quotation, quotation_code, security_type, security_type_code, source_format, source_format_code,
 };
 use crate::storage::transactions::{TransactionId, delete_transactions, participating_attribution};
-use crate::storage::{StorageError, row_id};
+use crate::storage::{RecordHandle, StorageError, row_id};
 
 row_id!(
     /// An import batch's key. Surrogate because a batch has no natural one: the same file may be
@@ -363,7 +363,14 @@ impl<'a> SourceRecordRepository<'a> {
 
     /// Stores `record` as owned by `batch`, which is what "the records it owns" means when a
     /// deletion of that batch is refused [DOM-119] or carried out.
-    pub async fn insert(&self, batch: BatchId, record: &SourceRecord) -> Result<(), StorageError> {
+    ///
+    /// The handle it answers with is what a transaction is then derived from [DOM-047]: a record
+    /// that was not written yields none.
+    pub async fn insert(
+        &self,
+        batch: BatchId,
+        record: &SourceRecord,
+    ) -> Result<RecordHandle, StorageError> {
         let parsed =
             serde_json::to_string(record.parsed()).map_err(|_| StorageError::CorruptValue {
                 field: "parsed",
@@ -381,7 +388,7 @@ impl<'a> SourceRecordRepository<'a> {
         .bind(batch.get())
         .execute(self.pool)
         .await?;
-        Ok(())
+        Ok(RecordHandle::new(record.identity().clone()))
     }
 
     pub async fn find(

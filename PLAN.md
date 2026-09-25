@@ -483,6 +483,7 @@ Depends on: FIF-017, FIF-102
 Acceptance: there is no path, in core or at any surface, that creates a transaction other than from source records; the absence is structural rather than a check, and a test asserts it for every construction path.
 Notes: Split out of FIF-017 in revision 3. Revision 54: this item's partial, **unreviewed** code was committed at the user's instruction so the tree is clean; build on it and review it against the specification as if uncommitted.
 Unblocked in revision 47: DEC-079 closed OQ-002. An emitted `transfer_in` cites the source records of the `transfer_out` that produced it (FIF-063), so the emission path is derivation from source records too. The test must cover it once FIF-063 exists; until then it covers every path that exists.
+Named next to build in revision 55: the first `todo` in document order whose dependencies are all `done` and which carries no blocked id.
 
 ## FIF-064 Import classification taxonomy
 Status: done
@@ -1277,6 +1278,18 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 55.** A status reconciliation. `design/` is **unchanged** since revision 52 (last touched
+in `d55a1b5`; no uncommitted change). `open-questions.md` names the same **18** ids, and the 14
+items carrying one are exactly the 14 `blocked`; none is unblocked.
+
+* No item added, split, retired, completed, blocked or unblocked. 100 items: **38 `done`, 48
+  `todo`, 14 `blocked`**, counted by script (revision 54 made FIF-102 `done`).
+* Coverage re-verified by script: every live id on exactly one item's `Requirements:` line.
+  Uncovered: only the retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-081.** Its dependencies FIF-017 and FIF-102 are `done`, and DOM-047 is not
+  blocked. Everything ahead of it in document order is `done`, `blocked`, or waits on a `blocked`
+  item. Its partial, unreviewed code from revision 54 is in `HEAD`; build on it and review it.
 
 **Revision 54.** The working tree held the unreviewed partial work of FIF-028, FIF-034 and
 FIF-081 alongside FIF-102, entangled across files. At the user's instruction all of it was committed

@@ -25,16 +25,18 @@
 //!
 //! # Nothing is created from nothing
 //!
-//! A [`Derivation`] cites at least one source record, by type: it holds a [`Vec1`], and its
-//! constructor takes one, so a citation-less derivation — and with it a transaction invented
-//! from nothing — cannot be written, let alone stored [DOM-047]. Every variant constructor takes
-//! a `Derivation`, so this is the one gate every construction path passes, whatever surface it
-//! starts at. A `transfer_in` emitted on approval of a `transfer_out` is no exception: it cites
-//! the `transfer_out`'s records [DEC-079].
+//! A [`Derivation`] is made from at least one [`RecordHandle`], by type: its one constructor
+//! takes a [`Vec1`] of them [DOM-047]. The `Vec1` rules out a derivation citing nothing; the
+//! handle rules out one citing a record that does not exist, since only storage issues handles
+//! and it issues them for records it holds. A record identity will not do, because
+//! [`crate::identity::identify`] computes one for any row, read or not. Every variant
+//! constructor takes a `Derivation`, so this is the one gate every construction path passes,
+//! whatever surface it starts at, with no check to forget. A `transfer_in` emitted on approval
+//! of a `transfer_out` is no exception: it cites the `transfer_out`'s records [DEC-079].
 //!
-//! What the type cannot say is that a cited identity names a record that is stored: a
-//! transaction may cite a record an import undo later removed [DOM-099], and the relation to
-//! source records is DOM-013's, which belongs to FIF-076.
+//! A handle proves the record was stored when the transaction was derived, not that it stays
+//! so; what keeps a stored transaction's citations standing is the import undo's refusal
+//! [DOM-119]. Which cited record a transaction *relates to* in the sense of DOM-013 is FIF-076's.
 //!
 //! The distinction between **consuming** a record and merely **citing** it [DOM-101] is
 //! undecided (FIF-058). What every variant holds until then is the citation — the audit trail
@@ -97,6 +99,7 @@ use vec1::Vec1;
 
 use crate::decimal::{Money, Quantity, QuotedPrice};
 use crate::entities::RecordIdentity;
+use crate::storage::RecordHandle;
 use crate::valuation::{Conversion, Valued};
 
 /// What every variant carries: its trade date, and the records it was derived from [DOM-016].
@@ -113,23 +116,21 @@ impl Derivation {
     /// A transaction derived from `cites`, in the order the caller states, so that a multi-row
     /// event keeps its audit trail in the shape it had [DOM-016].
     ///
-    /// `cites` is non-empty by type, so there is no derivation from nothing [DOM-047]. With one
-    /// citation it compiles:
+    /// `cites` is non-empty and made of storage's handles, so there is no derivation from nothing
+    /// [DOM-047]. From one handle it compiles:
     ///
     /// ```
     /// # use chrono::NaiveDate;
-    /// # use fifolio_core::entities::Account;
-    /// # use fifolio_core::identity::{IdentitySource, identify};
+    /// # use fifolio_core::storage::RecordHandle;
     /// # use fifolio_core::transaction::Derivation;
     /// # use vec1::vec1;
-    /// let date = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
-    /// let account = Account::new("Saxo", "69900/1000000");
-    /// let cite = identify(&account, &IdentitySource::BrokerReference("r1"));
-    /// let _ = Derivation::new(date, vec1![cite]);
+    /// fn derive(date: NaiveDate, record: RecordHandle) -> Derivation {
+    ///     Derivation::new(date, vec1![record])
+    /// }
     /// ```
     ///
-    /// With none it does not. Stable rustdoc does not check the error code below, so the block
-    /// above is what shows the imports and the call are sound and the empty list alone fails:
+    /// From none it does not. Stable rustdoc does not check the error codes below, so the block
+    /// above is what shows the imports and the call are sound and each failure is the one named:
     ///
     /// ```compile_fail,E0308
     /// # use chrono::NaiveDate;
@@ -137,9 +138,36 @@ impl Derivation {
     /// let date = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
     /// let _ = Derivation::new(date, Vec::new());
     /// ```
+    ///
+    /// Nor from an identity computed for a row nobody read:
+    ///
+    /// ```compile_fail,E0308
+    /// # use chrono::NaiveDate;
+    /// # use fifolio_core::entities::Account;
+    /// # use fifolio_core::identity::{IdentitySource, identify};
+    /// # use fifolio_core::transaction::Derivation;
+    /// # use vec1::vec1;
+    /// let date = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
+    /// let account = Account::new("Saxo", "69900/1000000");
+    /// let invented = identify(&account, &IdentitySource::BrokerReference("r1"));
+    /// let _ = Derivation::new(date, vec1![invented]);
+    /// ```
+    ///
+    /// Nor from a handle made by hand, because only storage makes them:
+    ///
+    /// ```compile_fail,E0624
+    /// # use fifolio_core::entities::Account;
+    /// # use fifolio_core::identity::{IdentitySource, identify};
+    /// # use fifolio_core::storage::RecordHandle;
+    /// let account = Account::new("Saxo", "69900/1000000");
+    /// let _ = RecordHandle::new(identify(&account, &IdentitySource::BrokerReference("r1")));
+    /// ```
     #[must_use]
-    pub fn new(trade_date: NaiveDate, cites: Vec1<RecordIdentity>) -> Self {
-        Self { trade_date, cites }
+    pub fn new(trade_date: NaiveDate, cites: Vec1<RecordHandle>) -> Self {
+        Self {
+            trade_date,
+            cites: cites.mapped(RecordHandle::into_identity),
+        }
     }
 
     #[must_use]
@@ -565,12 +593,17 @@ mod tests {
         identify(&account(), &IdentitySource::BrokerReference(reference))
     }
 
+    /// Storage's handle on the record `reference` names, as it would issue one on insert.
+    fn stored(reference: &str) -> RecordHandle {
+        RecordHandle::for_test(cite(reference))
+    }
+
     fn date() -> NaiveDate {
         NaiveDate::from_ymd_opt(2024, 5, 2).expect("a valid date")
     }
 
     fn derivation() -> Derivation {
-        Derivation::new(date(), vec1![cite("row-1")])
+        Derivation::new(date(), vec1![stored("row-1")])
     }
 
     /// The conversion the worked Saxo buy was booked under: USD figures, the EUR figures the
@@ -712,7 +745,7 @@ mod tests {
     /// its audit trail [DOM-016].
     #[test]
     fn a_transaction_cites_the_records_it_was_derived_from() {
-        let rows = vec1![cite("philips-position-row"), cite("philips-cash-row")];
+        let rows = vec1![stored("philips-position-row"), stored("philips-cash-row")];
 
         let transaction: Transaction = Buy::new(
             Derivation::new(date(), rows.clone()),
@@ -725,7 +758,10 @@ mod tests {
         )
         .into();
 
-        assert_eq!(transaction.cites(), rows.as_slice());
+        assert_eq!(
+            transaction.cites(),
+            [cite("philips-position-row"), cite("philips-cash-row")]
+        );
     }
 
     /// The citation is by broker-scoped identity rather than by an internal key, which is what
@@ -1129,7 +1165,7 @@ mod tests {
         // the acquisition below is five years before the disposal that closes it.
         let acquired = NaiveDate::from_ymd_opt(2019, 3, 14).expect("a valid date");
         let opened: Transaction = Buy::new(
-            Derivation::new(acquired, vec1![cite("row-1")]),
+            Derivation::new(acquired, vec1![stored("row-1")]),
             Quantity::new(dec!(10)),
             Valued::in_eur(QuotedPrice::new(dec!(100.00))),
             Valued::in_eur(Money::new(dec!(1000.00))),

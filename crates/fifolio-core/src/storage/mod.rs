@@ -64,6 +64,8 @@ use std::path::Path;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 
+use crate::entities::RecordIdentity;
+
 pub use attributions::{Allocation, Attribution, AttributionId, AttributionRepository};
 pub use entities::{
     AccountRepository, BatchId, ImportBatchRepository, SecurityRepository, SourceRecordRepository,
@@ -81,6 +83,49 @@ pub const DEFAULT_DATABASE_PATH: &str = "./fifolio.db";
 /// The versioned migrations, embedded in the binary so that a deployed process carries its own
 /// schema history [ARC-012].
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// Storage's word that a source record exists: the only thing a
+/// [`Derivation`](crate::transaction::Derivation) is made from [DOM-047].
+///
+/// Its constructor is private to this module, so outside it a handle is obtained in exactly two
+/// ways: [`SourceRecordRepository::insert`] issues one for the record it has just written, and
+/// [`ReconnectedEntry::handles`] one for each record an import brought back. A record identity
+/// alone is not enough, since [`crate::identity::identify`] computes one for a row that was
+/// never read; a handle is what makes "derived from source records" a fact of the types rather
+/// than a check someone must remember.
+///
+/// Reading a stored transaction back also rebuilds handles, from its own citations. That is
+/// storage vouching for what it already holds: those citations were written from handles, so
+/// the induction holds rather than being broken by the read.
+///
+/// A handle says the record was stored when it was issued, not that it stays stored: an import
+/// undo removes records together with what was derived from them, and refuses while anything
+/// else cites them [DOM-119].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordHandle(RecordIdentity);
+
+impl RecordHandle {
+    fn new(identity: RecordIdentity) -> Self {
+        Self(identity)
+    }
+
+    /// A unit test outside storage has no database to be issued a handle by; this compiles into
+    /// the crate's own test build and nowhere else.
+    #[cfg(test)]
+    pub(crate) fn for_test(identity: RecordIdentity) -> Self {
+        Self(identity)
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> &RecordIdentity {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_identity(self) -> RecordIdentity {
+        self.0
+    }
+}
 
 /// Anything storage refuses or cannot make sense of.
 #[derive(Debug, thiserror::Error)]

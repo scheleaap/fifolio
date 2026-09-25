@@ -31,7 +31,7 @@ use sqlx::{Row, query};
 use crate::entities::{Isin, RecordIdentity, SourceRecord};
 use crate::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use crate::storage::codec::{at_scale, quantity as read_quantity};
-use crate::storage::{BatchId, SourceRecordRepository, StorageError, row_id};
+use crate::storage::{BatchId, RecordHandle, SourceRecordRepository, StorageError, row_id};
 
 row_id!(
     /// A manual entry's key.
@@ -292,6 +292,17 @@ impl ReconnectedEntry {
     #[must_use]
     pub fn records(&self) -> &[SourceRecord] {
         &self.records
+    }
+
+    /// A handle on each of [`Self::records`], in the same order, so that the transaction the
+    /// entry completed can be derived again from records storage has just read [DOM-047],
+    /// [DOM-108].
+    #[must_use]
+    pub fn handles(&self) -> Vec<RecordHandle> {
+        self.records
+            .iter()
+            .map(|record| RecordHandle::new(record.identity().clone()))
+            .collect()
     }
 }
 

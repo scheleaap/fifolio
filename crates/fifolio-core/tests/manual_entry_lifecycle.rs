@@ -25,7 +25,7 @@ use fifolio_core::import::{
 };
 use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
 use fifolio_core::ordering::{FileDirection, RowOrderingKey};
-use fifolio_core::storage::{BatchId, Database, Placement, TransactionId};
+use fifolio_core::storage::{BatchId, Database, Placement, RecordHandle, TransactionId};
 use fifolio_core::transaction::{Buy, BuyOrigin, Derivation, Transaction};
 use fifolio_core::valuation::{Conversion, Valued};
 use fifolio_test_support::TempDb;
@@ -153,12 +153,17 @@ async fn open() -> (TempDb, Database) {
     (db, database)
 }
 
-/// Imports `FILE` into the account and stores what it yielded, which is what an import does.
-async fn import_file(database: &Database) -> (BatchId, Import) {
+/// Imports `FILE` into the account and stores what it yielded, which is what an import does,
+/// handing back the handles storage issued for the records it wrote.
+async fn import_file(database: &Database) -> (BatchId, Import, Vec<RecordHandle>) {
     import_bytes(database, "2024.csv", FILE).await
 }
 
-async fn import_bytes(database: &Database, filename: &str, content: &str) -> (BatchId, Import) {
+async fn import_bytes(
+    database: &Database,
+    filename: &str,
+    content: &str,
+) -> (BatchId, Import, Vec<RecordHandle>) {
     let imported = import(&FakeImporter::new(), &account(), content.as_bytes()).expect("the file");
     let batch = database
         .import_batches()
@@ -171,32 +176,40 @@ async fn import_bytes(database: &Database, filename: &str, content: &str) -> (Ba
         ))
         .await
         .expect("the batch");
+    let mut issued = Vec::new();
     for stored in imported.stored() {
-        database
-            .source_records()
-            .insert(batch, stored.record())
-            .await
-            .expect("the source record");
+        issued.push(
+            database
+                .source_records()
+                .insert(batch, stored.record())
+                .await
+                .expect("the source record"),
+        );
     }
-    (batch, imported)
+    (batch, imported, issued)
 }
 
-/// The identities of `records`, which a derivation requires to be at least one [DOM-047].
-fn cited(records: &[SourceRecord]) -> Vec1<RecordIdentity> {
-    Vec1::try_from_vec(
-        records
-            .iter()
-            .map(SourceRecord::identity)
-            .cloned()
-            .collect(),
-    )
-    .expect("a transaction derives from at least one record")
+/// The handles among `issued` on `records`, in the order of `records`: a derivation is made from
+/// at least one record storage holds [DOM-047].
+fn handles(issued: &[RecordHandle], records: &[SourceRecord]) -> Vec1<RecordHandle> {
+    records
+        .iter()
+        .map(|record| {
+            issued
+                .iter()
+                .find(|handle| handle.identity() == record.identity())
+                .cloned()
+                .expect("the import stored the record")
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("a transaction derives from at least one record")
 }
 
 /// The transaction a row that needs nothing from the user derives to.
-fn purchase(records: &[SourceRecord]) -> Transaction {
+fn purchase(records: Vec1<RecordHandle>) -> Transaction {
     Buy::new(
-        Derivation::new(day(2), cited(records)),
+        Derivation::new(day(2), records),
         Quantity::new(dec!(100.00000000)),
         price(dec!(10.000000)),
         money(dec!(1000.00)),
@@ -213,12 +226,12 @@ fn purchase(records: &[SourceRecord]) -> Transaction {
 /// This stands in for a format's own derivation rule (IMP-SAXO-018), which is each importer's
 /// item. What matters here is that it is a function of the entry and the records alone, so that
 /// running it again after a re-import needs nothing from the user.
-fn stock_dividend(entry: &ManualEntry, records: &[SourceRecord]) -> Transaction {
+fn stock_dividend(entry: &ManualEntry, records: Vec1<RecordHandle>) -> Transaction {
     let Supplied::Election(Election::Stock { shares }) = entry.supplied() else {
         panic!("the entry supplies a stock election")
     };
     Buy::new(
-        Derivation::new(day(3), cited(records)),
+        Derivation::new(day(3), records),
         *shares,
         price(dec!(4.000000)),
         money(dec!(12.00)),
@@ -281,9 +294,14 @@ fn entry_for(records: &[SourceRecord]) -> ManualEntry {
 #[tokio::test]
 async fn an_undo_removes_the_imports_records_and_transactions_and_leaves_the_entry_standing() {
     let (_db, database) = open().await;
-    let (batch, imported) = import_file(&database).await;
-    let (other_batch, other) = import_bytes(&database, "other.csv", OTHER_FILE).await;
-    let survivor = store(&database, other_batch, &purchase(&derived(&other))).await;
+    let (batch, imported, issued) = import_file(&database).await;
+    let (other_batch, other, other_issued) = import_bytes(&database, "other.csv", OTHER_FILE).await;
+    let survivor = store(
+        &database,
+        other_batch,
+        &purchase(handles(&other_issued, &derived(&other))),
+    )
+    .await;
     let answered = pending(&imported);
     let entry = entry_for(&answered);
     let stored_entry = database
@@ -291,8 +309,18 @@ async fn an_undo_removes_the_imports_records_and_transactions_and_leaves_the_ent
         .insert(&entry)
         .await
         .expect("the manual entry");
-    let purchase = store(&database, batch, &purchase(&derived(&imported))).await;
-    let completed = store(&database, batch, &stock_dividend(&entry, &answered)).await;
+    let purchase = store(
+        &database,
+        batch,
+        &purchase(handles(&issued, &derived(&imported))),
+    )
+    .await;
+    let completed = store(
+        &database,
+        batch,
+        &stock_dividend(&entry, handles(&issued, &answered)),
+    )
+    .await;
 
     database
         .import_batches()
@@ -358,7 +386,7 @@ async fn an_undo_removes_the_imports_records_and_transactions_and_leaves_the_ent
 #[tokio::test]
 async fn an_entry_whose_records_are_absent_is_listed_as_waiting_naming_what_it_expects() {
     let (_db, database) = open().await;
-    let (batch, imported) = import_file(&database).await;
+    let (batch, imported, _) = import_file(&database).await;
     let answered = pending(&imported);
     let entry = entry_for(&answered);
     let stored_entry = database
@@ -406,7 +434,7 @@ async fn an_entry_whose_records_are_absent_is_listed_as_waiting_naming_what_it_e
 #[tokio::test]
 async fn a_re_import_reconnects_the_entry_by_the_identities_it_names() {
     let (_db, database) = open().await;
-    let (batch, imported) = import_file(&database).await;
+    let (batch, imported, _) = import_file(&database).await;
     let answered = pending(&imported);
     let stored_entry = database
         .manual_entries()
@@ -419,7 +447,7 @@ async fn a_re_import_reconnects_the_entry_by_the_identities_it_names() {
         .await
         .expect("undo the import");
 
-    let (reimported_batch, _) = import_file(&database).await;
+    let (reimported_batch, _, _) = import_file(&database).await;
 
     let reconnected = database
         .manual_entries()
@@ -453,7 +481,7 @@ async fn a_re_import_reconnects_the_entry_by_the_identities_it_names() {
 #[tokio::test]
 async fn an_undo_followed_by_a_re_import_returns_the_account_where_it_was() {
     let (_db, database) = open().await;
-    let (batch, imported) = import_file(&database).await;
+    let (batch, imported, issued) = import_file(&database).await;
     let answered = pending(&imported);
     let entry = entry_for(&answered);
     database
@@ -462,8 +490,8 @@ async fn an_undo_followed_by_a_re_import_returns_the_account_where_it_was() {
         .await
         .expect("the manual entry");
     let before: Vec<Transaction> = vec![
-        purchase(&derived(&imported)),
-        stock_dividend(&entry, &answered),
+        purchase(handles(&issued, &derived(&imported))),
+        stock_dividend(&entry, handles(&issued, &answered)),
     ];
     for transaction in &before {
         store(&database, batch, transaction).await;
@@ -474,16 +502,23 @@ async fn an_undo_followed_by_a_re_import_returns_the_account_where_it_was() {
         .delete(batch)
         .await
         .expect("undo the import");
-    let (reimported_batch, reimported) = import_file(&database).await;
+    let (reimported_batch, reimported, reissued) = import_file(&database).await;
 
-    let mut after = vec![purchase(&derived(&reimported))];
+    let mut after = vec![purchase(handles(&reissued, &derived(&reimported)))];
     for reconnection in database
         .manual_entries()
         .reconnected(reimported_batch)
         .await
         .expect("list what the import reconnected")
     {
-        let restored = stock_dividend(reconnection.entry(), reconnection.records());
+        // The reconnection's own handles, since storage has just read those records back.
+        let restored = stock_dividend(
+            reconnection.entry(),
+            reconnection
+                .handles()
+                .try_into()
+                .expect("an entry answers at least one record"),
+        );
         let id = store(&database, reimported_batch, &restored).await;
         after.push(
             database
@@ -503,7 +538,7 @@ async fn an_undo_followed_by_a_re_import_returns_the_account_where_it_was() {
 #[tokio::test]
 async fn an_entry_naming_a_record_no_import_restored_stays_waiting() {
     let (_db, database) = open().await;
-    let (batch, imported) = import_file(&database).await;
+    let (batch, imported, _) = import_file(&database).await;
     // A second row of the same event, from a file this database never saw: a corporate action
     // spread over two exports is why an entry names several records [DOM-098].
     let elsewhere = identify(&account(), &IdentitySource::BrokerReference("z"));
@@ -529,7 +564,7 @@ async fn an_entry_naming_a_record_no_import_restored_stays_waiting() {
         .await
         .expect("undo the import");
 
-    let (reimported_batch, _) = import_file(&database).await;
+    let (reimported_batch, _, _) = import_file(&database).await;
 
     assert!(
         database
@@ -578,7 +613,7 @@ async fn an_entry_of_another_account_is_not_reconnected() {
         .await
         .expect("the manual entry");
 
-    let (batch, _) = import_file(&database).await;
+    let (batch, _, _) = import_file(&database).await;
 
     assert!(
         database
@@ -610,14 +645,14 @@ async fn an_entry_of_another_account_is_not_reconnected() {
 #[tokio::test]
 async fn an_import_reconnects_only_the_entries_its_own_records_answer() {
     let (_db, database) = open().await;
-    let (batch, imported) = import_file(&database).await;
+    let (batch, imported, _) = import_file(&database).await;
     let stored_entry = database
         .manual_entries()
         .insert(&entry_for(&pending(&imported)))
         .await
         .expect("the manual entry");
 
-    let (other_batch, _) = import_bytes(&database, "other.csv", OTHER_FILE).await;
+    let (other_batch, _, _) = import_bytes(&database, "other.csv", OTHER_FILE).await;
 
     assert!(
         database
@@ -646,7 +681,7 @@ async fn an_import_reconnects_only_the_entries_its_own_records_answer() {
 #[tokio::test]
 async fn an_entry_naming_several_records_reconnects_with_them_in_the_order_it_names() {
     let (_db, database) = open().await;
-    let (batch, imported) = import_bytes(&database, "other.csv", OTHER_FILE).await;
+    let (batch, imported, _) = import_bytes(&database, "other.csv", OTHER_FILE).await;
     // Reversed against the file, so a listing that returned the records in storage order rather
     // than the entry's would fail here.
     let named: Vec<SourceRecord> = pending(&imported).into_iter().rev().collect();
@@ -662,7 +697,7 @@ async fn an_entry_naming_several_records_reconnects_with_them_in_the_order_it_na
         .await
         .expect("undo the import");
 
-    let (reimported_batch, _) = import_bytes(&database, "other.csv", OTHER_FILE).await;
+    let (reimported_batch, _, _) = import_bytes(&database, "other.csv", OTHER_FILE).await;
 
     let reconnected = database
         .manual_entries()
@@ -712,7 +747,7 @@ async fn an_entry_that_names_no_record_is_not_waiting() {
 #[tokio::test]
 async fn each_waiting_entry_names_its_own_missing_identities() {
     let (_db, database) = open().await;
-    let (batch, imported) = import_file(&database).await;
+    let (batch, imported, _) = import_file(&database).await;
     let first = database
         .manual_entries()
         .insert(&entry_for(&pending(&imported)))
