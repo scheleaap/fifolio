@@ -603,3 +603,9 @@ read it as a foreign citation and refused, forever, to undo the batch holding th
 already deletes emitted records with their `transfer_out`, so they belong to its batch for DOM-119.
 A later disposal that consumed one is still protected, by SRV-022's attribution refusal.
 [DEC-086, DOM-119]
+
+**DEC-087 — An unreadable ordering key is a failed row.** SRV-058 did not define "fails to parse",
+so an unreadable trade date could be read as a file-level refusal naming only the first such row.
+DEC-074 names every failed row "so that one round of fixes suffices", which a first-row refusal
+defeats. Any row-level value the import cannot read, its ordering key, identity or classification,
+makes the row a failed row, and all of them are named together. [DEC-087, SRV-058]

@@ -36,7 +36,7 @@ CLI:
 * Import is idempotent, on the identity rules in `domain.md` [SRV-015]
 * Rows that carry no position effect are recognized and not stored [SRV-016]
 * The response summarizes: derived automatically, pending, recognized as non-position, and securities auto-created [SRV-017]
-* A row that fails to parse rejects the whole import, and the refusal names every failed row, not only the first [SRV-058]
+* A row that fails to parse rejects the whole import, and the refusal names every failed row, not only the first. A row fails to parse when any value the import reads from it cannot be read: its ordering key, its identity or its classification [SRV-058]
 * The summary names every unrecognized row type it met and how many rows carried it, so a new broker type becomes visible on its first appearance [SRV-049]
 * A sell that exceeds the holdings does not block import. It surfaces later, at attribution [SRV-018]
 
