@@ -162,3 +162,31 @@ models a tax withheld, and DEC-001 puts tax treatment out of scope while the rep
 tax return. Whether the withheld amount is stored and reported, or deliberately ignored, is a
 scoping decision rather than a gap.
 
+**OQ-021 — Trade Republic changed the `fx_rate` convention in late 2024.**
+Blocks: `IMP-TR-006`, `IMP-TR-016`, `DOM-086`
+`importers.md` states `fx_rate` is foreign units per EUR, so a native figure divides by it. That
+holds for every foreign row up to 2024-07-02 and stops holding after it. The rate series across the
+four exports, all USD dividends:
+
+    2022-07-01 .. 2024-07-02   1.0451  0.97862  1.0640  1.0890  1.0905  1.05171  1.1128  1.08326  1.0710
+    2024-10-01 .. 2025-10-01   0.893176  0.962557  0.924642  0.853242  0.851716
+
+The later values are the reciprocals of the market USD-per-EUR rates for those dates: on 2024-10-01
+the euro bought about 1.1196 dollars, and 1 / 0.893176 = 1.1196. Two rows settle it from the file
+alone, without appealing to any external rate, because their native amount is large enough to
+discriminate: 2025-07-01 states `original_amount 0.04 USD`, `fx_rate 0.853242` and `amount 0.03`.
+Dividing gives 0.047, which rounds to 0.05. Multiplying gives 0.034, which rounds to 0.03. The
+stated amount is 0.03. The 2025-10-01 row behaves identically. Every earlier row states 0.03 against
+a rate near 1, where both readings round to the same figure and so decide nothing.
+
+Nothing is wrong today: every foreign row in the sample is a dividend, and dividends are not stored.
+But a foreign-currency row valued after the change at the documented convention is wrong by the
+square of the rate — about 30% on USD — which is exactly the error `money.rs` documents itself as
+guarding against.
+
+What a person must decide is not the fact but the response. Keying on the date is fragile if the
+change was gradual or account-specific. Keying on whether the rate is above or below 1 fails for a
+currency near parity. Refusing a foreign row until the convention is confirmed is safe and blocks
+nothing today. Ignoring the stated rate and taking the ECB rate for the date is the most robust and
+contradicts DEC-003's preference for a broker-stated figure.
+
