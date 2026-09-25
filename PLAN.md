@@ -815,11 +815,39 @@ Notes: Calibrated heuristic; its failure mode is a blocked attribution with a na
 This is also the substance of **OQ-014**, which `open-questions.md` marks answered but keeps on its `Blocks:` line until the rule is written into `domain.md`. Until that entry is deleted, IMP-SAXO-013 is still blocked and **FIF-023** with it, so this item is still gated even though its own requirements are decided. That is a `spec-auditor` matter, not an implementer's.
 
 ## FIF-026 Saxo: security mapping and bond quotation
-Status: todo
+Status: done
 Requirements: IMP-SAXO-020, IMP-SAXO-021, IMP-SAXO-022
 Depends on: FIF-019, FIF-005
 Acceptance: `Instrument ISIN`, `Instrument` and `Type` map onto the security by the explicit table — `Stock` → `stock`, `Bond` → `bond` with quotation `percent_of_par`, `Etf` → `etf`, `MutualFund` → `fund`, `Cash` → no security and a non-position row, anything else rejects the import; ISIN is the key, so a changed or delisting-annotated name (`*Delisted 20231011 (...)`) resolves to the same security and does not create a second one. Test asserts a 3000-nominal bond at 139.46 costs 4183.80.
 Notes: The bond assertion is a factor assertion — 4183.80 and not 418,380 — and its **basis** now comes from `_Transacties`' `Verhandelde waarde`, not from the `Acties` label, DEC-070 having removed the one exception that let a label price reach money (FIF-024, IMP-SAXO-039). Whichever figure the rebuilt fixture states for that row is what the test must reproduce; 139.46 stays the quoted price it reconciles against [DOM-039].
+Named next to build in revision 39, FIF-096 having landed in `54b9e08`. Both dependencies are
+`done` — FIF-019 in `a97004e`, FIF-005 in `9846b5a` — none of IMP-SAXO-020 to IMP-SAXO-022 appears
+on a `Blocks:` line, and everything ahead of it in document order is `done`, `blocked`, or waiting
+on a `blocked` item.
+Concretely for the implementer: the fixture's bond row reads `Deponering 3000 @ 138.00 EUR`, not
+139.46 — amounts are perturbed and quantities are not [TST-028] — so the 4183.80 of the acceptance
+is the **real** export's figure and cannot be asserted against the fixture. The factor assertion
+must be built from the fixture's own quantity and `_Transacties` `Verhandelde waarde`: what the test
+has to catch is a cost two orders of magnitude out, which holds whatever the perturbed price is.
+This item must **not** settle where the factor is applied in general: `quantity x unit_price x
+factor` is ARC-008 / DOM-038, blocked in FIF-075 by OQ-010. What is decided and owned here is that
+`Type = Bond` defaults the security's quotation to `percent_of_par` — through FIF-055's
+`quotation_for(SecurityType)`, which already answers exactly that and must be called rather than
+duplicated — and that the bond's basis is read, not computed.
+ISIN as the key is the half with a fixture case of its own: the fixtures carry two delisting
+annotations, `*Delisted 20231011 (Fixture Instrument 14)` and `*Delisted 20231002 (Fixture
+Instrument 07)`, the instrument names being pseudonyms while the annotation's shape survives, so the
+assertion is that one ISIN under two names is one security and not two. Auto-creation's flag is FIF-005's `Security` field [DOM-008] and is set here.
+Done in revision 39, in the same commit as this status flip. The acceptance's `3000 @ 139.46 =
+4183.80` could not be asserted as written: the fixture states `138.00`, amounts being perturbed and
+quantities not [TST-028], so the end-to-end test asserts the *magnitude* — the booked cost is the
+nominal at a percentage of par, and lies in the thousands rather than the hundreds of thousands —
+which is the factor assertion the acceptance was after and which no perturbation can hide.
+Two points the specification left open are decided in the new module's header rather than invented
+silently: which name a security keeps when its rows disagree (the first row's, an export being
+newest first [IMP-SAXO-026]), and that one ISIN stated with two instrument types refuses the file
+rather than keeping either, as a disagreeing quantity [IMP-SAXO-038] and leg currency
+[IMP-SAXO-047] already do. No row of the five-year corpus triggers that refusal.
 
 ## FIF-067 Saxo: cash merger, tender and buyback decomposition
 Status: todo
@@ -1121,7 +1149,40 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 38 (this run).** `design/` **changed**: commit `79b82de` (DEC-072) landed after the
+**Revision 39 (this run).** `design/` is **unchanged** since revision 38: `git log -- design/` still
+ends at `79b82de`, so no requirement was added, restated or retired. Coverage stays at **348** ids,
+each on exactly one `Requirements:` line and together precisely the live ids in `design/` less the
+nine retired ones (DOM-009, DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to DOM-053), checked by
+script in both directions. `HEAD` is `54b9e08`; the tracked working tree is clean (`docs/` and
+`tmp/` are the user's, untracked); `cargo test --workspace` gives **461 passed, 0 failed**, which is
+the figure FIF-096's completion note states, so the committed tree is the tree that note describes.
+
+* **Completed: FIF-096**, a corporate action's legs summed per side and cancelled by label,
+  committed as `54b9e08` **with its status flip in the same commit** — the second time in nine
+  revisions that plan and implementation landed together, and the pattern revisions 33 to 36 kept
+  recording stays stopped. Nothing needed correcting here.
+* No item added, split, retired or re-scoped. No status changed but FIF-096's. 95 items: **30
+  `done`, 41 `todo`, 24 `blocked`**.
+* `open-questions.md` is byte-identical to revision 32's: **34** blocked requirements across OQ-001
+  to OQ-019 (OQ-020 blocks nothing), carried by exactly the 24 `blocked` items and no others,
+  checked by script. No item was blocked or unblocked, and none blocked in an earlier revision has
+  been released. OQ-014 is still marked *answered* and still on a `Blocks:` line, so IMP-SAXO-013
+  and FIF-023 with it stay blocked; that is the file's own instruction and this plan follows it.
+* **Next to build: FIF-026**, Saxo security mapping and bond quotation. It is the first `todo` in
+  document order whose dependencies are both `done` (FIF-019 in `a97004e`, FIF-005 in `9846b5a`) and
+  none of whose requirements — IMP-SAXO-020, IMP-SAXO-021, IMP-SAXO-022 — appears on a `Blocks:`
+  line. Everything ahead of it is `done`, `blocked`, or waits on a `blocked` item: FIF-060 on
+  FIF-058 (DOM-101), FIF-013 on FIF-076 (DOM-011, DOM-013, DOM-111), FIF-014 and FIF-015 behind
+  FIF-013 and the blocked FIF-061, FIF-016 behind FIF-061 and FIF-063, FIF-024 / FIF-025 / FIF-067 /
+  FIF-094 all behind the blocked FIF-023 (IMP-SAXO-013).
+* Two caveats now recorded on that item rather than left to be rediscovered: the acceptance's
+  `3000 @ 139.46 = 4183.80` is the **real** export's arithmetic and the fixture states `138.00`,
+  amounts being perturbed and quantities not [TST-028]; and the item must not settle where the
+  quotation factor is applied, that being ARC-008 / DOM-038 in the blocked FIF-075. What is decided
+  here is `Type = Bond` defaulting the quotation, which FIF-055 already answers in
+  `quotation_for(SecurityType)`.
+
+**Revision 38.** `design/` **changed**: commit `79b82de` (DEC-072) landed after the
 working-tree revision 37 below was written, which is why that entry's claim that `design/` is
 unchanged and `HEAD` is `0050f03` is wrong — it was true when written and had stopped being true
 before it was read. `HEAD` is now `79b82de`. `cargo test --workspace` gives **436 passed, 0
@@ -1802,6 +1863,13 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Unchanged in revision 39, re-verified by script against `design/` at `79b82de`: **348** ids on the
+`Requirements:` lines, each exactly once, and together precisely the live ids in `design/` less the
+nine retired ones (DOM-009, DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to DOM-053), which are
+assigned to nothing. **Nothing is uncovered and nothing is deferred.** Every item carrying one of
+the thirty-four ids on a `Blocks:` line is `blocked`, and no other item is — twenty-four items of
+ninety-five.
 
 Re-verified in revision 38 against `design/` at `79b82de`, which added three identifiers:
 **348** ids on the `Requirements:` lines, each exactly once, and together precisely the live ids in

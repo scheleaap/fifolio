@@ -2,15 +2,18 @@
 //!
 //! The unit tests in `import::saxo` state each rule against a workbook built for it; these state
 //! that the rules hold on the files an import will actually meet [TST-011], [TST-013], [TST-031].
-//! Nothing here asserts an amount: the fixtures' amounts are perturbed [TST-014].
+//! Nothing here asserts an amount: the fixtures' amounts are perturbed [TST-014]. The one test
+//! that reads a traded value asserts its *magnitude* against the fixture's own quantity and
+//! price, a relation the perturbation preserves and a missing quotation factor breaks by two
+//! orders of magnitude.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{Datelike as _, NaiveDate};
 use fifolio_core::decimal::Scaled as _;
-use fifolio_core::entities::{Account, RecordIdentity};
+use fifolio_core::entities::{Account, Quotation, RecordIdentity, SecurityType};
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::reader::SourceRow;
 use fifolio_core::import::saxo::identity::{account, check_identities, identity};
@@ -18,6 +21,7 @@ use fifolio_core::import::saxo::legs::{Side, Sides};
 use fifolio_core::import::saxo::money::Booked;
 use fifolio_core::import::saxo::quantity::{Label, StatedBy, traded};
 use fifolio_core::import::saxo::reversal::Reversible;
+use fifolio_core::import::saxo::security::{Instrument, securities};
 use fifolio_core::import::saxo::{SaxoError, SaxoWorkbook, Sheet, date, field};
 use rust_decimal::Decimal;
 
@@ -655,5 +659,169 @@ fn every_group_in_the_corpus_reads_as_sides() {
     assert_eq!(
         exchanged,
         [[Some(Decimal::from(3)), Some(Decimal::from(-3)), None]]
+    );
+}
+
+/// Every fixture row's `Type` is a value the mapping table names, and `Cash` is the only one of
+/// them that creates no security [IMP-SAXO-021], [IMP-SAXO-022].
+#[test]
+fn every_fixture_row_maps_onto_the_instrument_table() {
+    let mut types = BTreeSet::new();
+    let mut cash = 0_usize;
+    for (path, export) in exports() {
+        for (index, row) in export.rows().iter().enumerate() {
+            let instrument = Instrument::read(row).unwrap_or_else(|error| {
+                panic!(
+                    "{} row {} names no instrument: {error}",
+                    path.display(),
+                    index + 2
+                )
+            });
+            match instrument {
+                Instrument::Security(security) => {
+                    types.insert(security.security_type());
+                    assert!(
+                        security.is_auto_created(),
+                        "{} row {} creates a security the user did not enter",
+                        path.display(),
+                        index + 2
+                    );
+                }
+                Instrument::Cash => cash += 1,
+            }
+        }
+    }
+
+    assert_eq!(
+        types,
+        BTreeSet::from([
+            SecurityType::Stock,
+            SecurityType::Bond,
+            SecurityType::Etf,
+            SecurityType::Fund,
+        ]),
+        "the corpus carries every typed row of the table"
+    );
+    assert_eq!(cash, 80, "and the 80 cash rows, which name no security");
+}
+
+/// One ISIN under two names is one security, delisting annotation and all [IMP-SAXO-022].
+///
+/// The corpus carries two such annotations, and for one of the two the plain name occurs as well,
+/// which is the case that would create a second security if the name were the key. The instrument
+/// names are pseudonyms [TST-012]; the annotation's shape is the export's own.
+#[test]
+fn an_instrument_renamed_or_delisted_stays_one_security() {
+    let exports = exports();
+    let rows: Vec<&SourceRow> = exports
+        .iter()
+        .flat_map(|(_, export)| export.rows())
+        .collect();
+
+    let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in &rows {
+        if let Instrument::Security(security) = Instrument::read(row).expect("a fixture row reads")
+        {
+            names
+                .entry(security.isin().as_str().to_owned())
+                .or_default()
+                .insert(security.name().to_owned());
+        }
+    }
+    let annotated: BTreeSet<&String> = names
+        .values()
+        .flatten()
+        .filter(|name| name.starts_with("*Delisted "))
+        .collect();
+    let renamed: Vec<&String> = names
+        .iter()
+        .filter(|(_, spellings)| spellings.len() > 1)
+        .map(|(isin, _)| isin)
+        .collect();
+
+    assert_eq!(
+        annotated,
+        BTreeSet::from([
+            &"*Delisted 20231002 (Fixture Instrument 07)".to_owned(),
+            &"*Delisted 20231011 (Fixture Instrument 14)".to_owned()
+        ]),
+        "the two delisting annotations the fixtures carry"
+    );
+    assert_eq!(renamed.len(), 1, "one ISIN is spelled two ways");
+
+    let found = securities(rows).expect("the corpus reads");
+    assert_eq!(
+        found.len(),
+        names.len(),
+        "one security per ISIN, not one per name"
+    );
+    assert_eq!(
+        found
+            .iter()
+            .filter(|security| security.isin().as_str() == renamed[0])
+            .count(),
+        1,
+        "the renamed instrument is not created twice"
+    );
+}
+
+/// A bond's nominal quantity at a percent-of-par price costs thousands, not hundreds of
+/// thousands [IMP-SAXO-020], [DOM-036], [DOM-039].
+///
+/// The magnitude is the assertion, not the figure: the fixture's `Deponering 3000 @ 138.00` is a
+/// perturbed price of the real export's 139.46 [TST-014], [TST-028], and what a missing quotation
+/// factor does to it is two orders of magnitude, which no perturbation of up to 10% can hide. The
+/// cost is read from `_Transacties`' `Verhandelde waarde` and never from the label's price
+/// [IMP-SAXO-039], so the factor is already in it; where the formula is *applied* is OQ-010's and
+/// is not settled by this test.
+#[test]
+fn a_nominal_bond_costs_thousands_and_not_hundreds_of_thousands() {
+    let mut transfers = Vec::new();
+    for (_, export) in exports() {
+        for (index, row) in export.rows().iter().enumerate() {
+            let Instrument::Security(security) =
+                Instrument::read(row).expect("a fixture row reads")
+            else {
+                continue;
+            };
+            if security.security_type() != SecurityType::Bond {
+                continue;
+            }
+            let Some(sides) = Sides::of(export.detail_of(index)).expect("a bond leg reads") else {
+                continue;
+            };
+            let Some(deposited) = sides.side(Side::Deposited) else {
+                continue;
+            };
+            let price: Decimal = export
+                .detail_of(index)
+                .map(|leg| field(leg, "Prijs").expect("a leg states its price"))
+                .map(|price| price.parse::<Decimal>().expect("a price is a number"))
+                .sum();
+            transfers.push((security, deposited, price));
+        }
+    }
+
+    let (security, deposited, price) = transfers
+        .iter()
+        .find(|(_, deposited, _)| deposited.quantity().get() == Decimal::from(3000))
+        .expect("the 3000-nominal bond transfer of the 2021 fixture");
+    let cost = deposited.traded_value().get().abs();
+    let per_unit = deposited.quantity().get() * price;
+
+    assert_eq!(
+        security.quotation(),
+        Quotation::PercentOfPar,
+        "a Bond is quoted as a percentage of par"
+    );
+    assert_eq!(
+        cost * Decimal::from(100),
+        per_unit,
+        "the booked cost is the nominal at a percentage of par"
+    );
+    assert!(
+        (Decimal::from(1_000)..Decimal::from(10_000)).contains(&cost),
+        "a 3000-nominal bond costs thousands; {cost} is what the fixture books and \
+         {per_unit} is what reading the price per unit would cost"
     );
 }

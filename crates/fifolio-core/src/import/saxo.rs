@@ -70,12 +70,14 @@ use rust_decimal::prelude::ToPrimitive as _;
 use thiserror::Error;
 
 use super::reader::{ReadError, SheetRows, SourceRow, SpreadsheetReader};
+use crate::entities::SecurityType;
 
 pub mod identity;
 pub mod legs;
 pub mod money;
 pub mod quantity;
 pub mod reversal;
+pub mod security;
 
 /// One of the three sheets a Saxo export carries [IMP-SAXO-001].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -328,6 +330,31 @@ pub enum SaxoError {
          a group's traded values are summed only because it carries one of them"
     )]
     MixedLegCurrency { first: String, second: String },
+    /// A `Type` outside the five values the mapping table lists [IMP-SAXO-021]. The file is
+    /// refused rather than typed `other`: the type is what defaults the quotation, and a bond
+    /// read as anything else costs a hundred times its nominal.
+    #[error(
+        "the row states the instrument type {value:?}, which is none of \
+         Stock, Bond, Etf, MutualFund and Cash; the import is refused"
+    )]
+    UnknownInstrumentType { value: String },
+    /// A row naming an instrument that is not `Cash` and carrying no `Instrument ISIN`
+    /// [IMP-SAXO-022]. The ISIN is the security's key, so such a row is about a security that
+    /// cannot be looked up or stored.
+    #[error("the row names the instrument {name:?} and no Instrument ISIN, which is its key")]
+    NoIsin { name: String },
+    /// Two rows stating one ISIN with two instrument types [IMP-SAXO-021], [IMP-SAXO-022]. The
+    /// file is refused rather than one of them chosen, as a disagreeing quantity is: an
+    /// instrument is not both, and the two quote differently.
+    #[error(
+        "the ISIN {isin} is stated as both {first:?} and {second:?}; \
+         the file is refused rather than choosing one"
+    )]
+    MixedSecurityType {
+        isin: String,
+        first: SecurityType,
+        second: SecurityType,
+    },
     /// A column asked for that the row does not carry, which a header check makes unreachable
     /// for a column of the sheet and reachable for a caller naming the wrong sheet's.
     #[error("the row carries no column {header}")]
