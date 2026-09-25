@@ -655,12 +655,16 @@ inputs to a derivation; FIF-020, FIF-024, FIF-025, FIF-067 and FIF-094 inherit i
 
 
 ## FIF-083 Saxo: newest-first row direction
-Status: todo
+Status: done
 Requirements: IMP-SAXO-025
 Depends on: FIF-019, FIF-006
 Acceptance: the reader recognizes that Saxo emits rows newest first and normalizes the file's direction before row positions are used for ordering, so file position as a tie-breaker means oldest-first position.
 Notes: Split out of FIF-019 in revision 3. FIF-066's third ordering key ("file position taken in reverse") states the same thing from the ordering side and is only correct once this is settled.
 Unblocked in revision 47: OQ-009 closed (DEC-082). FIF-084's ordinal now counts in the order this item establishes, so this item goes first.
+
+Revision 62: **done**, committed as `f9a718c`. `saxo::DIRECTION` declares the file newest first, so
+file position breaks an ordering tie in reverse; tested on synthetic rows and on every committed
+fixture in `fifolio-core/tests/saxo_export.rs`. `cargo test --workspace`: **612 passed, 0 failed**.
 
 ## FIF-066 Saxo: ordering columns
 Status: blocked
@@ -1317,6 +1321,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 62.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-083**, committed as `f9a718c`; suite 612 passed, 0 failed.
+* No item added, split, retired, blocked or unblocked. 101 items: **43 `done`, 44 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-084.** Its dependencies FIF-020 and FIF-083 are `done`, and IMP-SAXO-008 is
+  not blocked. It is the first ready `todo` in document order. Also ready: FIF-028, FIF-069,
+  FIF-034, FIF-041, FIF-042.
 
 **Revision 61.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
 `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
@@ -2345,7 +2362,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 61** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 62** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2411,6 +2428,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 62: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `f9a718c`. One hundred and one items: 43 `done`, 44 `todo`, 14 `blocked`.
 
 Revision 61: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `5e225eb`. One hundred and one items: 42 `done`, 45 `todo`, 14 `blocked`.

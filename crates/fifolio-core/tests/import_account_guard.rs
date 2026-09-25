@@ -82,7 +82,7 @@ impl Importer for SaxoDouble {
     }
 
     fn identity(&self, row: &SourceRow) -> Result<RowIdentity, RowError> {
-        saxo::identity::identity(row)
+        saxo::identity::reference(row)
             .map(|reference| RowIdentity::BrokerReference(reference.to_owned()))
             .map_err(row_error)
     }

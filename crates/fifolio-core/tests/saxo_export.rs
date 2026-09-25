@@ -16,13 +16,13 @@ use fifolio_core::decimal::Scaled as _;
 use fifolio_core::entities::{Account, Order, Quotation, RecordIdentity, SecurityType};
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::reader::SourceRow;
-use fifolio_core::import::saxo::identity::{account, check_identities, identity};
+use fifolio_core::import::saxo::identity::{account, check_identities, identities, reference};
 use fifolio_core::import::saxo::legs::{Side, Sides};
 use fifolio_core::import::saxo::money::Booked;
 use fifolio_core::import::saxo::quantity::{Label, StatedBy, traded};
 use fifolio_core::import::saxo::reversal::Reversible;
 use fifolio_core::import::saxo::security::{Instrument, securities};
-use fifolio_core::import::saxo::{DIRECTION, SaxoError, SaxoWorkbook, Sheet, date, field};
+use fifolio_core::import::saxo::{DIRECTION, SaxoWorkbook, Sheet, date, field};
 use fifolio_core::ordering::{RowOrderingKey, assign_orders};
 use rust_decimal::Decimal;
 
@@ -49,15 +49,6 @@ fn exports() -> Vec<(PathBuf, SaxoWorkbook)> {
                 .unwrap_or_else(|error| panic!("{} does not read: {error}", path.display()));
             (path, export)
         })
-        .collect()
-}
-
-/// The fixtures an import can get past the identity check today: every one but the 2023 file,
-/// whose corporate action collides on its `Corporate action-Id` [IMP-SAXO-024].
-fn importable() -> Vec<(PathBuf, SaxoWorkbook)> {
-    exports()
-        .into_iter()
-        .filter(|(_, export)| check_identities(export.rows()).is_ok())
         .collect()
 }
 
@@ -403,7 +394,7 @@ fn the_client_id_is_not_the_account() {
 fn every_fixture_row_is_identified_by_one_of_the_four_columns() {
     for (path, export) in exports() {
         for (index, row) in export.rows().iter().enumerate() {
-            let found = identity(row)
+            let found = reference(row)
                 .unwrap_or_else(|error| panic!("{} row {}: {error}", path.display(), index + 2));
 
             assert!(!found.is_empty());
@@ -412,21 +403,19 @@ fn every_fixture_row_is_identified_by_one_of_the_four_columns() {
 }
 
 /// Reading a fixture twice yields the same identities, which is what makes a re-import create no
-/// new records: a source record is keyed by its identity [DOM-022], [DOM-023], [IMP-SAXO-007].
-///
-/// The 2023 fixture is not among these — it is refused outright, which the next test states.
+/// new records: a source record is keyed by its identity [DOM-022], [DOM-023], [IMP-SAXO-007],
+/// [IMP-SAXO-008].
 #[test]
 fn re_reading_a_fixture_identifies_the_same_records() {
-    for (path, export) in importable() {
+    for (path, export) in exports() {
         let account = Account::new("saxo", account(&export.rows()[0]).expect("an account"));
         let identities = |export: &SaxoWorkbook| -> BTreeSet<RecordIdentity> {
-            export
-                .rows()
-                .iter()
-                .map(|row| {
+            identities(export.rows())
+                .into_iter()
+                .map(|found| {
                     identify(
                         &account,
-                        &IdentitySource::BrokerReference(identity(row).expect("an identity")),
+                        &IdentitySource::BrokerReference(&found.expect("an identity")),
                     )
                 })
                 .collect()
@@ -451,38 +440,47 @@ fn re_reading_a_fixture_identifies_the_same_records() {
     }
 }
 
-/// A file whose rows do not all identify differently is refused rather than deduplicated
-/// [IMP-SAXO-024].
+/// No fixture is refused for a duplicate identity [IMP-SAXO-008], [IMP-SAXO-024].
 ///
-/// The 2023 fixture carries a `Terugkoopaanbod` and its `Terugboeking` under one
-/// `Corporate action-Id` and no other id column, so both fall through to that id and produce one
-/// identity. Deduplicating them would drop the reversal and leave the event's money wrong, so the
-/// file is refused. The composite identity that will tell such rows apart is IMP-SAXO-008, which
-/// is undecided and is FIF-084's; until it lands this refusal is the safe failure, and this test
-/// is what will change when it does.
+/// Before the composite identity, the 2023 fixture was: it carries a `Terugkoopaanbod` and its
+/// `Terugboeking` under one `Corporate action-Id` and no other id column, which the bare id
+/// could not tell apart. The refusal itself is stated on synthetic rows in `saxo::identity`.
 #[test]
-fn a_file_with_two_rows_of_one_identity_is_refused() {
-    let refused: Vec<(PathBuf, SaxoError)> = exports()
+fn every_fixture_passes_the_identity_check() {
+    for (path, export) in exports() {
+        assert_eq!(
+            check_identities(export.rows()),
+            Ok(()),
+            "{} is refused",
+            path.display()
+        );
+    }
+}
+
+/// The 2023 TransAlta merger, `Corporate action-Id` 5000153, pays over three rows. The one no
+/// booking id identifies is the *last* of them in the file and the oldest, so it takes ordinal
+/// 1, not 3 [IMP-SAXO-008], [IMP-SAXO-025], DEC-082. Its amount is not asserted, the fixture's
+/// amounts being perturbed [TST-014].
+#[test]
+fn the_transalta_merger_counts_its_ordinal_oldest_first() {
+    let (_, export) = exports()
         .into_iter()
-        .filter_map(|(path, export)| {
-            check_identities(export.rows())
-                .err()
-                .map(|error| (path, error))
-        })
+        .find(|(path, _)| path.ends_with("Transactions_10000000_2023-01-01_2023-12-31.xlsx"))
+        .expect("the 2023 fixture is committed");
+    let merger: Vec<String> = export
+        .rows()
+        .iter()
+        .zip(identities(export.rows()))
+        .filter(|(row, _)| field(row, "Corporate action-Id") == Some("5000153"))
+        .map(|(_, found)| found.expect("a merger row is identified"))
         .collect();
 
-    let [(path, error)] = refused.as_slice() else {
-        panic!("one fixture is refused, not {}", refused.len());
+    let [newest, middle, oldest] = merger.as_slice() else {
+        panic!("the merger spans three rows, not {}", merger.len());
     };
-    assert!(path.ends_with("Transactions_10000000_2023-01-01_2023-12-31.xlsx"));
-    assert_eq!(
-        *error,
-        SaxoError::DuplicateIdentity {
-            identity: "5000135".to_owned(),
-            first: 11,
-            second: 12,
-        }
-    );
+    assert!(!newest.contains('|') && !middle.contains('|'));
+    assert!(oldest.starts_with("5000153|Fusie|"), "{oldest}");
+    assert!(oldest.ends_with("|1"), "{oldest}");
 }
 
 /// Every row of every fixture states its four money columns and its native currency, so the
