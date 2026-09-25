@@ -44,7 +44,7 @@ silently and retroactively. The cost is accepted: an ECB correction to an alread
 not reach the cache on its own, and re-rating is a deliberate act rather than a side effect of a
 top-up. [ARC-028]
 
-An import that needs a rate which is neither cached nor fetchable fails with a clear error naming the currency and date, rather than guessing. [ARC-019]
+An import that needs a rate the cache does not hold fetches it itself: an empty cache is seeded from the full series (SRV-047), otherwise the 90-day feed tops it up, or the full series does for a date the window no longer covers; ARC-028 holds either way. An import that still has no rate, for instance offline, fails with a clear error naming the currency and date, rather than guessing (DEC-078). [ARC-019]
 
 The fallback to an earlier rate is bounded: no rate exists before the series begins in 1999, and a substitution more than seven days stale is an error rather than a silent approximation. [ARC-027]
 

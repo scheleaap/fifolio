@@ -1031,6 +1031,13 @@ Acceptance: every error response is `application/problem+json` per RFC 9457 with
 Notes: Named next to build in revision 43. FIF-032 (`8964f18`) left `fifolio-server` a library (`src/lib.rs`: `Args`, `serve`, `router`, `openapi`) whose OpenAPI document `utoipa-axum` assembles from handler annotations; the problem+json schema belongs in that same document, and the harness should drive `router()` rather than a spawned process. `crates/fifolio-server/tests/http_surface.rs` already exists and is the natural home.
 "Each core error variant" is read as each variant of an error a handler can hold: `StorageError`, `ImportError` (with `ReadError` through `ImportError::Read`), `RateError`, `FeedError` and `IngestError`. `SaxoError` and `TradeRepublicError` are format-internal and get no problem type: the server imports through `import::import`, and the `Importer` trait answers only `RowError` and `ImportError`, so a format error reaches the server as one of those or not at all. Consequence for whoever writes the Saxo and Trade Republic `Importer` impls (FIF-023 onward, FIF-029): `ImportError` has no variant yet for a format's whole-file refusals (unrecognized or reordered headers, an unjoined detail row, a duplicate identity, a disagreeing quantity, an unknown instrument type, a mixed security type), so those need `ImportError` variants, and each new variant needs its `ProblemType` in `fifolio-server/src/problem.rs`, which the exhaustive match will demand.
 
+## FIF-098 Remove the unspecified re-rate operation
+Status: todo
+Requirements: none (removal under DEC-084)
+Depends on: none
+Acceptance: `TransactionRepository::re_rate` and the tests that exercise it are removed; DOM-069's refusal of deletion on an attributed transaction stays tested; no other behavior changes; the suite is green.
+Notes: Added in revision 46 by the user's decision. `re_rate` (storage/transactions.rs, from FIF-012 `3136a8a`) had no requirement and restated the rate without the EUR figures, breaking DOM-028. Its re-rating clause of DOM-069 now holds by construction, like the edit clause carried by FIF-087's note. Placed before FIF-034 so it is built next.
+
 ## FIF-034 Accounts and securities endpoints
 Status: todo
 Requirements: SRV-007, SRV-008, SRV-009, SRV-010, SRV-011, SRV-057, DOM-126
@@ -1236,6 +1243,12 @@ Ids are never reused.
 * **FIF-018 — Corporate action engine.** Dropped in this revision. `domain.md` replaced the separate corporate-action entity with transaction variants (DEC-024, DEC-025), retiring DOM-014, DOM-015 and DOM-050 to DOM-053. Its two halves became FIF-061 (splits and effective quantity) and FIF-063 (transfer out emission, basis and decomposition); DOM-016, the citation rule, moved to FIF-056.
 
 # Revision history
+
+**Revision 46.** `design/` amended by the user and the specification owner's delegate: OQ-002,
+OQ-003, OQ-006, OQ-009, OQ-012, OQ-015, OQ-016, OQ-017, OQ-018, OQ-019, OQ-020 and OQ-021 are
+answered (DEC-073 to DEC-083) and deleted from `open-questions.md`; SRV-058 is new and needs an item.
+DEC-084 removes the unspecified re-rate operation, carried by the new FIF-098. The planner
+re-derives blocked statuses and coverage from the amended `open-questions.md`.
 
 **Revision 45.** `design/` amended by the user: DOM-006 now states that `auto_created` is provenance
 only; new DOM-126 adds `needs_review`, a separate field cleared only by marking the security

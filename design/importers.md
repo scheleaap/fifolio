@@ -7,7 +7,8 @@ re-imported row unambiguous. A partial year is fine — the first Saxo export ru
 
 An account records its broker account id when it is created. An import whose file names a different
 account is refused, naming both, and a file carrying rows from more than one account is refused
-outright. [IMP-003] This is the guard against the mis-aimed import that batch deletion exists to undo.
+outright. A format that states no account id, as Trade Republic's does not, has nothing to check and
+is imported into the account the caller names (DEC-075). [IMP-003] This is the guard against the mis-aimed import that batch deletion exists to undo.
 
 Format-specific detail. The domain model is in `domain.md`; nothing here belongs in it.
 
@@ -129,7 +130,7 @@ There is no single id column. Identity is the first populated of `Transactie-ID`
 
 `Corporate action-Id` is shared by every row of one event, so it alone is not unique. The fallback
 identity is that id, plus `Acties`, plus `Boekingsbedrag`, plus **the row's ordinal within its
-`Corporate action-Id` group in file order**. [IMP-SAXO-008] The ordinal is what makes it collision-proof:
+`Corporate action-Id` group in normalized, oldest-first order** (IMP-SAXO-025), not in the file's newest-first order (DEC-082). [IMP-SAXO-008] The ordinal is what makes it collision-proof:
 the TransAlta merger pays over three rows under one id, and without it two rows sharing a label and
 an amount would be deduplicated as a re-import, silently losing money from the event. If two rows
 still produce one identity, the file is rejected rather than deduplicated [IMP-SAXO-024]. Every row in the sample carries at least one of the four.
@@ -349,9 +350,7 @@ Native columns are `price`, `amount`, `fee`, `tax`, `currency`. [IMP-TR-005] Whe
     gross = |amount|
     fees  = |fee| + |tax|          both in the settlement currency
 
-`fx_rate` is foreign units per EUR, which is already the stored convention, so no inversion is needed.
-
-No foreign-currency **trade** appears in four years of exports, so it is not specified: a `TRADING` row with `original_*` populated **rejects the import** rather than being guessed at, consistent with the unknown-type rule. [IMP-TR-017] `tax` has likewise never appeared on a trade.
+`fx_rate` has no reliable convention: it was foreign units per EUR up to 2024-07-02 and its reciprocal from 2024-10-01 on (see DEC-073). Every foreign-currency row in four years of exports is a dividend, which is not stored, so nothing needs the rate: a row that would be stored with `original_*` populated **rejects the import**, naming the row, rather than being guessed at, consistent with the unknown-type rule. [IMP-TR-017] `tax` has likewise never appeared on a trade.
 
 ## Row classification
 
@@ -410,7 +409,8 @@ securities are flagged for review, so it is visible and correctable.
 No Trade Republic bond has been observed, so the percent-of-par convention confirmed for Saxo is
 **not** assumed here: a row whose instrument would map to `bond` from this format **rejects the
 import**, naming the ISIN, because its quotation cannot be established and guessing is a
-hundredfold error either way. [IMP-TR-021]
+hundredfold error either way. No `asset_class` value maps to `bond`, so in practice IMP-TR-020's
+catch-all is what rejects such a row; this rule states why it must not be mapped (DEC-077). [IMP-TR-021]
 
 `TAX_EXCHANGE` is the only `CORPORATE_ACTION` type observed, so it is the only one mapped. An
 unrecognized type **rejects the whole file**, naming the type, the row and the transaction id, and

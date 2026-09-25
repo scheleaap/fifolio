@@ -31,11 +31,12 @@ CLI:
 * Caller supplies the target account explicitly, the file format, and the file [SRV-012]. Source files rarely identify the account reliably
 * Supported formats: Saxo NL XLSX, Trade Republic DE CSV [SRV-013]
 * A file whose rows carry trade dates in more than one calendar year is refused [SRV-051]
-* The file's account id is checked against the target account; a mismatch, or a file carrying rows from more than one account, refuses the import [SRV-056]
+* Where the format states an account id, it is checked against the target account; a mismatch, or a file carrying rows from more than one account, refuses the import. A format stating none is not checked [SRV-056]
 * Unknown ISINs are created automatically, flagged as auto-created and as needing review [SRV-014]
 * Import is idempotent, on the identity rules in `domain.md` [SRV-015]
 * Rows that carry no position effect are recognized and not stored [SRV-016]
-* The response summarizes: derived automatically, pending, recognized as non-position, failed to parse, and securities auto-created [SRV-017]
+* The response summarizes: derived automatically, pending, recognized as non-position, and securities auto-created [SRV-017]
+* A row that fails to parse rejects the whole import, and the refusal names every failed row, not only the first [SRV-058]
 * The summary names every unrecognized row type it met and how many rows carried it, so a new broker type becomes visible on its first appearance [SRV-049]
 * A sell that exceeds the holdings does not block import. It surfaces later, at attribution [SRV-018]
 

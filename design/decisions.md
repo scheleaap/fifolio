@@ -509,3 +509,82 @@ a stated value is available; the reversal rule was violating its own principle.
 Two further points settled while correcting it: `Deponering` is a third side rather than a missing
 one, since a two-sided reading drops all 13 transfer legs; and a side's summed quantity keeps the
 file's sign, the side naming its own direction. [DEC-072, IMP-SAXO-046, IMP-SAXO-047, IMP-SAXO-048]
+
+**DEC-073 — A stored Trade Republic row in a foreign currency rejects the import.** Trade Republic's
+`fx_rate` was foreign units per EUR up to 2024-07-02 and its reciprocal from 2024-10-01 on; the 2025
+rows settle it from the file alone (`0.04 USD` at `0.853242` states `0.03 EUR`, which only
+multiplication reproduces). Keying on the date is fragile if the change was gradual or
+account-specific, keying on whether the rate is above 1 fails near parity, and taking the ECB rate
+contradicts DEC-003. Every foreign-currency row in four years of exports is a dividend, which is
+not stored, so refusing a stored one blocks nothing and extends IMP-TR-017 from trades to every
+stored row. The convention is decided when such a row first appears. [DEC-073, IMP-TR-017]
+
+**DEC-074 — A row that fails to parse rejects the whole import.** Skipping it would leave a batch
+owning part of a file, and a skipped buy understates holdings in a way that surfaces only at
+attribution (SRV-018), far from its cause. Storing it as pending cannot scope the attribution block
+when the row yields no ISIN. Rejection matches DEC-019, DEC-041 and IMP-SAXO-038, and is cheap to
+recover from because import is idempotent and one file covers one year. A parse failure on a real
+export is a parser defect to fix, not a row to lose. The refusal names every failed row so that one
+round of fixes suffices. [DEC-074, SRV-017, SRV-058]
+
+**DEC-075 — The account check runs only where the file states an account id.** The Trade Republic
+export carries no account identifier, so there is nothing to compare. IMP-003 already refuses a file
+that *names* a different account, and SRV-012 makes the caller supply the account because source
+files rarely identify it reliably; a file naming none therefore takes the caller's. Refusing every
+Trade Republic import instead would make the format unusable. [DEC-075, IMP-003, SRV-056]
+
+**DEC-076 — Withholding tax is not modeled.** Saxo states a `Tax Percentage` and a
+`Corporate actions - Voorheffing` component on dividends. Crediting foreign withholding is applying
+tax law, which DEC-001 and DOM-001 leave to the user, and cash dividends are not stored at all
+(DEC-063), so there is no stored dividend for a withheld amount to belong to. Nothing is lost: the
+source record keeps the row verbatim (DOM-007). [DEC-076]
+
+**DEC-077 — Corrects DEC-031: a Trade Republic bond rejects the import.** DEC-031 said such a bond is
+created pending review; DEC-041, later, gave quotation no unknown state and made an undeterminable
+one reject the import, and IMP-TR-020 and IMP-TR-021 both reject. DEC-041 governs. The trigger is
+IMP-TR-020's catch-all, since no `asset_class` value maps to `bond`. [DEC-077, IMP-TR-020,
+IMP-TR-021]
+
+**DEC-078 — An import fetches a rate it needs and does not have.** ARC-019 already spoke of a rate
+"neither cached nor fetchable", and SRV-047 seeds the cache "on first use", which for a new user is
+the first import. So an import may reach the network, but only to fill the cache, never to rewrite
+it (ARC-028), and once cached it works offline (ARC-016). An import can therefore fail for want of
+a connection, and only when the rate is uncached. [DEC-078, ARC-019]
+
+**DEC-079 — An emitted `transfer_in` cites the `transfer_out`'s records and keeps its parcel's order.**
+Records emitted on approval derive from no row of their own, yet DOM-013 requires a source record and
+DOM-047 forbids creating from nothing. They cite the source records of the `transfer_out` that
+produced them, and take the `order` of the parcel each carries alongside its inherited date, so FIFO
+in the receiving account consumes them in their original sequence. Taking the `transfer_out`'s order
+instead would sort a parcel after a same-day buy it preceded. [DEC-079, DOM-090]
+
+**DEC-080 — A transfer carrying its own fee rejects the import.** DOM-107 added such a fee to the
+carried basis; the alternative records it as fees, which keeps it separable, as DEC-004 keeps buy
+fees. No transfer, exchange or merger in the exports carries a fee, so neither reading can be checked
+against data. Refusing one blocks nothing today and follows DEC-073. The fee's division across
+emitted records, and its undefined case at a zero basis, go with it. [DEC-080, DOM-107]
+
+**DEC-081 — An emitted `transfer_in` carries its parcel's allocated buy fee as fees.** DEC-004 makes
+gain proceeds minus sell fees minus cost minus buy fees, and a transfer realizes nothing, so a buy
+fee left behind at the transfer would never be deducted from any gain. It travels as the emitted
+record's fees rather than being folded into cost, keeping it separable as DEC-004 and DEC-080 do.
+[DEC-081, DOM-106]
+
+**DEC-082 — The corporate-action ordinal counts in normalized order.** Saxo files are newest-first,
+so a row added to a group by a later export of the same year lands at the top in file order and
+shifts every existing row's ordinal, changing identities that SRV-015 needs stable across
+re-imports. In normalized, oldest-first order a later row takes the next ordinal and existing ones
+keep theirs. Corrects DEC-033's "in file order". [DEC-082, IMP-SAXO-008, IMP-SAXO-025]
+
+**DEC-083 — Emitted quantities sum to the rounded product.** Storage refuses a quantity off its
+scale (ARC-010), so the only sum emitted records can reach is the transferred quantity times the
+ratio rounded once to the quantity scale, half away from zero, the rounding ARC-010 prescribes.
+[DEC-083, DOM-115]
+
+**DEC-084 — No operation re-rates a stored transaction in v1.** DOM-069, SRV-050, ARC-028 and DEC-068
+speak of re-rating, but no requirement defines what it does, and the storage method written for it
+restated the rate while leaving the EUR figures as they were, breaking DOM-028. It is removed.
+DOM-069's re-rating clause then holds by construction, as its edit clause already does. DEC-068's
+remedy for an ECB correction, re-rating the transaction, is therefore unavailable until re-rating
+is specified; the gap is accepted, since a correction to an already-cached day is rare and small.
+[DEC-084]
