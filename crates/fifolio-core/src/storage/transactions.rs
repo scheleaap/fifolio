@@ -431,69 +431,6 @@ impl<'a> TransactionRepository<'a> {
         Ok(())
     }
 
-    /// Restates the conversion a transaction was valued at, refusing while it participates in an
-    /// attribution [DOM-069]: the allocation figures the user approved are derived from this rate,
-    /// so re-rating underneath them would change figures nobody approved.
-    pub async fn re_rate(
-        &self,
-        transaction: TransactionId,
-        conversion: &Conversion,
-    ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await?;
-
-        if let Some(attribution) = participating_attribution(&mut tx, transaction).await? {
-            return Err(StorageError::TransactionAttributed {
-                transaction,
-                attribution,
-            });
-        }
-
-        let kind = kind_of(&mut tx, transaction).await?;
-
-        // A statement per variant, because SQLite binds values and never identifiers. A split
-        // carries no money and so no conversion [DOM-105]: there is nothing to re-rate.
-        let statement = match kind.as_str() {
-            BUY => Some(
-                "update transaction_buy set conversion_currency = ?, conversion_rate = ?,
-                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
-            ),
-            TRANSFER_IN => Some(
-                "update transaction_transfer_in set conversion_currency = ?, conversion_rate = ?,
-                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
-            ),
-            SELL => Some(
-                "update transaction_sell set conversion_currency = ?, conversion_rate = ?,
-                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
-            ),
-            EXPIRATION => Some(
-                "update transaction_expiration set conversion_currency = ?, conversion_rate = ?,
-                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
-            ),
-            TRANSFER_OUT => Some(
-                "update transaction_transfer_out set conversion_currency = ?, conversion_rate = ?,
-                 conversion_source = ?, conversion_rate_date = ? where transaction_id = ?",
-            ),
-            SPLIT => None,
-            other => {
-                return Err(StorageError::CorruptValue {
-                    field: "kind",
-                    value: other.to_owned(),
-                });
-            }
-        };
-
-        if let Some(statement) = statement {
-            query(statement)
-                .bind_conversion(conversion)?
-                .bind(transaction.get())
-                .execute(&mut *tx)
-                .await?;
-        }
-
-        tx.commit().await?;
-        Ok(())
-    }
-
     /// Deletes a transaction, refusing while it participates in an attribution [DOM-069] and
     /// refusing a `transfer_in` that a `transfer_out` emitted [DOM-094].
     ///

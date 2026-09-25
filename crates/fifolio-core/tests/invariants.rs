@@ -1,8 +1,8 @@
 //! Integration layer: the lifecycle invariants storage refuses to let a caller break, against a
 //! real temporary SQLite database, in process [TST-003], [TST-004].
 //!
-//! One test per invariant. Each drives the repository the way a service would — approve, delete,
-//! re-rate — and asserts both the refusal and that the state the refusal protected is untouched,
+//! One test per invariant. Each drives the repository the way a service would — approve, delete —
+//! and asserts both the refusal and that the state the refusal protected is untouched,
 //! because a refusal that nonetheless wrote half of its change is not a refusal.
 //!
 //! Every test opens its own file through the shared helper. No test reaches the network.
@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
-use fifolio_core::decimal::{FxRate, Money, Quantity, QuotedPrice};
+use fifolio_core::decimal::{Money, Quantity, QuotedPrice};
 use fifolio_core::entities::{
     Account, ImportBatch, ImportCounts, Isin, Order, Quotation, RecordIdentity, Security,
     SecurityType, SourceFormat, SourceRecord,
@@ -25,7 +25,7 @@ use fifolio_core::transaction::{
     Buy, BuyOrigin, Derivation, Expiration, Sell, Split, Transaction, TransferIn, TransferInSource,
     TransferOut,
 };
-use fifolio_core::valuation::{Conversion, Currency, RateSource, Valued};
+use fifolio_core::valuation::{Conversion, Valued};
 use fifolio_test_support::TempDb;
 use rust_decimal_macros::dec;
 
@@ -76,18 +76,7 @@ fn conversion() -> Conversion {
     Conversion::native(day(2))
 }
 
-/// A conversion a caller might try to re-rate to: the ECB rate rather than the native one.
-fn re_rated() -> Conversion {
-    Conversion::new(
-        Currency::new("USD"),
-        FxRate::new(dec!(1.074500)),
-        RateSource::Ecb,
-        day(2),
-    )
-}
-
-/// Each constructor takes the conversion, so a re-rating can be asserted as "the same transaction
-/// under the other rate" rather than by reading one field out of a variant.
+/// Each `_at` constructor takes the conversion; the unsuffixed helpers fix it to the native one.
 fn buy_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
     Buy::new(
         Derivation::new(on, [cite(reference)]),
@@ -163,7 +152,7 @@ fn transfer_in_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Tra
     .into()
 }
 
-/// A split carries no money and so no conversion [DOM-105]: there is nothing in it to re-rate.
+/// A split carries no money and so no conversion [DOM-105].
 fn split(on: NaiveDate, reference: &str) -> Transaction {
     Split::new(Derivation::new(on, [cite(reference)])).into()
 }
@@ -694,13 +683,12 @@ async fn attributions_of_one_trade_date_are_ordered_among_themselves() {
         .expect("the block is lifted, the later attributions outside the pair notwithstanding");
 }
 
-/// Deleting an attribution nothing is stored under is already true, and re-rating a transaction
-/// nothing is stored under is refused [DOM-068], [DOM-069], [TST-004].
+/// Deleting an attribution or a transaction nothing is stored under is already true [DOM-068],
+/// [DOM-069], [TST-004].
 ///
-/// Deletion and re-rating differ deliberately on an unknown id: a deletion states an end state
-/// that already holds, so it is idempotent on both repositories, while a re-rating states a rate
-/// for a transaction to carry and there is no transaction to carry it. The specification does not
-/// decide this; it is pinned here so that a change to either is a change to a test.
+/// A deletion states an end state that already holds, so it is idempotent on both repositories.
+/// The specification does not decide this; it is pinned here so that a change is a change to a
+/// test.
 #[tokio::test]
 async fn an_unknown_attribution_and_an_unknown_transaction() {
     let (_db, database, _batch) = open().await;
@@ -712,11 +700,6 @@ async fn an_unknown_attribution_and_an_unknown_transaction() {
         .expect("deleting what is not there is already true");
 
     let unknown = TransactionId::new(404);
-    match database.transactions().re_rate(unknown, &re_rated()).await {
-        Err(StorageError::UnknownTransaction { transaction }) => assert_eq!(transaction, unknown),
-        other => panic!("re-rating an unknown transaction must be refused, got {other:?}"),
-    }
-
     database
         .transactions()
         .delete(unknown)
@@ -724,15 +707,15 @@ async fn an_unknown_attribution_and_an_unknown_transaction() {
         .expect("deleting what is not there is already true");
 }
 
-/// A transaction that participates in an attribution is immutable: it can be neither re-rated nor
-/// deleted while that attribution exists [DOM-069], [TST-004].
+/// A transaction that participates in an attribution is immutable: it cannot be deleted while
+/// that attribution exists [DOM-069], [TST-004].
 ///
-/// DOM-069 forbids three operations — edited, re-rated, deleted. Two are asserted here; there is
-/// no edit surface in the workspace at all, so the third has nothing to refuse and no test. The
-/// clause is carried on FIF-038 in the plan, which is where an edit surface would appear, rather
-/// than only here.
+/// DOM-069 forbids three operations — edited, re-rated, deleted. Only deletion is asserted here:
+/// no operation edits or re-rates a stored transaction (DEC-084), so those clauses hold by
+/// construction and have nothing to refuse. The edit clause is carried on FIF-038 in the plan,
+/// which is where an edit surface would appear, rather than only here.
 #[tokio::test]
-async fn an_attributed_transaction_is_neither_re_rated_nor_deleted() {
+async fn an_attributed_transaction_is_not_deleted() {
     let (_db, database, batch) = open().await;
     let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
     let closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
@@ -761,17 +744,6 @@ async fn an_attributed_transaction_is_neither_re_rated_nor_deleted() {
             }
             other => panic!("deleting an attributed transaction must be refused, got {other:?}"),
         }
-
-        match database
-            .transactions()
-            .re_rate(participant, &re_rated())
-            .await
-        {
-            Err(StorageError::TransactionAttributed { transaction, .. }) => {
-                assert_eq!(transaction, participant);
-            }
-            other => panic!("re-rating an attributed transaction must be refused, got {other:?}"),
-        }
     }
 
     assert_eq!(
@@ -781,7 +753,7 @@ async fn an_attributed_transaction_is_neither_re_rated_nor_deleted() {
             .await
             .expect("read back"),
         Some(buy(day(1), "b1")),
-        "a refused deletion and a refused re-rating leave the transaction as it was"
+        "a refused deletion leaves the transaction as it was"
     );
 
     // Deleting the attribution first is what the rule tells the user to do.
@@ -792,83 +764,9 @@ async fn an_attributed_transaction_is_neither_re_rated_nor_deleted() {
         .expect("delete the attribution");
     database
         .transactions()
-        .re_rate(opening, &re_rated())
-        .await
-        .expect("re-rate once nothing is attributed");
-    assert_eq!(
-        database
-            .transactions()
-            .find(opening)
-            .await
-            .expect("read back"),
-        Some(buy_at(day(1), "b1", re_rated())),
-        "the permitted re-rating stored the new conversion and changed nothing else"
-    );
-    database
-        .transactions()
         .delete(closing)
         .await
         .expect("delete once nothing is attributed");
-}
-
-/// Every money-bearing variant is re-rated through its own detail table, and a split — which
-/// carries no conversion [DOM-105] — is left alone [DOM-069], [TST-004].
-#[tokio::test]
-async fn each_variant_is_re_rated_in_its_own_table() {
-    let (_db, database, batch) = open().await;
-
-    let cases = [
-        (
-            buy_at(day(1), "b1", conversion()),
-            buy_at(day(1), "b1", re_rated()),
-        ),
-        (
-            transfer_in_at(day(1), "i1", conversion()),
-            transfer_in_at(day(1), "i1", re_rated()),
-        ),
-        (
-            sell_at(day(2), "s1", conversion()),
-            sell_at(day(2), "s1", re_rated()),
-        ),
-        (
-            expiration_at(day(2), "e1", conversion()),
-            expiration_at(day(2), "e1", re_rated()),
-        ),
-        (
-            transfer_out_at(day(2), "t1", conversion()),
-            transfer_out_at(day(2), "t1", re_rated()),
-        ),
-    ];
-    for (stored, expected) in cases {
-        let id = store(&database, batch, isin(), &stored).await;
-        database
-            .transactions()
-            .re_rate(id, &re_rated())
-            .await
-            .expect("re-rate");
-        assert_eq!(
-            database.transactions().find(id).await.expect("read back"),
-            Some(expected),
-            "the conversion is restated and nothing else moves"
-        );
-    }
-
-    // A split has no conversion to restate, so the call succeeds having written nothing: the
-    // transaction reads back exactly as it was stored.
-    let split_id = store(&database, batch, isin(), &split(day(3), "p1")).await;
-    database
-        .transactions()
-        .re_rate(split_id, &re_rated())
-        .await
-        .expect("re-rating a split is a no-op rather than a refusal");
-    assert_eq!(
-        database
-            .transactions()
-            .find(split_id)
-            .await
-            .expect("read back"),
-        Some(split(day(3), "p1"))
-    );
 }
 
 /// A `transfer_in` emitted by a `transfer_out` may not be deleted independently of it, and an
