@@ -302,10 +302,10 @@ Where the rule is enforced is an implementation choice the specification does no
 Done: enforced in `fx::resolve` through a new `RateTable::newest_publication`, so it holds for every table. The three acceptance tests are unit tests in `fx.rs`; `once_seeded_a_resolution_reads_the_cache_and_nothing_else` now tops up so a later publication proves the Easter Saturday was skipped.
 
 ## FIF-095 Fetching a rate an import does not have
-Status: todo
+Status: done
 Requirements: ARC-019
 Depends on: FIF-009, FIF-010, FIF-101
-Acceptance: an import that needs a rate the cache does not hold fetches it itself. An empty cache is seeded from the full series (SRV-047). Otherwise the 90-day feed tops it up, or the full series does for a date the window no longer covers. The fetch only fills the cache and never rewrites a cached day (ARC-028). An import that still has no rate, offline for instance, fails with the `fx::ResolveError::Unavailable` FIF-009 already raises, naming the currency and date. Tested through the feed port with recorded documents; no test opens a socket (TST-019 to TST-021).
+Acceptance: an import that needs a rate the cache does not hold fetches it itself. An empty cache is seeded from the full series (SRV-047). Otherwise the 90-day feed tops it up, or the full series does for a date the window no longer covers. The fetch only fills the cache and never rewrites a cached day (ARC-028). An import that still has no rate, offline for instance, fails with the `fx::RateError::Unavailable` FIF-009 already raises, naming the currency and date. Tested through the feed port with recorded documents; no test opens a socket (TST-019 to TST-021).
 Notes: Split out of FIF-009 in revision 29, recorded on both halves. OQ-019 observes that no
 requirement assigns the fetch: seeding and top-up are separate acts (FIF-010, FIF-041), and whether
 an import reaches the network at all decides whether an import can fail for want of a connection —
@@ -313,6 +313,8 @@ and whether TST-019 to TST-021's "no test opens a socket" needs a port here at a
 is `fx::ResolveError::Unavailable` and is `done`; this item must not add a second one.
 Unblocked in revision 47: DEC-078 closed OQ-019 and rewrote ARC-019. The seed and top-up paths FIF-010 built are what this item calls from the import path. It must not add a second fetch mechanism.
 Revision 49 adds FIF-101 to its dependencies. Under DEC-085, an import offline with a trade dated after the cache must fail with `Unavailable` and must not substitute. That refusal is FIF-101's rule, and this item's offline clause relies on it.
+ARC-019 is **not closed by this item**. What it supplies is `ecb::rates_for`, the fetch an import calls for the trade dates it must value, built on FIF-010's `seed` and `top_up` paths. No import values legs yet: `import::import` reads, orders and classifies rows, and the import endpoint FIF-035 is `todo`, so nothing in the workspace calls `rates_for` outside its tests. ARC-019 stays open until the item that values legs on import calls `rates_for`, with an integration test driving that import against a counting feed and an empty or stale cache; it must not be marked covered here. This is the treatment FIF-010 gave ARC-017 and ARC-018.
+Done: `ecb::rates_for` fetches through FIF-010's `seed` and `top_up` only, keyed on the new `CachedRates::coverage`; a feed failure leaves the day out so resolution raises `RateError::Unavailable`. Tested in `tests/rate_cache.rs` against recorded documents; no test opens a socket.
 
 ## FIF-010 ECB rate cache and seeding
 Status: done
@@ -1268,7 +1270,24 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 49 (this run).** `design/` changed: `fca2736` adds DEC-085 and amends DOM-034. No
+**Revision 50 (this run).** A status reconciliation. `design/` is **unchanged** since revision 49:
+`git log fca2736..HEAD -- design/` is empty, and `open-questions.md` names the same **18** ids.
+`HEAD` is `4f23d8e`. The working tree still carries the uncommitted, unreviewed FIF-028, FIF-034 and
+FIF-095 work. None of it is touched, and all three stay `todo`.
+
+* **Completed: FIF-101**, committed as `4f23d8e` with its status flip in the same commit.
+* No item added, split, retired, re-scoped, blocked or unblocked. 99 items: **36 `done`, 49
+  `todo`, 14 `blocked`**, counted by script. The 14 items carrying a blocked id are exactly the 14
+  `blocked`.
+* Coverage re-verified by script: **357** distinct ids in `design/`; **348** live ids each on exactly
+  one item, none duplicated, none on an item without being in `design/`. The nine uncovered are the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053. Revision 49's "351" was a miscount of the same
+  set; no id moved.
+* **Next to build: FIF-095.** Its dependencies FIF-009, FIF-010 and FIF-101 are all `done`, and its
+  one requirement, ARC-019, is not blocked. It is the first ready `todo` in document order. Also
+  ready: FIF-081, FIF-099, FIF-089, FIF-083, FIF-028, FIF-069, FIF-034, FIF-041, FIF-042.
+
+**Revision 49.** `design/` changed: `fca2736` adds DEC-085 and amends DOM-034. No
 requirement id added or retired. `open-questions.md` is unchanged and names the same **18** ids.
 `HEAD` is `fca2736`. The working tree still carries the uncommitted, unreviewed FIF-028 and FIF-034
 work, and now an uncommitted FIF-095 pass as well (`ecb.rs`, `storage/rates.rs`, `tests/rate_cache.rs`). None of it is

@@ -1,5 +1,6 @@
 //! The ECB euro reference-rate feed: its document, the injected fetcher, and the two paths that
-//! fill the local cache [ARC-015 to ARC-018].
+//! fill the local cache [ARC-015 to ARC-018], which [`rates_for`] calls when an import needs a
+//! rate the cache does not hold [ARC-019].
 //!
 //! # Two documents, one shape
 //!
@@ -44,7 +45,8 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use crate::decimal::FxRate;
-use crate::storage::{Database, StorageError};
+use crate::fx::series_start;
+use crate::storage::{CachedRates, Database, StorageError};
 use crate::valuation::Currency;
 
 /// One rate as published: a currency, the day it was published for, and the rate itself.
@@ -127,8 +129,126 @@ pub async fn top_up(database: &Database, feed: &impl RateFeed) -> Result<usize, 
 }
 
 async fn ingest(database: &Database, document: &str) -> Result<usize, IngestError> {
-    let observations = parse_reference_rates(document)?;
-    Ok(database.rates().store(&observations).await?)
+    store(database, &parse_reference_rates(document)?).await
+}
+
+async fn store(database: &Database, observations: &[Observation]) -> Result<usize, IngestError> {
+    Ok(database.rates().store(observations).await?)
+}
+
+/// The rate cache an import resolves against, after fetching what the cache does not hold
+/// [ARC-019].
+///
+/// `trade_dates` are the days the import's legs need an ECB rate for: the legs
+/// [`fx::resolve`](crate::fx::resolve) would send down its ECB path, which excludes EUR legs and
+/// legs whose file books its own EUR figures. The currency does not enter into it, because
+/// every document states every currency.
+///
+/// The cache holds a day when the day falls inside its [coverage](CachedRates::coverage). A
+/// day outside it is fetched through the two FIF-010 paths and nothing else:
+///
+/// * an empty cache is [seeded](seed) from the full series [SRV-047];
+/// * a day after the cache is [topped up](top_up) from the 90-day window [ARC-018], unless the
+///   window begins after the cache ends. It then no longer covers the days in between, and the
+///   full series is ingested instead: stored on its own, the window would leave a hole inside
+///   the cache's span that every later import reads as days the ECB skipped [DOM-034];
+/// * a day before the cache is seeded from the full series.
+///
+/// Both paths only insert, so no fetch here rewrites a cached day [ARC-028], and a day the
+/// cache already covers is never fetched at all, which is what keeps a cached import offline
+/// [ARC-016].
+///
+/// A feed that cannot be read, offline for instance, is not an error of its own: the cache is
+/// returned without the day, and resolution then fails with
+/// [`RateError::Unavailable`](crate::fx::RateError::Unavailable) naming the currency and the
+/// date, the one error DEC-078 names for it. A day past the cache's newest publication is that
+/// error too, not a substitute, because resolution refuses it on its own [DEC-085].
+///
+/// # Errors
+///
+/// [`StorageError`] when the database cannot be read or written, including a fetched rate
+/// beyond the stored scale [ARC-010].
+pub async fn rates_for(
+    database: &Database,
+    feed: &impl RateFeed,
+    trade_dates: impl IntoIterator<Item = NaiveDate>,
+) -> Result<CachedRates, StorageError> {
+    // A date before 1999 has no rate to fetch; resolution refuses it on its own [ARC-027].
+    let needed: Vec<NaiveDate> = trade_dates
+        .into_iter()
+        .filter(|date| *date >= series_start())
+        .collect();
+
+    if !needed.is_empty() {
+        fill(database, feed, &needed).await?;
+    }
+
+    database.rates().snapshot().await
+}
+
+/// Fetches into the cache whatever `needed` falls outside of, per [`rates_for`].
+async fn fill(
+    database: &Database,
+    feed: &impl RateFeed,
+    needed: &[NaiveDate],
+) -> Result<(), StorageError> {
+    let Some(coverage) = database.rates().snapshot().await?.coverage() else {
+        return fetched(seed(database, feed).await).map(drop);
+    };
+
+    // Read before anything is stored, so that a window which does not reach the cache is never
+    // stored without the full series behind it.
+    let window = if needed.iter().any(|date| date > coverage.end()) {
+        fetched(
+            feed.recent_window()
+                .and_then(|document| parse_reference_rates(&document))
+                .map_err(IngestError::from),
+        )?
+    } else {
+        None
+    };
+    let reaches_cache = |observations: &[Observation]| {
+        observations
+            .iter()
+            .map(|observation| observation.date)
+            .min()
+            .is_some_and(|start| start <= *coverage.end())
+    };
+
+    let before_cache = needed.iter().any(|date| date < coverage.start());
+    match window {
+        Some(observations) if reaches_cache(&observations) => {
+            fetched(store(database, &observations).await)?;
+            if before_cache {
+                fetched(seed(database, feed).await)?;
+            }
+        }
+        // The full series states every day the window does, so it replaces the window.
+        Some(_) => {
+            fetched(seed(database, feed).await)?;
+        }
+        None if before_cache => {
+            fetched(seed(database, feed).await)?;
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// A fetch's outcome with the feed's failure set aside: a day the feed could not supply is a
+/// day the cache still lacks, which resolution reports [ARC-019]. Storage failing is not that,
+/// and propagates.
+fn fetched<T>(outcome: Result<T, IngestError>) -> Result<Option<T>, StorageError> {
+    match outcome {
+        Ok(value) => Ok(Some(value)),
+        Err(IngestError::Feed(error)) => {
+            // The reason is logged because the resolution error that follows names the rate
+            // it lacks, not why the fetch failed.
+            tracing::warn!(%error, "fetching ECB rates the cache does not hold failed");
+            Ok(None)
+        }
+        Err(IngestError::Storage(error)) => Err(error),
+    }
 }
 
 /// Every rate in a `gesmes` euro reference-rate envelope, in the order the document states them.

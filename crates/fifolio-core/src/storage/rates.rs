@@ -17,6 +17,7 @@
 //! database file [ARC-016].
 
 use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 
 use chrono::NaiveDate;
 use sqlx::sqlite::SqlitePool;
@@ -98,6 +99,23 @@ impl<'a> RateRepository<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct CachedRates {
     rates: BTreeMap<(Currency, NaiveDate), FxRate>,
+}
+
+impl CachedRates {
+    /// The first and last publication day the cache holds, across every currency; `None` when
+    /// it is empty.
+    ///
+    /// Across currencies because the ECB publishes them together in one document: a day the
+    /// cache holds for none of them is a day it was never filled for, while a currency missing
+    /// inside the span is one the ECB did not publish [ARC-019].
+    #[must_use]
+    pub fn coverage(&self) -> Option<RangeInclusive<NaiveDate>> {
+        let dates = || self.rates.keys().map(|(_, date)| *date);
+        dates()
+            .min()
+            .zip(dates().max())
+            .map(|(first, last)| first..=last)
+    }
 }
 
 impl RateTable for CachedRates {

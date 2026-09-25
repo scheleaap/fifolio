@@ -5,13 +5,14 @@
 //! [TST-020], so nothing here opens a socket [TST-019]. There is no code path in this crate
 //! that could: the fetch happens outside it [ARC-002].
 
+use std::cell::Cell;
 use std::fs;
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
 use fifolio_core::decimal::FxRate;
-use fifolio_core::ecb::{FeedError, IngestError, Observation, RateFeed, seed, top_up};
-use fifolio_core::fx::{RateTable, Stated, resolve};
+use fifolio_core::ecb::{FeedError, IngestError, Observation, RateFeed, rates_for, seed, top_up};
+use fifolio_core::fx::{RateError, RateTable, Stated, resolve};
 use fifolio_core::storage::{Database, StorageError};
 use fifolio_core::valuation::{Currency, RateSource};
 use fifolio_test_support::TempDb;
@@ -571,5 +572,429 @@ async fn the_repository_stores_the_observations_it_is_given() {
             .expect("the first of the colliding pair is stored")
             .rate,
         FxRate::new(dec!(1.464500))
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fetching a rate an import does not have [ARC-019], through the same recorded feed [TST-019 to
+// TST-021].
+// ---------------------------------------------------------------------------------------------
+
+/// Which documents a fetch asked the feed for, so a test can tell "fetched" from "already held".
+#[derive(Default)]
+struct Requests {
+    historical: Cell<usize>,
+    recent: Cell<usize>,
+}
+
+/// A feed that records every request before answering it as `inner` does.
+struct CountingFeed<F> {
+    inner: F,
+    requests: Requests,
+}
+
+impl<F: RateFeed> CountingFeed<F> {
+    fn new(inner: F) -> Self {
+        Self {
+            inner,
+            requests: Requests::default(),
+        }
+    }
+
+    fn requested(&self) -> (usize, usize) {
+        (self.requests.historical.get(), self.requests.recent.get())
+    }
+}
+
+impl<F: RateFeed> RateFeed for CountingFeed<F> {
+    fn historical_series(&self) -> Result<String, FeedError> {
+        self.requests
+            .historical
+            .set(self.requests.historical.get() + 1);
+        self.inner.historical_series()
+    }
+
+    fn recent_window(&self) -> Result<String, FeedError> {
+        self.requests.recent.set(self.requests.recent.get() + 1);
+        self.inner.recent_window()
+    }
+}
+
+/// A USD-only envelope, for the windows and series the committed fragments cannot state.
+fn envelope(publications: &[(NaiveDate, &str)]) -> String {
+    let days: String = publications
+        .iter()
+        .map(|(date, usd)| {
+            format!(r#"<Cube time="{date}"><Cube currency="USD" rate="{usd}"/></Cube>"#)
+        })
+        .collect();
+    format!(
+        r#"<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01"><Cube>{days}</Cube></gesmes:Envelope>"#
+    )
+}
+
+fn usd_on(table: &impl RateTable, date: NaiveDate) -> Result<(FxRate, NaiveDate), RateError> {
+    resolve(table, &Currency::new("USD"), date, Stated::NativeOnly)
+        .map(|conversion| (conversion.rate(), conversion.rate_date()))
+}
+
+/// An empty cache is seeded from the full series by the import that first needs a rate, and the
+/// 90-day window is not asked for [ARC-019], [SRV-047].
+#[tokio::test]
+async fn an_import_seeds_an_empty_cache_from_the_full_series() {
+    let (db, database) = open().await;
+    let feed = CountingFeed::new(RecordedFeed::new());
+
+    let rates = rates_for(&database, &feed, [day(2024, 3, 28)])
+        .await
+        .expect("fetch");
+
+    assert_eq!(feed.requested(), (1, 0));
+    assert_eq!(cached_rows(&db).await, 4, "the whole recorded series");
+    assert_eq!(
+        usd_on(&rates, day(2024, 3, 28)),
+        Ok((FxRate::new(dec!(1.0811)), day(2024, 3, 28)))
+    );
+}
+
+/// A day after the cache is topped up from the 90-day window; the window reaches back into the
+/// cache, so the full series is not asked for again [ARC-019], [ARC-018].
+#[tokio::test]
+async fn an_import_tops_up_a_cache_that_ends_before_its_date() {
+    let (_db, database) = open().await;
+    seed(&database, &RecordedFeed::new())
+        .await
+        .expect("seeding");
+    let feed = CountingFeed::new(RecordedFeed::new());
+
+    let rates = rates_for(&database, &feed, [day(2024, 4, 2)])
+        .await
+        .expect("fetch");
+
+    assert_eq!(feed.requested(), (0, 1));
+    assert_eq!(
+        usd_on(&rates, day(2024, 4, 2)),
+        Ok((FxRate::new(dec!(1.0749)), day(2024, 4, 2)))
+    );
+}
+
+/// A day the cache covers is not fetched, even one it holds no usable publication for: inside the
+/// span a missing day is one the ECB did not publish, and resolution decides what stands in
+/// [ARC-016], [ARC-027].
+#[tokio::test]
+async fn an_import_fetches_nothing_for_a_day_the_cache_covers() {
+    let (_db, database) = open().await;
+    seed(&database, &RecordedFeed::new())
+        .await
+        .expect("seeding");
+    let feed = CountingFeed::new(UnreachableFeed);
+
+    // 1999-01-20 lies inside the cached span, between its two publications and more
+    // than a week after the first: covered, and therefore a stale substitute, not a fetch.
+    let rates = rates_for(&database, &feed, [day(2024, 3, 28), day(1999, 1, 20)])
+        .await
+        .expect("no fetch, so nothing to fail");
+
+    assert_eq!(feed.requested(), (0, 0));
+    assert_eq!(
+        usd_on(&rates, day(2024, 3, 28)),
+        Ok((FxRate::new(dec!(1.0811)), day(2024, 3, 28)))
+    );
+    assert!(matches!(
+        usd_on(&rates, day(1999, 1, 20)),
+        Err(RateError::StaleSubstitute { .. })
+    ));
+}
+
+/// A date the window no longer covers is filled from the full series: here the cache ends in
+/// 1999 and the window begins after the trade date [ARC-019].
+#[tokio::test]
+async fn an_import_reaches_the_full_series_for_a_date_older_than_the_window() {
+    let (_db, database) = open().await;
+    database
+        .rates()
+        .store(&[Observation {
+            currency: Currency::new("USD"),
+            date: day(1999, 1, 4),
+            rate: FxRate::new(dec!(1.1789)),
+        }])
+        .await
+        .expect("a cache ending in 1999");
+    let feed = CountingFeed::new(RecordedFeed::of(
+        &fragment("eurofxref-hist-fragment.xml"),
+        &envelope(&[(day(2024, 4, 2), "1.0749")]),
+    ));
+
+    let rates = rates_for(&database, &feed, [day(2024, 3, 28)])
+        .await
+        .expect("fetch");
+
+    assert_eq!(feed.requested(), (1, 1));
+    assert_eq!(
+        usd_on(&rates, day(2024, 3, 28)),
+        Ok((FxRate::new(dec!(1.0811)), day(2024, 3, 28)))
+    );
+}
+
+/// The window starting after the cache ends leaves a hole even when the trade date is inside the
+/// window, and the full series fills it: otherwise a later trade in the hole would resolve to a
+/// cached rate from before it as though the ECB had not published [ARC-019], [DOM-034].
+#[tokio::test]
+async fn a_window_that_does_not_reach_the_cache_brings_the_full_series_with_it() {
+    let (_db, database) = open().await;
+    database
+        .rates()
+        .store(&[Observation {
+            currency: Currency::new("USD"),
+            date: day(2024, 3, 26),
+            rate: FxRate::new(dec!(1.0833)),
+        }])
+        .await
+        .expect("a cache ending two days before the recorded Thursday");
+    let feed = CountingFeed::new(RecordedFeed::of(
+        &fragment("eurofxref-hist-fragment.xml"),
+        &envelope(&[(day(2024, 4, 2), "1.0749")]),
+    ));
+
+    rates_for(&database, &feed, [day(2024, 4, 2)])
+        .await
+        .expect("fetch");
+    let rates = rates_for(&database, &UnreachableFeed, [day(2024, 3, 28)])
+        .await
+        .expect("covered now, so no fetch");
+
+    assert_eq!(feed.requested(), (1, 1));
+    assert_eq!(
+        usd_on(&rates, day(2024, 3, 28)),
+        Ok((FxRate::new(dec!(1.0811)), day(2024, 3, 28))),
+        "the hole's publication, not the 2024-03-26 rate standing in for it"
+    );
+}
+
+/// A date before the cache begins, in a cache filled from the window alone, is filled from the
+/// full series [ARC-019].
+#[tokio::test]
+async fn an_import_reaches_the_full_series_for_a_date_before_the_cache() {
+    let (_db, database) = open().await;
+    top_up(&database, &RecordedFeed::new())
+        .await
+        .expect("a cache holding the window alone");
+    let feed = CountingFeed::new(RecordedFeed::new());
+
+    let rates = rates_for(&database, &feed, [day(1999, 1, 4)])
+        .await
+        .expect("fetch");
+
+    assert_eq!(feed.requested(), (1, 0));
+    assert_eq!(
+        usd_on(&rates, day(1999, 1, 4)),
+        Ok((FxRate::new(dec!(1.1789)), day(1999, 1, 4)))
+    );
+}
+
+/// The fetch fills the cache and never rewrites a cached day, even when the window restates it
+/// at another figure [ARC-028].
+#[tokio::test]
+async fn an_import_s_fetch_never_rewrites_a_cached_day() {
+    let (_db, database) = open().await;
+    seed(&database, &RecordedFeed::new())
+        .await
+        .expect("seeding");
+    let feed = RecordedFeed::of(
+        &fragment("eurofxref-hist-fragment.xml"),
+        &envelope(&[(day(2024, 4, 2), "1.0749"), (day(2024, 3, 28), "9.9999")]),
+    );
+
+    let rates = rates_for(&database, &feed, [day(2024, 4, 2)])
+        .await
+        .expect("fetch");
+
+    assert_eq!(
+        usd_on(&rates, day(2024, 3, 28)),
+        Ok((FxRate::new(dec!(1.0811)), day(2024, 3, 28))),
+        "the seeded rate stands, not the restated one"
+    );
+    assert_eq!(
+        usd_on(&rates, day(2024, 4, 2)),
+        Ok((FxRate::new(dec!(1.0749)), day(2024, 4, 2)))
+    );
+}
+
+/// Offline with an empty cache, the import fails with FIF-009's own error naming the currency and
+/// the date; the feed's failure is not a second error [ARC-019], [DEC-078].
+#[tokio::test]
+async fn offline_an_empty_cache_fails_with_the_resolver_s_own_error() {
+    let (_db, database) = open().await;
+
+    let rates = rates_for(&database, &UnreachableFeed, [day(2024, 3, 28)])
+        .await
+        .expect("a feed failure is not an error of its own");
+
+    let error = usd_on(&rates, day(2024, 3, 28)).expect_err("nothing cached, nothing fetched");
+    assert_eq!(
+        error,
+        RateError::Unavailable {
+            currency: Currency::new("USD"),
+            date: day(2024, 3, 28),
+        }
+    );
+    let message = error.to_string();
+    assert!(message.contains("USD"), "{message} names no currency");
+    assert!(message.contains("2024-03-28"), "{message} names no date");
+}
+
+/// Offline with a cache that ends five days before the trade, the last cached rate does not stand
+/// in: whether the ECB published in between is unknown, so it is not a previous-publication
+/// substitute but a guess [ARC-019], [DOM-034]. A malformed document is the same "still no
+/// rate".
+#[tokio::test]
+async fn offline_a_date_past_the_cache_is_unavailable_rather_than_substituted() {
+    let (_db, database) = open().await;
+    seed(&database, &RecordedFeed::new())
+        .await
+        .expect("seeding");
+    let malformed = RecordedFeed::of("", "<gesmes:Envelope><Cube time=\"2024-04-02\">");
+
+    for (label, rates) in [
+        (
+            "unreachable",
+            rates_for(&database, &UnreachableFeed, [day(2024, 4, 2)]).await,
+        ),
+        (
+            "malformed",
+            rates_for(&database, &malformed, [day(2024, 4, 2)]).await,
+        ),
+    ] {
+        let rates = rates.expect("a feed failure is not an error of its own");
+        assert_eq!(
+            usd_on(&rates, day(2024, 4, 2)),
+            Err(RateError::Unavailable {
+                currency: Currency::new("USD"),
+                date: day(2024, 4, 2),
+            }),
+            "{label}"
+        );
+        assert_eq!(
+            usd_on(&rates, day(2024, 3, 28)),
+            Ok((FxRate::new(dec!(1.0811)), day(2024, 3, 28))),
+            "{label}: the cached days still answer"
+        );
+    }
+}
+
+/// A date before the series has nothing to fetch, and resolution refuses it itself [ARC-027].
+#[tokio::test]
+async fn a_date_before_the_series_fetches_nothing() {
+    let (_db, database) = open().await;
+    let feed = CountingFeed::new(RecordedFeed::new());
+
+    let rates = rates_for(&database, &feed, [day(1998, 12, 31)])
+        .await
+        .expect("no fetch");
+
+    assert_eq!(feed.requested(), (0, 0));
+    assert!(matches!(
+        usd_on(&rates, day(1998, 12, 31)),
+        Err(RateError::BeforeSeries { .. })
+    ));
+
+    // The series' first day is inside it, so an empty cache is seeded for it.
+    let (_db, database) = open().await;
+    let feed = CountingFeed::new(RecordedFeed::new());
+    rates_for(&database, &feed, [day(1999, 1, 1)])
+        .await
+        .expect("fetch");
+    assert_eq!(feed.requested(), (1, 0));
+}
+
+/// One import with a date after the cache and one before it: the window tops up the later end
+/// and the full series still fills the earlier one [ARC-019].
+#[tokio::test]
+async fn an_import_with_dates_on_both_sides_of_the_cache_fills_both() {
+    let (_db, database) = open().await;
+    // A window-only cache ending before 2024-04-02, whose start the recorded window reaches.
+    top_up(
+        &database,
+        &RecordedFeed::of("", &envelope(&[(day(2024, 3, 28), "1.0811")])),
+    )
+    .await
+    .expect("a cache holding one window day");
+    let feed = CountingFeed::new(RecordedFeed::new());
+
+    let rates = rates_for(&database, &feed, [day(2024, 4, 2), day(1999, 1, 4)])
+        .await
+        .expect("fetch");
+
+    assert_eq!(feed.requested(), (1, 1));
+    assert_eq!(
+        usd_on(&rates, day(2024, 4, 2)),
+        Ok((FxRate::new(dec!(1.0749)), day(2024, 4, 2)))
+    );
+    assert_eq!(
+        usd_on(&rates, day(1999, 1, 4)),
+        Ok((FxRate::new(dec!(1.1789)), day(1999, 1, 4)))
+    );
+}
+
+/// A fetched rate beyond the stored scale is a storage failure and propagates, rather than being
+/// set aside like a feed failure and surfacing later as a missing rate [ARC-019], [ARC-010].
+#[tokio::test]
+async fn a_fetched_rate_beyond_the_stored_scale_is_a_storage_error() {
+    let (_db, database) = open().await;
+    seed(&database, &RecordedFeed::new())
+        .await
+        .expect("seeding");
+    let feed = RecordedFeed::of(
+        &fragment("eurofxref-hist-fragment.xml"),
+        &envelope(&[(day(2024, 4, 2), "1.0749115"), (day(2024, 3, 28), "1.0811")]),
+    );
+
+    let refused = rates_for(&database, &feed, [day(2024, 4, 2)]).await;
+
+    assert!(
+        matches!(refused, Err(StorageError::UnscaledValue { .. })),
+        "got {refused:?}"
+    );
+}
+
+/// A window that does not reach the cache is not stored when the full series then cannot be
+/// read: stored alone, it would leave a hole inside the cache's span that a later import reads as
+/// days the ECB skipped, and a trade in it would resolve to a rate from before the hole
+/// [ARC-019], [DOM-034], [DEC-085].
+#[tokio::test]
+async fn a_window_that_does_not_reach_the_cache_is_not_stored_without_the_full_series() {
+    let (_db, database) = open().await;
+    database
+        .rates()
+        .store(&[Observation {
+            currency: Currency::new("USD"),
+            date: day(2024, 3, 26),
+            rate: FxRate::new(dec!(1.0833)),
+        }])
+        .await
+        .expect("a cache ending two days before the recorded Thursday");
+    let series_unreadable = RecordedFeed::of("", &envelope(&[(day(2024, 4, 2), "1.0749")]));
+
+    rates_for(&database, &series_unreadable, [day(2024, 4, 2)])
+        .await
+        .expect("a feed failure is not an error of its own");
+    let rates = rates_for(&database, &UnreachableFeed, [day(2024, 3, 28)])
+        .await
+        .expect("offline");
+
+    assert_eq!(
+        usd_on(&rates, day(2024, 3, 28)),
+        Err(RateError::Unavailable {
+            currency: Currency::new("USD"),
+            date: day(2024, 3, 28),
+        }),
+        "not the 2024-03-26 rate standing in for a day the ECB published"
+    );
+    assert_eq!(
+        usd_on(&rates, day(2024, 4, 2)),
+        Err(RateError::Unavailable {
+            currency: Currency::new("USD"),
+            date: day(2024, 4, 2),
+        })
     );
 }
