@@ -38,6 +38,8 @@
 //! export backwards. A timestamp outside the range nanoseconds can hold is refused rather than
 //! wrapped.
 
+pub mod money;
+
 use chrono::{DateTime, NaiveDate};
 use rust_decimal::Decimal;
 use thiserror::Error;
@@ -132,6 +134,30 @@ pub enum TradeRepublicError {
     /// wrapped instant would order its row silently and wrongly [IMP-TR-023].
     #[error("the column datetime holds {value:?}, which is outside the range this reader orders")]
     TimestampOutOfRange { value: String },
+    /// A populated money column holding something that is not a number [IMP-TR-005]. A blank
+    /// one is an absent figure and not this, most cells of most rows being blank.
+    #[error("the column {header} holds {value:?}, which is not an amount")]
+    NotAnAmount { header: String, value: String },
+    /// Some of `original_amount`, `original_currency` and `fx_rate` and not the others. The
+    /// export populates the three together [IMP-TR-006], so a partial triple is a shape neither
+    /// the format nor `design/` describes.
+    #[error("the row states a conversion but leaves {absent:?} blank")]
+    PartialConversion { absent: Vec<String> },
+    /// A `TRADING` row stating a foreign side. No such row appears in four years of exports, so
+    /// what its `price` and `amount` are denominated in is unspecified and the file is refused
+    /// rather than read under a guess [IMP-TR-017].
+    #[error(
+        "the trade {transaction_id} is in {currency}, and a foreign-currency trade is not \
+         specified for this format"
+    )]
+    ForeignCurrencyTrade {
+        currency: String,
+        transaction_id: String,
+    },
+    /// A figure that cannot be derived from what the row states: a sum outside the range of a
+    /// decimal, or a foreign row carrying no rate.
+    #[error("the row's money cannot be derived: {reason}")]
+    UnderivableMoney { reason: &'static str },
 }
 
 /// Reads `content` as a Trade Republic DE export, answering its rows in file order.
@@ -300,7 +326,7 @@ mod tests {
     }
 
     /// One row with the named columns populated and every other column blank.
-    fn row(values: &[(&str, &str)]) -> SourceRow {
+    pub(super) fn row(values: &[(&str, &str)]) -> SourceRow {
         let cells: Vec<&str> = HEADERS
             .iter()
             .map(|header| {

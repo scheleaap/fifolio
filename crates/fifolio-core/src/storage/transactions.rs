@@ -9,6 +9,7 @@
 use chrono::NaiveDate;
 use sqlx::sqlite::{SqliteConnection, SqlitePool, SqliteRow};
 use sqlx::{Row, query};
+use vec1::Vec1;
 
 use crate::entities::{Account, Isin, RecordIdentity};
 use crate::storage::codec::{
@@ -279,7 +280,15 @@ impl<'a> TransactionRepository<'a> {
         .fetch_all(self.pool)
         .await?
         .into_iter()
-        .map(|row| RecordIdentity::new(row.get::<String, _>("record_identity")));
+        .map(|row| RecordIdentity::new(row.get::<String, _>("record_identity")))
+        .collect();
+        // `insert` writes every citation a derivation holds, and a derivation holds at least one
+        // [DOM-047], so a header without citations was not written by this code; it is refused
+        // rather than read back as a transaction derived from nothing.
+        let cites = Vec1::try_from_vec(cites).map_err(|_| StorageError::CorruptValue {
+            field: "transaction_citation",
+            value: id.to_string(),
+        })?;
 
         let derivation = Derivation::new(header.get::<NaiveDate, _>("trade_date"), cites);
         let kind = header.get::<String, _>("kind");

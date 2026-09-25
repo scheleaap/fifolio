@@ -469,18 +469,19 @@ Done in revision 26, commit `bb09bb0`, which is the work revision 25 named and t
 Two things later items inherit. The trait's `classify` takes the whole row slice and answers one classification per row, because a Saxo corporate action is classified by its group and not by its row alone; an importer returning the wrong count is a refusal, not a silent truncation. And DOM-043's closed set shipped here as the `RowClassification` type, which is **FIF-064's** requirement, not this item's — FIF-064 is what must review it and say whether anything remains.
 
 ## FIF-102 An emitted transfer_in does not block undoing its transfer's batch
-Status: todo
+Status: done
 Requirements: none (correction of DOM-119 under DEC-086; DOM-119 stays on FIF-012)
 Depends on: FIF-012
 Acceptance: `foreign_citations` treats a `transfer_in` emitted by a `transfer_out` as derived by the batch that derived that `transfer_out`; a failing test written first shows a batch whose `transfer_out` emitted records, each citing the batch's stored records, can be deleted; a batch whose records are cited by a genuinely foreign transaction is still refused; an emitted record consumed by an attributed disposal still refuses under SRV-022.
-Notes: Added in revision 52 by the user's decision. Found by FIF-081's implementer: `foreign_citations` (storage/entities.rs) reads an emitted `transfer_in`, which has no batch, as foreign, so under DEC-079 its batch could never be undone. Two emission tests in `invariants.rs` pass only because they cite records never stored; they should cite stored ones. FIF-081 then adds its stored-record handle to `Derivation::new`.
+Notes: Added in revision 52 by the user's decision. Found by FIF-081's implementer: `foreign_citations` (storage/entities.rs) reads an emitted `transfer_in`, which has no batch, as foreign, so under DEC-079 its batch could never be undone. Two emission tests in `invariants.rs` pass only because they cite records never stored; they should cite stored ones. FIF-081 then adds its stored-record handle to `Derivation::new`. Done in revision 54: reviewed and green, committed in one commit with the unreviewed work below at the user's instruction.
+Named next to build in revision 53: the first `todo` in document order whose dependency, FIF-012, is `done`; it carries no blocked id. Everything ahead of it is `done`, `blocked`, or waits on a `blocked` item (FIF-060 on FIF-058; FIF-013, FIF-014, FIF-015, FIF-063 and FIF-016 on FIF-076 and FIF-061). The uncommitted working tree already rewrites the two emission tests in `invariants.rs` to cite their emitter; review that against this item before writing anew.
 
 ## FIF-081 Nothing is created from nothing
 Status: todo
 Requirements: DOM-047
 Depends on: FIF-017, FIF-102
 Acceptance: there is no path, in core or at any surface, that creates a transaction other than from source records; the absence is structural rather than a check, and a test asserts it for every construction path.
-Notes: Split out of FIF-017 in revision 3.
+Notes: Split out of FIF-017 in revision 3. Revision 54: this item's partial, **unreviewed** code was committed at the user's instruction so the tree is clean; build on it and review it against the specification as if uncommitted.
 Unblocked in revision 47: DEC-079 closed OQ-002. An emitted `transfer_in` cites the source records of the `transfer_out` that produced it (FIF-063), so the emission path is derivation from source records too. The test must cover it once FIF-063 exists; until then it covers every path that exists.
 
 ## FIF-064 Import classification taxonomy
@@ -957,7 +958,7 @@ Status: todo
 Requirements: IMP-TR-005, IMP-TR-006, IMP-TR-007, IMP-TR-016
 Depends on: FIF-027, FIF-008
 Acceptance: `price`, `amount`, `fee`, `tax`, `currency` map to the native figures. **`amount` excludes the fee**, the opposite of Saxo, so gross = |amount| and fees = |fee| + |tax| in the settlement currency, checked as that relation against the fixtures (the real export's 35 × 75.09 = 2628.15 with a fee of −1.00 carried separately is the worked case). `original_amount`, `original_currency` and `fx_rate` are read where populated, but **`fx_rate` is never used to value anything**, in either convention: its convention changed in late 2024 and nothing stored needs it.
-Notes: IMP-TR-016 and IMP-TR-017 are new in this revision and reverse the previous plan's assumption that a populated `original_*` triple values the trade.
+Notes: IMP-TR-016 and IMP-TR-017 are new in this revision and reverse the previous plan's assumption that a populated `original_*` triple values the trade. Revision 54: this item's partial, **unreviewed** code was committed at the user's instruction so the tree is clean; build on it and review it against the specification as if uncommitted.
 Named next to build in revision 41, FIF-027 having landed in `39d98f4`. Both dependencies are
 `done` — FIF-027 (`39d98f4`, the container half) and FIF-008 (`9a1e457`, EUR valuation and the
 stored gross) — none of IMP-TR-005, IMP-TR-006, IMP-TR-007, IMP-TR-016 or IMP-TR-017 appears on a
@@ -1073,7 +1074,7 @@ Status: todo
 Requirements: SRV-007, SRV-008, SRV-009, SRV-010, SRV-011, SRV-057, DOM-126
 Depends on: FIF-033
 Acceptance: CRUDL for accounts and securities; deleting an account or a security referenced by any source record is refused; creating a security with an existing ISIN is a conflict; type and quotation are editable, which is how an auto-created security is corrected; a security carries `auto_created` (provenance, never changed) and `needs_review` as separate fields; only marking the security reviewed clears `needs_review`, and an edit leaves it set.
-Notes: Named next to build in revision 44. Its cases go into the in-process harness FIF-033 left in `crates/fifolio-server/tests/http_surface.rs`, and each refusal maps to a `ProblemType` in `fifolio-server/src/problem.rs`.
+Notes: Named next to build in revision 44. Its cases go into the in-process harness FIF-033 left in `crates/fifolio-server/tests/http_surface.rs`, and each refusal maps to a `ProblemType` in `fifolio-server/src/problem.rs`. Revision 54: this item's partial, **unreviewed** code was committed at the user's instruction so the tree is clean; build on it and review it against the specification as if uncommitted.
 
 ## FIF-035 Import endpoint
 Status: todo
@@ -1276,6 +1277,30 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 54.** The working tree held the unreviewed partial work of FIF-028, FIF-034 and
+FIF-081 alongside FIF-102, entangled across files. At the user's instruction all of it was committed
+in one commit, green (590 tests, fmt, clippy). FIF-102 is `done`; the other three stay `todo` and
+must still be reviewed against the specification.
+
+**Revision 53.** A status reconciliation. `design/` is **unchanged** since revision 52: `HEAD` is
+`d55a1b5`, the commit that recorded DEC-086 and revision 52, and `design/` has no uncommitted
+change. `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the
+14 `blocked`; none is unblocked. The working tree still carries uncommitted, unreviewed work —
+FIF-028 (`import/trade_republic/`), FIF-034 (`accounts.rs`, `securities.rs`) and what looks like the
+start of FIF-081 (`Derivation::new` taking a `vec1`, emitted `transfer_in` test fixtures citing
+their emitter). None of it is touched, and all three stay `todo`.
+
+* No item added, split, retired, completed, blocked or unblocked. 100 items: **37 `done`, 49
+  `todo`, 14 `blocked`**, counted by script. (Revision 51's "99 items" predates FIF-102.)
+* Coverage re-verified by script against every id appearing in the six requirement documents:
+  **351** live ids each on exactly one item's `Requirements:` line, none on an item without being in
+  `design/`. DOM-034 and DOM-119 are also *named* on FIF-101 and FIF-102 as corrections, not
+  carried. Uncovered: only the retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-102.** Its one dependency, FIF-012, is `done`, and it carries no
+  requirement id, so none is blocked. It is the first ready `todo` in document order; FIF-081,
+  named in revision 51, now waits on it. Also ready: FIF-099, FIF-089, FIF-083, FIF-028, FIF-069,
+  FIF-034, FIF-041, FIF-042.
 
 **Revision 52.** DEC-086 (user's decision): an emitted `transfer_in` counts as derived by its
 `transfer_out`'s batch for DOM-119. New FIF-102 corrects `foreign_citations`; FIF-081 now depends

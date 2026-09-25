@@ -9,17 +9,22 @@
 //! and assert on the [`Reply`]. An error reply is checked with [`Reply::assert_problem`], which
 //! holds every error to the one problem+json shape [ARC-020].
 
+use std::collections::BTreeMap;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use axum::middleware::map_response;
-use axum::routing::post;
-use fifolio_core::entities::{Isin, Quotation, Security, SecurityType};
+use chrono::DateTime;
+use fifolio_core::entities::{
+    Account, ImportBatch, ImportCounts, Isin, Order, Quotation, Security, SecurityType,
+    SourceFormat, SourceRecord,
+};
+use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::storage::Database;
-use fifolio_server::problem::{ABOUT_BLANK, CONTENT_TYPE, Problem, problem_for_bare_errors};
+use fifolio_server::problem::{ABOUT_BLANK, CONTENT_TYPE};
 use fifolio_test_support::TempDb;
 use http_body_util::BodyExt;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// The server as a request sees it, over a database of its own.
@@ -82,6 +87,51 @@ impl Harness {
                 .expect("build the request"),
         )
         .await
+    }
+}
+
+impl Harness {
+    async fn json(&self, method: Method, uri: &str, body: &Value) -> Reply {
+        self.send(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("build the request"),
+        )
+        .await
+    }
+
+    /// One batch of `account` owning one source record whose parsed fields are `fields`, the
+    /// way an import leaves them.
+    async fn import_record(&self, account: &Account, reference: &str, fields: &[(&str, &str)]) {
+        let batch = self
+            .database
+            .import_batches()
+            .insert(&ImportBatch::new(
+                account.clone(),
+                "Transactions_2024.xlsx",
+                SourceFormat::SaxoNlXlsx,
+                DateTime::from_timestamp(1_714_608_000, 0).expect("a timestamp"),
+                ImportCounts::default(),
+            ))
+            .await
+            .expect("insert the batch");
+        let record = SourceRecord::new(
+            identify(account, &IdentitySource::BrokerReference(reference)),
+            Order::new(1),
+            "raw",
+            fields
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        self.database
+            .source_records()
+            .insert(batch, &record)
+            .await
+            .expect("insert the record");
     }
 }
 
@@ -152,49 +202,356 @@ async fn an_unserved_method_is_a_405_problem_that_keeps_allow() {
     assert!(allow.contains("GET"), "Allow: {allow}");
 }
 
-/// A refusal storage makes against the harness's database reaches the client as the problem
-/// its variant maps to, with the message naming what collided [ARC-020, ARC-021, TST-005].
-///
-/// No endpoint yet inserts a security, so the case mounts one that does exactly that beside the
-/// served router; FIF-034's endpoint will replace it with the real one. `Router::layer` wraps
-/// only the routes added before it, so the probe is given the server's problem layer itself and
-/// its problem still passes through that layer on the way out.
+const SAXO: &str = "/accounts/Saxo/69900%2F1000000";
+
+fn saxo() -> Value {
+    json!({"broker": "Saxo", "id": "69900/1000000"})
+}
+
+fn philips() -> Value {
+    json!({
+        "isin": "NL0000009538",
+        "name": "Philips",
+        "security_type": "stock",
+        "quotation": "per_unit",
+    })
+}
+
+/// Accounts are created, read, listed, renamed and deleted, a slash in the broker's id
+/// travelling percent-encoded in the path [SRV-007, TST-005].
 #[tokio::test]
-async fn a_storage_refusal_is_the_problem_its_variant_maps_to() {
+async fn accounts_have_create_read_update_delete_and_list() {
     let harness = Harness::new().await;
-    let database = harness.database.clone();
-    let harness = Harness {
-        router: harness.router.merge(
-            Router::new()
-                .route(
-                    "/probe/security",
-                    post(move || async move {
-                        let security = Security::new(
-                            Isin::new("NL0000009538"),
-                            "Philips",
-                            SecurityType::Stock,
-                            Quotation::PerUnit,
-                        );
-                        database
-                            .securities()
-                            .insert(&security)
-                            .await
-                            .map_err(Problem::from)
-                    }),
-                )
-                .layer(map_response(problem_for_bare_errors)),
-        ),
-        ..harness
-    };
 
-    let first = harness.request(Method::POST, "/probe/security").await;
-    assert_eq!(first.status, StatusCode::OK);
+    let created = harness.json(Method::POST, "/accounts", &saxo()).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body, saxo());
 
-    let second = harness.request(Method::POST, "/probe/security").await;
+    let tr = json!({"broker": "Trade Republic", "id": "main"});
+    harness.json(Method::POST, "/accounts", &tr).await;
+    let listed = harness.request(Method::GET, "/accounts").await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body, json!([saxo(), tr]));
+
+    let read = harness.request(Method::GET, SAXO).await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body, saxo());
+
+    let renamed_to = json!({"broker": "Saxo", "id": "69900/2000000"});
+    let renamed = harness.json(Method::PUT, SAXO, &renamed_to).await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(renamed.body, renamed_to);
+    harness
+        .request(Method::GET, SAXO)
+        .await
+        .assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-account");
+
+    let deleted = harness
+        .request(Method::DELETE, "/accounts/Saxo/69900%2F2000000")
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    assert_eq!(deleted.body, Value::Null);
+    assert_eq!(
+        harness.request(Method::GET, "/accounts").await.body,
+        json!([tr])
+    );
+}
+
+/// Asking for, editing or deleting an account that is not stored is a 404 naming it, and
+/// creating one twice or renaming onto a taken key is a conflict [SRV-007, ARC-020, TST-005].
+#[tokio::test]
+async fn an_absent_or_duplicate_account_is_refused() {
+    let harness = Harness::new().await;
+
+    for method in [Method::GET, Method::DELETE] {
+        let reply = harness.request(method, SAXO).await;
+        let detail =
+            reply.assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-account");
+        assert!(detail.is_some_and(|detail| detail.contains("69900/1000000")));
+    }
+    harness
+        .json(Method::PUT, SAXO, &saxo())
+        .await
+        .assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-account");
+
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness
+        .json(Method::POST, "/accounts", &saxo())
+        .await
+        .assert_problem(
+            StatusCode::CONFLICT,
+            "urn:fifolio:problem:duplicate-account",
+        );
+
+    let other = json!({"broker": "Saxo", "id": "other"});
+    harness.json(Method::POST, "/accounts", &other).await;
+    harness
+        .json(Method::PUT, "/accounts/Saxo/other", &saxo())
+        .await
+        .assert_problem(
+            StatusCode::CONFLICT,
+            "urn:fifolio:problem:duplicate-account",
+        );
+}
+
+/// An account a source record was imported into is neither deleted nor renamed; the refusal
+/// says what holds it, and the account is still there afterwards [SRV-008, TST-005].
+#[tokio::test]
+async fn deleting_an_account_a_source_record_references_is_refused() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness
+        .import_record(&Account::new("Saxo", "69900/1000000"), "r1", &[])
+        .await;
+
+    let refused = harness.request(Method::DELETE, SAXO).await;
+    let detail = refused.assert_problem(
+        StatusCode::CONFLICT,
+        "urn:fifolio:problem:account-referenced",
+    );
+    assert!(
+        detail.is_some_and(|detail| detail.contains("1 source records")),
+        "{}",
+        refused.body
+    );
+
+    harness
+        .json(Method::PUT, SAXO, &json!({"broker": "Saxo", "id": "new"}))
+        .await
+        .assert_problem(
+            StatusCode::CONFLICT,
+            "urn:fifolio:problem:account-referenced",
+        );
+    assert_eq!(harness.request(Method::GET, SAXO).await.body, saxo());
+}
+
+/// Securities are created, read, listed, edited and deleted; a user-created security is not
+/// flagged as auto-created, and a lowercase ISIN in the path names the same security
+/// [SRV-007, DOM-006, TST-005].
+#[tokio::test]
+async fn securities_have_create_read_update_delete_and_list() {
+    let harness = Harness::new().await;
+
+    let created = harness.json(Method::POST, "/securities", &philips()).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let mut stored = philips();
+    stored["auto_created"] = json!(false);
+    assert_eq!(created.body, stored);
+
+    let read = harness
+        .request(Method::GET, "/securities/nl0000009538")
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body, stored);
+
+    let edited = harness
+        .json(
+            Method::PUT,
+            "/securities/NL0000009538",
+            &json!({"name": "Koninklijke Philips", "security_type": "stock", "quotation": "per_unit"}),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.body);
+    assert_eq!(edited.body["name"], "Koninklijke Philips");
+
+    let listed = harness.request(Method::GET, "/securities").await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body, json!([edited.body]));
+
+    let deleted = harness
+        .request(Method::DELETE, "/securities/NL0000009538")
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    harness
+        .request(Method::GET, "/securities/NL0000009538")
+        .await
+        .assert_problem(
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-security",
+        );
+    assert_eq!(
+        harness.request(Method::GET, "/securities").await.body,
+        json!([])
+    );
+}
+
+/// Creating a security whose ISIN is stored is a conflict naming the ISIN, whatever else the
+/// request says and however the ISIN is spelled, and the stored security is untouched
+/// [SRV-010, ARC-021, TST-005].
+#[tokio::test]
+async fn creating_a_security_with_an_existing_isin_is_a_conflict() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/securities", &philips()).await;
+
+    let second = harness
+        .json(
+            Method::POST,
+            "/securities",
+            &json!({
+                "isin": " nl0000009538",
+                "name": "Another name",
+                "security_type": "etf",
+                "quotation": "percent_of_par",
+            }),
+        )
+        .await;
+
     let detail = second.assert_problem(StatusCode::CONFLICT, "urn:fifolio:problem:duplicate-isin");
     assert!(
         detail.is_some_and(|detail| detail.contains("NL0000009538")),
         "{}",
         second.body
+    );
+    assert_eq!(
+        harness
+            .request(Method::GET, "/securities/NL0000009538")
+            .await
+            .body["name"],
+        "Philips"
+    );
+}
+
+/// An auto-created security is corrected by editing its type and quotation, each on its own,
+/// and it stays flagged as auto-created [SRV-011, DOM-006, DOM-037, TST-005].
+#[tokio::test]
+async fn an_auto_created_security_is_corrected_through_type_and_quotation() {
+    let harness = Harness::new().await;
+    harness
+        .database
+        .securities()
+        .insert(&Security::auto_created(
+            Isin::new("NL0000102077"),
+            "NL 7.5% 2023",
+            SecurityType::Other,
+            Quotation::PerUnit,
+        ))
+        .await
+        .expect("insert");
+    let uri = "/securities/NL0000102077";
+
+    let retyped = harness
+        .json(
+            Method::PUT,
+            uri,
+            &json!({"name": "NL 7.5% 2023", "security_type": "bond", "quotation": "per_unit"}),
+        )
+        .await;
+    assert_eq!(retyped.status, StatusCode::OK, "{}", retyped.body);
+    assert_eq!(
+        (&retyped.body["security_type"], &retyped.body["quotation"]),
+        (&json!("bond"), &json!("per_unit"))
+    );
+
+    let requoted = harness
+        .json(
+            Method::PUT,
+            uri,
+            &json!({"name": "NL 7.5% 2023", "security_type": "bond", "quotation": "percent_of_par"}),
+        )
+        .await;
+    assert_eq!(
+        requoted.body,
+        json!({
+            "isin": "NL0000102077",
+            "name": "NL 7.5% 2023",
+            "security_type": "bond",
+            "quotation": "percent_of_par",
+            "auto_created": true,
+        })
+    );
+    assert_eq!(harness.request(Method::GET, uri).await.body, requoted.body);
+}
+
+/// Editing or deleting a security that is not stored is a 404, and a type outside the fixed set
+/// is refused as a problem rather than stored [SRV-007, SRV-011, DOM-004, ARC-020, TST-005].
+#[tokio::test]
+async fn an_absent_security_or_an_unknown_type_is_refused() {
+    let harness = Harness::new().await;
+    let edit = json!({"name": "x", "security_type": "bond", "quotation": "per_unit"});
+
+    harness
+        .json(Method::PUT, "/securities/NL0000009538", &edit)
+        .await
+        .assert_problem(
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-security",
+        );
+    harness
+        .request(Method::DELETE, "/securities/NL0000009538")
+        .await
+        .assert_problem(
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-security",
+        );
+
+    let mut unknown = philips();
+    unknown["security_type"] = json!("crypto");
+    harness
+        .json(Method::POST, "/securities", &unknown)
+        .await
+        .assert_problem(StatusCode::UNPROCESSABLE_ENTITY, ABOUT_BLANK);
+    assert_eq!(
+        harness.request(Method::GET, "/securities").await.body,
+        json!([])
+    );
+}
+
+/// A security a source record names is not deleted, and the refusal says what holds it
+/// [SRV-009, TST-005].
+#[tokio::test]
+async fn deleting_a_security_a_source_record_references_is_refused() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness.json(Method::POST, "/securities", &philips()).await;
+    harness
+        .import_record(
+            &Account::new("Saxo", "69900/1000000"),
+            "r1",
+            &[("Instrument ISIN", "NL0000009538")],
+        )
+        .await;
+
+    let refused = harness
+        .request(Method::DELETE, "/securities/NL0000009538")
+        .await;
+
+    let detail = refused.assert_problem(
+        StatusCode::CONFLICT,
+        "urn:fifolio:problem:security-referenced",
+    );
+    assert!(
+        detail.is_some_and(
+            |detail| detail.contains("NL0000009538") && detail.contains("1 source records")
+        ),
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        harness
+            .request(Method::GET, "/securities/NL0000009538")
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+/// The endpoints are in the served spec, which is read from the same route list [SRV-006].
+#[tokio::test]
+async fn the_endpoints_are_documented() {
+    let harness = Harness::new().await;
+
+    let spec = harness.request(Method::GET, "/openapi.json").await.body;
+
+    for path in [
+        "/accounts",
+        "/accounts/{broker}/{id}",
+        "/securities",
+        "/securities/{isin}",
+    ] {
+        assert!(spec["paths"].get(path).is_some(), "{path} is undocumented");
+    }
+    assert_eq!(
+        spec["components"]["schemas"]["SecurityTypeBody"]["enum"],
+        json!(["stock", "bond", "etf", "fund", "derivative", "other"])
     );
 }

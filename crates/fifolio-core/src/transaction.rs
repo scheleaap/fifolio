@@ -23,10 +23,18 @@
 //! relation: the relation to account, security and source record is DOM-013, which is undecided
 //! and belongs to FIF-076.
 //!
-//! The cardinality is not enforced here either. DOM-013 requires at least one record, but
-//! OQ-002 observes that a `transfer_in` emitted on approval of a `transfer_out` is created by
-//! the system and derived from no row at all; refusing an empty list would answer that question
-//! in code. It is left to FIF-076, which owns it.
+//! # Nothing is created from nothing
+//!
+//! A [`Derivation`] cites at least one source record, by type: it holds a [`Vec1`], and its
+//! constructor takes one, so a citation-less derivation — and with it a transaction invented
+//! from nothing — cannot be written, let alone stored [DOM-047]. Every variant constructor takes
+//! a `Derivation`, so this is the one gate every construction path passes, whatever surface it
+//! starts at. A `transfer_in` emitted on approval of a `transfer_out` is no exception: it cites
+//! the `transfer_out`'s records [DEC-079].
+//!
+//! What the type cannot say is that a cited identity names a record that is stored: a
+//! transaction may cite a record an import undo later removed [DOM-099], and the relation to
+//! source records is DOM-013's, which belongs to FIF-076.
 //!
 //! The distinction between **consuming** a record and merely **citing** it [DOM-101] is
 //! undecided (FIF-058). What every variant holds until then is the citation — the audit trail
@@ -85,6 +93,7 @@
 //! [`crate::decimal`].
 
 use chrono::NaiveDate;
+use vec1::Vec1;
 
 use crate::decimal::{Money, Quantity, QuotedPrice};
 use crate::entities::RecordIdentity;
@@ -97,18 +106,40 @@ use crate::valuation::{Conversion, Valued};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Derivation {
     trade_date: NaiveDate,
-    cites: Vec<RecordIdentity>,
+    cites: Vec1<RecordIdentity>,
 }
 
 impl Derivation {
     /// A transaction derived from `cites`, in the order the caller states, so that a multi-row
     /// event keeps its audit trail in the shape it had [DOM-016].
+    ///
+    /// `cites` is non-empty by type, so there is no derivation from nothing [DOM-047]. With one
+    /// citation it compiles:
+    ///
+    /// ```
+    /// # use chrono::NaiveDate;
+    /// # use fifolio_core::entities::Account;
+    /// # use fifolio_core::identity::{IdentitySource, identify};
+    /// # use fifolio_core::transaction::Derivation;
+    /// # use vec1::vec1;
+    /// let date = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
+    /// let account = Account::new("Saxo", "69900/1000000");
+    /// let cite = identify(&account, &IdentitySource::BrokerReference("r1"));
+    /// let _ = Derivation::new(date, vec1![cite]);
+    /// ```
+    ///
+    /// With none it does not. Stable rustdoc does not check the error code below, so the block
+    /// above is what shows the imports and the call are sound and the empty list alone fails:
+    ///
+    /// ```compile_fail,E0308
+    /// # use chrono::NaiveDate;
+    /// # use fifolio_core::transaction::Derivation;
+    /// let date = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
+    /// let _ = Derivation::new(date, Vec::new());
+    /// ```
     #[must_use]
-    pub fn new(trade_date: NaiveDate, cites: impl IntoIterator<Item = RecordIdentity>) -> Self {
-        Self {
-            trade_date,
-            cites: cites.into_iter().collect(),
-        }
+    pub fn new(trade_date: NaiveDate, cites: Vec1<RecordIdentity>) -> Self {
+        Self { trade_date, cites }
     }
 
     #[must_use]
@@ -519,6 +550,7 @@ mod tests {
     use super::*;
 
     use rust_decimal_macros::dec;
+    use vec1::vec1;
 
     use crate::decimal::{FxRate, Scaled};
     use crate::entities::Account;
@@ -538,7 +570,7 @@ mod tests {
     }
 
     fn derivation() -> Derivation {
-        Derivation::new(date(), [cite("row-1")])
+        Derivation::new(date(), vec1![cite("row-1")])
     }
 
     /// The conversion the worked Saxo buy was booked under: USD figures, the EUR figures the
@@ -680,7 +712,7 @@ mod tests {
     /// its audit trail [DOM-016].
     #[test]
     fn a_transaction_cites_the_records_it_was_derived_from() {
-        let rows = [cite("philips-position-row"), cite("philips-cash-row")];
+        let rows = vec1![cite("philips-position-row"), cite("philips-cash-row")];
 
         let transaction: Transaction = Buy::new(
             Derivation::new(date(), rows.clone()),
@@ -693,7 +725,7 @@ mod tests {
         )
         .into();
 
-        assert_eq!(transaction.cites(), rows);
+        assert_eq!(transaction.cites(), rows.as_slice());
     }
 
     /// The citation is by broker-scoped identity rather than by an internal key, which is what
@@ -1097,7 +1129,7 @@ mod tests {
         // the acquisition below is five years before the disposal that closes it.
         let acquired = NaiveDate::from_ymd_opt(2019, 3, 14).expect("a valid date");
         let opened: Transaction = Buy::new(
-            Derivation::new(acquired, [cite("row-1")]),
+            Derivation::new(acquired, vec1![cite("row-1")]),
             Quantity::new(dec!(10)),
             Valued::in_eur(QuotedPrice::new(dec!(100.00))),
             Valued::in_eur(Money::new(dec!(1000.00))),

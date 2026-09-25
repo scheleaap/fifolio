@@ -28,6 +28,7 @@ use fifolio_core::transaction::{
 use fifolio_core::valuation::{Conversion, Valued};
 use fifolio_test_support::TempDb;
 use rust_decimal_macros::dec;
+use vec1::vec1;
 
 fn account() -> Account {
     Account::new("Saxo", "69900/1000000")
@@ -79,7 +80,7 @@ fn conversion() -> Conversion {
 /// Each `_at` constructor takes the conversion; the unsuffixed helpers fix it to the native one.
 fn buy_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
     Buy::new(
-        Derivation::new(on, [cite(reference)]),
+        Derivation::new(on, vec1![cite(reference)]),
         Quantity::new(dec!(100.00000000)),
         price(dec!(10.000000)),
         money(dec!(1000.00)),
@@ -96,7 +97,7 @@ fn buy(on: NaiveDate, reference: &str) -> Transaction {
 
 fn sell_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
     Sell::new(
-        Derivation::new(on, [cite(reference)]),
+        Derivation::new(on, vec1![cite(reference)]),
         Quantity::new(dec!(10.00000000)),
         price(dec!(12.000000)),
         money(dec!(120.00)),
@@ -112,7 +113,7 @@ fn sell(on: NaiveDate, reference: &str) -> Transaction {
 
 fn transfer_out_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
     TransferOut::new(
-        Derivation::new(on, [cite(reference)]),
+        Derivation::new(on, vec1![cite(reference)]),
         Quantity::new(dec!(10.00000000)),
         money(dec!(0.00)),
         conversion,
@@ -126,7 +127,7 @@ fn transfer_out(on: NaiveDate, reference: &str) -> Transaction {
 
 fn expiration_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
     Expiration::new(
-        Derivation::new(on, [cite(reference)]),
+        Derivation::new(on, vec1![cite(reference)]),
         money(dec!(0.00)),
         money(dec!(0.00)),
         conversion,
@@ -140,7 +141,7 @@ fn expiration(on: NaiveDate, reference: &str) -> Transaction {
 
 fn transfer_in_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Transaction {
     TransferIn::new(
-        Derivation::new(on, [cite(reference)]),
+        Derivation::new(on, vec1![cite(reference)]),
         Quantity::new(dec!(10.00000000)),
         money(dec!(100.00)),
         money(dec!(0.00)),
@@ -154,13 +155,14 @@ fn transfer_in_at(on: NaiveDate, reference: &str, conversion: Conversion) -> Tra
 
 /// A split carries no money and so no conversion [DOM-105].
 fn split(on: NaiveDate, reference: &str) -> Transaction {
-    Split::new(Derivation::new(on, [cite(reference)])).into()
+    Split::new(Derivation::new(on, vec1![cite(reference)])).into()
 }
 
-/// The `transfer_in` a `transfer_out` emits on approval: derived from no row at all [DOM-090].
-fn emitted_transfer_in(on: NaiveDate) -> Transaction {
+/// The `transfer_in` a `transfer_out` emits on approval: derived from no row of its own
+/// [DOM-090], it cites the records of the `transfer_out` that emitted it [DEC-079].
+fn emitted_transfer_in(on: NaiveDate, emitter: &str) -> Transaction {
     TransferIn::new(
-        Derivation::new(on, []),
+        Derivation::new(on, vec1![cite(emitter)]),
         Quantity::new(dec!(10.00000000)),
         money(dec!(100.00)),
         money(dec!(0.00)),
@@ -783,7 +785,7 @@ async fn an_emitted_transfer_in_is_not_deleted_independently_of_its_transfer_out
             .transactions()
             .insert(
                 &Placement::emitted(account(), isin()),
-                &emitted_transfer_in(day(1)),
+                &emitted_transfer_in(day(1), "t1"),
             )
             .await
             .expect("the emitted record");
@@ -896,7 +898,7 @@ async fn an_emission_is_recorded_only_between_a_transfer_out_and_a_transfer_in()
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &emitted_transfer_in(day(1)),
+            &emitted_transfer_in(day(1), "t1"),
         )
         .await
         .expect("the emitted record");
@@ -949,6 +951,13 @@ async fn an_emission_is_recorded_only_between_a_transfer_out_and_a_transfer_in()
 #[tokio::test]
 async fn a_batch_whose_transaction_is_attributed_is_not_deleted() {
     let (_db, database, batch) = open().await;
+    // The record the transfer_out and its emission cite is stored, so that the undo meets the
+    // emission's citation of it and must not read it as foreign [DOM-119], [DEC-086].
+    database
+        .source_records()
+        .insert(batch, &record("t1"))
+        .await
+        .expect("the record the transfer_out cites");
     let opening = store(&database, batch, isin(), &buy(day(1), "b1")).await;
     let closing = store(&database, batch, isin(), &sell(day(2), "s1")).await;
     // A transfer_out the batch derived, with the record it emitted. The emitted record belongs to
@@ -959,7 +968,7 @@ async fn a_batch_whose_transaction_is_attributed_is_not_deleted() {
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &emitted_transfer_in(day(1)),
+            &emitted_transfer_in(day(1), "t1"),
         )
         .await
         .expect("the emitted record");
@@ -1039,12 +1048,19 @@ async fn a_batch_whose_transaction_is_attributed_is_not_deleted() {
 #[tokio::test]
 async fn a_batch_whose_emitted_record_is_attributed_is_not_deleted() {
     let (_db, database, batch) = open().await;
+    // Stored, so that the refusal below is SRV-022's attribution refusal and not DOM-119 reading
+    // the emission's citation of it as foreign [DEC-086].
+    database
+        .source_records()
+        .insert(batch, &record("t1"))
+        .await
+        .expect("the record the transfer_out cites");
     let out = store(&database, batch, isin(), &transfer_out(day(3), "t1")).await;
     let emitted = database
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &emitted_transfer_in(day(1)),
+            &emitted_transfer_in(day(1), "t1"),
         )
         .await
         .expect("the emitted record");
@@ -1201,6 +1217,93 @@ async fn a_batch_whose_records_a_foreign_transaction_cites_is_not_deleted() {
         None,
         "the batch's own transaction goes with it"
     );
+}
+
+/// A `transfer_in` a batch's `transfer_out` emitted counts as derived by that batch, so its
+/// citation of the batch's records does not hold the batch; one emitted by another batch's
+/// `transfer_out` still does [DOM-119], [DEC-086], [TST-004].
+#[tokio::test]
+async fn a_batch_whose_records_only_its_own_emissions_cite_is_deleted() {
+    let (_db, database, batch) = open().await;
+    database
+        .source_records()
+        .insert(batch, &record("t1"))
+        .await
+        .expect("the record this batch owns");
+    let out = store(&database, batch, isin(), &transfer_out(day(3), "t1")).await;
+    // DOM-090 emits one transfer_in per consumed parcel, each citing the transfer_out's records.
+    let mut emitted = Vec::new();
+    for _ in 0..2 {
+        let record = database
+            .transactions()
+            .insert(
+                &Placement::emitted(account(), isin()),
+                &emitted_transfer_in(day(1), "t1"),
+            )
+            .await
+            .expect("the emitted record");
+        database
+            .transactions()
+            .record_emission(out, record)
+            .await
+            .expect("record the emission");
+        emitted.push(record);
+    }
+
+    // A transfer_out a second import derived, whose emission cites this batch's record: that
+    // emission belongs to the second batch, so to this one it is foreign.
+    let second = database
+        .import_batches()
+        .insert(&import("2025.xlsx"))
+        .await
+        .expect("the second import");
+    let other_out = store(&database, second, isin(), &transfer_out(day(4), "t2")).await;
+    let foreign = database
+        .transactions()
+        .insert(
+            &Placement::emitted(account(), isin()),
+            &emitted_transfer_in(day(1), "t1"),
+        )
+        .await
+        .expect("the foreign emitted record");
+    database
+        .transactions()
+        .record_emission(other_out, foreign)
+        .await
+        .expect("record the foreign emission");
+
+    match database.import_batches().delete(batch).await {
+        Err(StorageError::BatchRecordsCited {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, batch);
+            assert_eq!(
+                transactions,
+                vec![foreign],
+                "only the emission of another batch's transfer_out holds the batch"
+            );
+        }
+        other => panic!("deleting the batch must be refused, got {other:?}"),
+    }
+
+    database
+        .transactions()
+        .delete(other_out)
+        .await
+        .expect("delete the other batch's transfer_out with its emission");
+    database
+        .import_batches()
+        .delete(batch)
+        .await
+        .expect("the batch's own emissions do not hold it");
+    for gone in std::iter::once(out).chain(emitted) {
+        assert_eq!(
+            database.transactions().find(gone).await.expect("read back"),
+            None,
+            "the undo takes the transfer_out and every record it emitted"
+        );
+    }
 }
 
 /// A manual entry is never deleted by an import undo: it belongs to no batch, and the records it

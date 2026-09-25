@@ -7,7 +7,8 @@ use sqlx::sqlite::{SqliteConnection, SqlitePool, SqliteRow};
 use sqlx::{Row, query};
 
 use crate::entities::{
-    Account, ImportBatch, ImportCounts, Isin, Order, RecordIdentity, Security, SourceRecord,
+    Account, ImportBatch, ImportCounts, Isin, Order, Quotation, RecordIdentity, Security,
+    SecurityType, SourceRecord,
 };
 use crate::storage::codec::{
     quotation, quotation_code, security_type, security_type_code, source_format, source_format_code,
@@ -40,12 +41,62 @@ impl<'a> AccountRepository<'a> {
         Self { pool }
     }
 
+    /// An account already stored is refused as [`StorageError::DuplicateAccount`] rather than
+    /// as a driver error.
     pub async fn insert(&self, account: &Account) -> Result<(), StorageError> {
         query("insert into account (broker, id) values (?, ?)")
             .bind(account.broker())
             .bind(account.id())
             .execute(self.pool)
+            .await
+            .map_err(|error| duplicate_account(error, account))?;
+        Ok(())
+    }
+
+    /// Every account, in key order.
+    pub async fn list(&self) -> Result<Vec<Account>, StorageError> {
+        Ok(query("select broker, id from account order by broker, id")
+            .fetch_all(self.pool)
+            .await?
+            .iter()
+            .map(|row| account_from_row(row, "broker", "id"))
+            .collect())
+    }
+
+    /// Gives `from` the key `to`, refused while anything refers to it.
+    ///
+    /// An account is nothing but its key, so this is the only edit it has. It is refused on the
+    /// same grounds as a deletion because a stored record's identity is scoped to the account
+    /// it was imported into [DOM-024]: renaming under it would make the next import of the
+    /// same file miss every record it already holds.
+    pub async fn rename(&self, from: &Account, to: &Account) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        refuse_if_account_referenced(&mut tx, from).await?;
+        query("update account set broker = ?, id = ? where broker = ? and id = ?")
+            .bind(to.broker())
+            .bind(to.id())
+            .bind(from.broker())
+            .bind(from.id())
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| duplicate_account(error, to))?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Deletes an account, refused while any source record was imported into it [SRV-008].
+    ///
+    /// Refused too while a batch, a manual entry or a transaction names it: those carry a
+    /// foreign key to the account, and the alternative to refusing is deleting them with it.
+    pub async fn delete(&self, account: &Account) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        refuse_if_account_referenced(&mut tx, account).await?;
+        query("delete from account where broker = ? and id = ?")
+            .bind(account.broker())
+            .bind(account.id())
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -61,6 +112,83 @@ impl<'a> AccountRepository<'a> {
 
 fn account_from_row(row: &SqliteRow, broker: &str, id: &str) -> Account {
     Account::new(row.get::<String, _>(broker), row.get::<String, _>(id))
+}
+
+fn duplicate_account(error: sqlx::Error, account: &Account) -> StorageError {
+    match &error {
+        sqlx::Error::Database(database) if database.is_unique_violation() => {
+            StorageError::DuplicateAccount {
+                broker: account.broker().to_owned(),
+                id: account.id().to_owned(),
+            }
+        }
+        _ => StorageError::Database(error),
+    }
+}
+
+fn unknown_account(account: &Account) -> StorageError {
+    StorageError::UnknownAccount {
+        broker: account.broker().to_owned(),
+        id: account.id().to_owned(),
+    }
+}
+
+/// Refuses an account that is not stored, or that anything stored refers to [SRV-008].
+///
+/// A source record reaches its account through the batch that owns it, which is the account
+/// it was imported into.
+async fn refuse_if_account_referenced(
+    connection: &mut SqliteConnection,
+    account: &Account,
+) -> Result<(), StorageError> {
+    let row = query(
+        "select
+             (select count(*) from account where broker = ?1 and id = ?2) as stored,
+             (select count(*) from source_record r join import_batch b on b.id = r.batch_id
+               where b.account_broker = ?1 and b.account_id = ?2) as source_records,
+             (select count(*) from import_batch
+               where account_broker = ?1 and account_id = ?2) as batches,
+             (select count(*) from manual_entry
+               where account_broker = ?1 and account_id = ?2) as manual_entries,
+             (select count(*) from transaction_placement
+               where account_broker = ?1 and account_id = ?2) as transactions",
+    )
+    .bind(account.broker())
+    .bind(account.id())
+    .fetch_one(connection)
+    .await?;
+
+    if row.get::<i64, _>("stored") == 0 {
+        return Err(unknown_account(account));
+    }
+    let references = (
+        reference_count(&row, "source_records")?,
+        reference_count(&row, "batches")?,
+        reference_count(&row, "manual_entries")?,
+        reference_count(&row, "transactions")?,
+    );
+    match references {
+        (0, 0, 0, 0) => Ok(()),
+        (source_records, batches, manual_entries, transactions) => {
+            Err(StorageError::AccountReferenced {
+                broker: account.broker().to_owned(),
+                id: account.id().to_owned(),
+                source_records,
+                batches,
+                manual_entries,
+                transactions,
+            })
+        }
+    }
+}
+
+/// `count(*)` is never negative; a negative one is not a database this crate wrote.
+fn reference_count(row: &SqliteRow, field: &'static str) -> Result<u64, StorageError> {
+    let stored = row.get::<i64, _>(field);
+    u64::try_from(stored).map_err(|_| StorageError::CorruptValue {
+        field,
+        value: stored.to_string(),
+    })
 }
 
 /// Securities, keyed by ISIN [DOM-071].
@@ -99,27 +227,127 @@ impl<'a> SecurityRepository<'a> {
     }
 
     pub async fn find(&self, isin: &Isin) -> Result<Option<Security>, StorageError> {
-        let Some(row) = query(
+        query(
             "select isin, name, security_type, quotation, auto_created
              from security where isin = ?",
         )
         .bind(isin.as_str())
         .fetch_optional(self.pool)
         .await?
-        else {
-            return Ok(None);
-        };
+        .as_ref()
+        .map(security_from_row)
+        .transpose()
+    }
 
-        let isin = Isin::new(row.get::<String, _>("isin"));
-        let name = row.get::<String, _>("name");
-        let security_type = security_type(&row.get::<String, _>("security_type"))?;
-        let quotation = quotation(&row.get::<String, _>("quotation"))?;
+    /// Every security, in ISIN order.
+    pub async fn list(&self) -> Result<Vec<Security>, StorageError> {
+        query(
+            "select isin, name, security_type, quotation, auto_created
+             from security order by isin",
+        )
+        .fetch_all(self.pool)
+        .await?
+        .iter()
+        .map(security_from_row)
+        .collect()
+    }
 
-        Ok(Some(if row.get::<bool, _>("auto_created") {
-            Security::auto_created(isin, name, security_type, quotation)
-        } else {
-            Security::new(isin, name, security_type, quotation)
-        }))
+    /// Replaces what a security says about itself other than its ISIN, and returns it as stored.
+    ///
+    /// Type and quotation are editable so that an auto-created record can be corrected
+    /// [SRV-011], and each moves without the other [DOM-037]. The auto-created flag is left
+    /// alone: it records where the security came from, not whether anyone has looked at it
+    /// [DOM-006].
+    pub async fn update(
+        &self,
+        isin: &Isin,
+        name: &str,
+        security_type: SecurityType,
+        quotation: Quotation,
+    ) -> Result<Security, StorageError> {
+        query(
+            "update security set name = ?, security_type = ?, quotation = ? where isin = ?
+             returning isin, name, security_type, quotation, auto_created",
+        )
+        .bind(name)
+        .bind(security_type_code(security_type))
+        .bind(quotation_code(quotation))
+        .bind(isin.as_str())
+        .fetch_optional(self.pool)
+        .await?
+        .as_ref()
+        .map(security_from_row)
+        .transpose()?
+        .ok_or_else(|| unknown_security(isin))
+    }
+
+    /// Deletes a security, refused while any source record names it [SRV-009], or any
+    /// transaction is placed on it, which the foreign key would refuse anyway.
+    ///
+    /// A source record has no column for its security: what it holds is the file's own fields,
+    /// under the format's own names — `Instrument ISIN` in a Saxo row, `symbol` in a Trade
+    /// Republic one. So a record names the security when any of its parsed values is the ISIN.
+    /// That also catches a record naming it in a second role, as a corporate action's target
+    /// does, and it needs no list of column names that a new format would have to extend.
+    pub async fn delete(&self, isin: &Isin) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        // Values are normalized as `Isin::new` normalizes, so a lowercase or padded spelling
+        // in a file still counts as naming the security.
+        let row = query(
+            "select
+                 (select count(*) from security where isin = ?1) as stored,
+                 (select count(*) from source_record r
+                   where exists (select 1 from json_each(r.parsed)
+                                  where upper(trim(json_each.value)) = ?1)) as source_records,
+                 (select count(*) from transaction_placement
+                   where security_isin = ?1) as transactions",
+        )
+        .bind(isin.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if row.get::<i64, _>("stored") == 0 {
+            return Err(unknown_security(isin));
+        }
+        match (
+            reference_count(&row, "source_records")?,
+            reference_count(&row, "transactions")?,
+        ) {
+            (0, 0) => {}
+            (source_records, transactions) => {
+                return Err(StorageError::SecurityReferenced {
+                    isin: isin.as_str().to_owned(),
+                    source_records,
+                    transactions,
+                });
+            }
+        }
+
+        query("delete from security where isin = ?")
+            .bind(isin.as_str())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+fn security_from_row(row: &SqliteRow) -> Result<Security, StorageError> {
+    let isin = Isin::new(row.get::<String, _>("isin"));
+    let name = row.get::<String, _>("name");
+    let security_type = security_type(&row.get::<String, _>("security_type"))?;
+    let quotation = quotation(&row.get::<String, _>("quotation"))?;
+
+    Ok(if row.get::<bool, _>("auto_created") {
+        Security::auto_created(isin, name, security_type, quotation)
+    } else {
+        Security::new(isin, name, security_type, quotation)
+    })
+}
+
+fn unknown_security(isin: &Isin) -> StorageError {
+    StorageError::UnknownSecurity {
+        isin: isin.as_str().to_owned(),
     }
 }
 
@@ -332,6 +560,11 @@ async fn attributed_of(
 ///
 /// A transaction citing another import's record is the audit trail of a multi-file event, and
 /// deleting the record underneath it would leave it citing nothing.
+///
+/// An emitted `transfer_in` has no batch of its own and cites its `transfer_out`'s records
+/// [DEC-079]; it counts as derived by the batch that derived its `transfer_out`, since deleting
+/// that `transfer_out` takes it along [DOM-094], [DEC-086]. A transaction with neither a batch nor
+/// an emitter stays foreign.
 async fn foreign_citations(
     connection: &mut SqliteConnection,
     batch: BatchId,
@@ -340,8 +573,10 @@ async fn foreign_citations(
         "select distinct c.transaction_id from transaction_citation c
               join source_record r on r.identity = c.record_identity
               left join transaction_placement p on p.transaction_id = c.transaction_id
+              left join emitted_transfer_in e on e.transfer_in_id = c.transaction_id
+              left join transaction_placement emitter on emitter.transaction_id = e.transfer_out_id
          where r.batch_id = ?
-           and (p.derived_by_batch is null or p.derived_by_batch <> ?)
+           and coalesce(p.derived_by_batch, emitter.derived_by_batch) is not ?
          order by c.transaction_id",
     )
     .bind(batch.get())

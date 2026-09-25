@@ -88,6 +88,37 @@ pub enum StorageError {
     /// A security's ISIN is unique [DOM-071].
     #[error("a security with ISIN {isin} already exists")]
     DuplicateIsin { isin: String },
+    /// An account is its broker and id, so a second one with both is the same account.
+    #[error("an account {broker} {id} already exists")]
+    DuplicateAccount { broker: String, id: String },
+    #[error("no account {broker} {id} is stored")]
+    UnknownAccount { broker: String, id: String },
+    #[error("no security with ISIN {isin} is stored")]
+    UnknownSecurity { isin: String },
+    /// An account that anything stored refers to stays, and the refusal says what refers to it
+    /// [SRV-008].
+    #[error(
+        "account {broker} {id} is referenced by {source_records} source records, {batches} \
+         import batches, {manual_entries} manual entries and {transactions} transactions"
+    )]
+    AccountReferenced {
+        broker: String,
+        id: String,
+        source_records: u64,
+        batches: u64,
+        manual_entries: u64,
+        transactions: u64,
+    },
+    /// A security that a source record or a transaction names stays [SRV-009].
+    #[error(
+        "security {isin} is referenced by {source_records} source records and {transactions} \
+         transactions"
+    )]
+    SecurityReferenced {
+        isin: String,
+        source_records: u64,
+        transactions: u64,
+    },
     /// The scale boundary, refused rather than rounded [ARC-009, ARC-010].
     #[error("{field} is {value}, which carries more than the {scale} decimals it is stored at")]
     UnscaledValue {

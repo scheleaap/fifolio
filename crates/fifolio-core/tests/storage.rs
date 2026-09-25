@@ -27,6 +27,7 @@ use fifolio_test_support::TempDb;
 use rust_decimal_macros::dec;
 use sqlx::sqlite::SqlitePool;
 use sqlx::{Row, query};
+use vec1::vec1;
 
 fn account() -> Account {
     Account::new("Saxo", "69900/1000000")
@@ -45,7 +46,7 @@ fn cite(reference: &str) -> RecordIdentity {
 }
 
 fn derivation() -> Derivation {
-    Derivation::new(date(), [cite("4100200300"), cite("4100200301")])
+    Derivation::new(date(), vec1![cite("4100200300"), cite("4100200301")])
 }
 
 /// The Saxo worked example's conversion: USD booked, the rate stated per EUR [DOM-086].
@@ -488,7 +489,7 @@ async fn every_transaction_variant_round_trips() {
             conversion(),
         )
         .into(),
-        Split::new(Derivation::new(date(), [cite("4100200302")])).into(),
+        Split::new(Derivation::new(date(), vec1![cite("4100200302")])).into(),
     ];
 
     let (placement, _batch) = place(&database).await;
@@ -512,7 +513,7 @@ async fn every_transaction_variant_round_trips() {
 #[tokio::test]
 async fn citations_keep_their_order() {
     let (_db, database) = open().await;
-    let cites = [cite("c"), cite("a"), cite("b")];
+    let cites = vec1![cite("c"), cite("a"), cite("b")];
     let transaction: Transaction = Split::new(Derivation::new(date(), cites.clone())).into();
 
     let (placement, _batch) = place(&database).await;
@@ -934,6 +935,36 @@ async fn a_stored_figure_that_is_not_a_decimal_is_reported() {
     }
 }
 
+/// Reading back is a construction path too, and it builds nothing from nothing: a stored
+/// transaction whose citations are gone is refused, not read back as derived from no record
+/// [DOM-047], [TST-004].
+#[tokio::test]
+async fn a_stored_transaction_without_citations_is_refused_on_reading_back() {
+    let (db, database) = open().await;
+    let (placement, _batch) = place(&database).await;
+    let id = database
+        .transactions()
+        .insert(&placement, &Split::new(derivation()).into())
+        .await
+        .expect("insert");
+
+    let pool = raw(&db).await;
+    query("delete from transaction_citation where transaction_id = ?")
+        .bind(id.get())
+        .execute(&pool)
+        .await
+        .expect("remove the citations");
+    pool.close().await;
+
+    match database.transactions().find(id).await {
+        Err(StorageError::CorruptValue { field, value }) => {
+            assert_eq!(field, "transaction_citation");
+            assert_eq!(value, id.to_string());
+        }
+        other => panic!("a transaction citing nothing must be refused, got {other:?}"),
+    }
+}
+
 /// The schema's nullable columns and its one structured column are guarded too: a missing
 /// `shares`, a ratio part of zero and a `parsed` blob that is no longer JSON are reported rather
 /// than read as a default [TST-004].
@@ -1046,5 +1077,420 @@ async fn a_driver_failure_is_not_reported_as_a_duplicate_isin() {
     assert!(
         matches!(refused, Err(StorageError::Database(_))),
         "a closed pool is a driver failure, got {refused:?}"
+    );
+}
+
+/// A source record of `batch` whose parsed fields carry `fields`.
+async fn store_record(
+    database: &Database,
+    batch: BatchId,
+    reference: &str,
+    fields: &[(&str, &str)],
+) {
+    let record = SourceRecord::new(
+        cite(reference),
+        Order::new(1),
+        "raw",
+        fields
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect(),
+    );
+    database
+        .source_records()
+        .insert(batch, &record)
+        .await
+        .expect("insert the record");
+}
+
+/// A second account with the same broker and id is refused by name, not as a driver error;
+/// the same id under another broker is a different account [SRV-007], [TST-004].
+#[tokio::test]
+async fn a_second_account_with_the_same_key_is_refused() {
+    let (_db, database) = open().await;
+    database
+        .accounts()
+        .insert(&account())
+        .await
+        .expect("insert");
+
+    let refused = database.accounts().insert(&account()).await;
+    assert!(
+        matches!(
+            &refused,
+            Err(StorageError::DuplicateAccount { broker, id })
+                if broker == "Saxo" && id == "69900/1000000"
+        ),
+        "{refused:?}"
+    );
+
+    let other_broker = Account::new("Trade Republic", "69900/1000000");
+    database
+        .accounts()
+        .insert(&other_broker)
+        .await
+        .expect("insert");
+    assert_eq!(
+        database.accounts().list().await.expect("list"),
+        vec![account(), other_broker]
+    );
+}
+
+/// An account nothing refers to is deleted; one that is not stored is reported as unknown
+/// [SRV-007], [TST-004].
+#[tokio::test]
+async fn an_unreferenced_account_is_deleted() {
+    let (_db, database) = open().await;
+    database
+        .accounts()
+        .insert(&account())
+        .await
+        .expect("insert");
+
+    database
+        .accounts()
+        .delete(&account())
+        .await
+        .expect("delete");
+
+    assert_eq!(database.accounts().list().await.expect("list"), vec![]);
+    assert!(matches!(
+        database.accounts().delete(&account()).await,
+        Err(StorageError::UnknownAccount { .. })
+    ));
+}
+
+/// An account a source record was imported into is not deleted, and the refusal counts what
+/// holds it [SRV-008], [TST-004].
+#[tokio::test]
+async fn an_account_referenced_by_a_source_record_is_not_deleted() {
+    let (_db, database) = open().await;
+    let (_placement, batch) = place(&database).await;
+    store_record(&database, batch, "r1", &[("Acties", "Koop")]).await;
+    store_record(&database, batch, "r2", &[("Acties", "Verkoop")]).await;
+
+    let refused = database.accounts().delete(&account()).await;
+
+    match refused {
+        Err(StorageError::AccountReferenced {
+            source_records,
+            batches,
+            manual_entries,
+            transactions,
+            ..
+        }) => assert_eq!(
+            (source_records, batches, manual_entries, transactions),
+            (2, 1, 0, 0)
+        ),
+        other => panic!("a referenced account must be refused, got {other:?}"),
+    }
+    assert_eq!(
+        database.accounts().list().await.expect("list"),
+        vec![account()]
+    );
+}
+
+/// A manual entry or a transaction naming an account holds it as a record does: both carry a
+/// foreign key to it, and deleting it from under them is not an option [SRV-008], [TST-004].
+#[tokio::test]
+async fn an_account_named_by_an_entry_or_a_transaction_is_not_deleted() {
+    let (_db, database) = open().await;
+    database
+        .accounts()
+        .insert(&account())
+        .await
+        .expect("insert");
+    database
+        .manual_entries()
+        .insert(&ManualEntry::new(
+            account(),
+            isin(),
+            Supplied::Election(Election::Cash),
+            [cite("r1")],
+        ))
+        .await
+        .expect("insert the entry");
+
+    let refused = database.accounts().delete(&account()).await;
+    assert!(
+        matches!(
+            refused,
+            Err(StorageError::AccountReferenced {
+                source_records: 0,
+                batches: 0,
+                manual_entries: 1,
+                transactions: 0,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+
+    let (_db, database) = open().await;
+    let other = Account::new("Saxo", "other");
+    database.accounts().insert(&other).await.expect("insert");
+    let (_placement, _batch) = place(&database).await;
+    // A transaction no import derived, as an emitted transfer_in is, holds an account that
+    // owns no batch and no record.
+    database
+        .transactions()
+        .insert(
+            &Placement::emitted(other.clone(), isin()),
+            &Split::new(derivation()).into(),
+        )
+        .await
+        .expect("insert the transaction");
+
+    let refused = database.accounts().delete(&other).await;
+    assert!(
+        matches!(
+            refused,
+            Err(StorageError::AccountReferenced {
+                source_records: 0,
+                batches: 0,
+                manual_entries: 0,
+                transactions: 1,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+}
+
+/// An unreferenced account takes a new key; a referenced one keeps its key, since the
+/// identities of its records are scoped to it; and a key another account holds is refused
+/// [SRV-007], [DOM-024], [TST-004].
+#[tokio::test]
+async fn an_account_is_renamed_only_while_unreferenced() {
+    let (_db, database) = open().await;
+    let typo = Account::new("Saxo", "69900/100000");
+    database.accounts().insert(&typo).await.expect("insert");
+
+    database
+        .accounts()
+        .rename(&typo, &account())
+        .await
+        .expect("rename");
+    assert_eq!(
+        database.accounts().list().await.expect("list"),
+        vec![account()]
+    );
+
+    let taken = Account::new("Saxo", "taken");
+    database.accounts().insert(&taken).await.expect("insert");
+    assert!(matches!(
+        database.accounts().rename(&taken, &account()).await,
+        Err(StorageError::DuplicateAccount { id, .. }) if id == "69900/1000000"
+    ));
+    assert!(matches!(
+        database.accounts().rename(&typo, &account()).await,
+        Err(StorageError::UnknownAccount { .. })
+    ));
+
+    let batch = database
+        .import_batches()
+        .insert(&batch(SourceFormat::SaxoNlXlsx))
+        .await
+        .expect("the batch");
+    store_record(&database, batch, "r1", &[]).await;
+    assert!(matches!(
+        database.accounts().rename(&account(), &typo).await,
+        Err(StorageError::AccountReferenced {
+            source_records: 1,
+            ..
+        })
+    ));
+    assert!(
+        database
+            .accounts()
+            .find("Saxo", "69900/1000000")
+            .await
+            .expect("read back")
+            .is_some()
+    );
+}
+
+/// Name, type and quotation are replaced, each independently of the others, and the
+/// auto-created flag survives the edit [SRV-011], [DOM-006], [DOM-037], [TST-004].
+#[tokio::test]
+async fn a_security_is_updated_and_keeps_its_provenance() {
+    let (_db, database) = open().await;
+    let imported = Security::auto_created(
+        isin(),
+        "NL 7.5% 2023",
+        SecurityType::Stock,
+        Quotation::PerUnit,
+    );
+    database
+        .securities()
+        .insert(&imported)
+        .await
+        .expect("insert");
+
+    let updated = database
+        .securities()
+        .update(
+            &isin(),
+            "Netherlands 7.5% 2023",
+            SecurityType::Bond,
+            Quotation::PercentOfPar,
+        )
+        .await
+        .expect("update");
+
+    let expected = Security::auto_created(
+        isin(),
+        "Netherlands 7.5% 2023",
+        SecurityType::Bond,
+        Quotation::PercentOfPar,
+    );
+    assert_eq!(updated, expected);
+    assert_eq!(
+        database
+            .securities()
+            .find(&isin())
+            .await
+            .expect("read back"),
+        Some(expected)
+    );
+    assert!(matches!(
+        database
+            .securities()
+            .update(
+                &Isin::new("XS0000000001"),
+                "",
+                SecurityType::Bond,
+                Quotation::PerUnit
+            )
+            .await,
+        Err(StorageError::UnknownSecurity { isin }) if isin == "XS0000000001"
+    ));
+}
+
+/// Securities list in ISIN order, and one nothing names is deleted [SRV-007], [TST-004].
+#[tokio::test]
+async fn an_unreferenced_security_is_listed_and_deleted() {
+    let (_db, database) = open().await;
+    let later = Security::new(
+        Isin::new("US0378331005"),
+        "Apple",
+        SecurityType::Stock,
+        Quotation::PerUnit,
+    );
+    let earlier = Security::new(isin(), "Philips", SecurityType::Stock, Quotation::PerUnit);
+    database.securities().insert(&later).await.expect("insert");
+    database
+        .securities()
+        .insert(&earlier)
+        .await
+        .expect("insert");
+    assert_eq!(
+        database.securities().list().await.expect("list"),
+        vec![earlier, later.clone()]
+    );
+
+    database.securities().delete(&isin()).await.expect("delete");
+
+    assert_eq!(
+        database.securities().list().await.expect("list"),
+        vec![later]
+    );
+    assert!(matches!(
+        database.securities().delete(&isin()).await,
+        Err(StorageError::UnknownSecurity { .. })
+    ));
+}
+
+/// A security any source record names — under either format's column, in a second role such
+/// as a corporate action's target, or in another spelling — is not deleted, and a record
+/// naming only another security does not hold it [SRV-009], [TST-004].
+#[tokio::test]
+async fn a_security_a_source_record_names_is_not_deleted() {
+    let (_db, database) = open().await;
+    let (_placement, batch) = place(&database).await;
+    let target = Isin::new("US0378331005");
+    let unnamed = Isin::new("DE0007164600");
+    for other in [&target, &unnamed] {
+        database
+            .securities()
+            .insert(&Security::new(
+                other.clone(),
+                "other",
+                SecurityType::Stock,
+                Quotation::PerUnit,
+            ))
+            .await
+            .expect("insert");
+    }
+    store_record(
+        &database,
+        batch,
+        "saxo",
+        &[("Instrument ISIN", "NL0000009538"), ("Acties", "Koop")],
+    )
+    .await;
+    store_record(&database, batch, "tr", &[("symbol", " nl0000009538")]).await;
+    store_record(
+        &database,
+        batch,
+        "exchange",
+        &[
+            ("Instrument ISIN", "XF0000000103"),
+            ("Doel", "US0378331005"),
+        ],
+    )
+    .await;
+
+    let refused = database.securities().delete(&isin()).await;
+    assert!(
+        matches!(
+            &refused,
+            Err(StorageError::SecurityReferenced { isin, source_records: 2, transactions: 0 })
+                if isin == "NL0000009538"
+        ),
+        "{refused:?}"
+    );
+    assert!(matches!(
+        database.securities().delete(&target).await,
+        Err(StorageError::SecurityReferenced {
+            source_records: 1,
+            ..
+        })
+    ));
+
+    database
+        .securities()
+        .delete(&unnamed)
+        .await
+        .expect("a security no record names is deleted");
+}
+
+/// A transaction placed on a security holds it even with no record naming it, as an emitted
+/// `transfer_in` is [SRV-009], [DOM-090], [TST-004].
+#[tokio::test]
+async fn a_security_a_transaction_is_placed_on_is_not_deleted() {
+    let (_db, database) = open().await;
+    let (_placement, _batch) = place(&database).await;
+    database
+        .transactions()
+        .insert(
+            &Placement::emitted(account(), isin()),
+            &Split::new(derivation()).into(),
+        )
+        .await
+        .expect("insert the transaction");
+
+    let refused = database.securities().delete(&isin()).await;
+
+    assert!(
+        matches!(
+            refused,
+            Err(StorageError::SecurityReferenced {
+                source_records: 0,
+                transactions: 1,
+                ..
+            })
+        ),
+        "{refused:?}"
     );
 }

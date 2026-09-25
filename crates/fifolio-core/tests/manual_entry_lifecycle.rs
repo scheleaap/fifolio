@@ -30,6 +30,7 @@ use fifolio_core::transaction::{Buy, BuyOrigin, Derivation, Transaction};
 use fifolio_core::valuation::{Conversion, Valued};
 use fifolio_test_support::TempDb;
 use rust_decimal_macros::dec;
+use vec1::Vec1;
 
 /// A stand-in for a real importer: a comma-delimited file whose `id` is the broker reference,
 /// whose `date` orders the row and whose `kind` states the classification. Each format's own
@@ -180,13 +181,22 @@ async fn import_bytes(database: &Database, filename: &str, content: &str) -> (Ba
     (batch, imported)
 }
 
+/// The identities of `records`, which a derivation requires to be at least one [DOM-047].
+fn cited(records: &[SourceRecord]) -> Vec1<RecordIdentity> {
+    Vec1::try_from_vec(
+        records
+            .iter()
+            .map(SourceRecord::identity)
+            .cloned()
+            .collect(),
+    )
+    .expect("a transaction derives from at least one record")
+}
+
 /// The transaction a row that needs nothing from the user derives to.
 fn purchase(records: &[SourceRecord]) -> Transaction {
     Buy::new(
-        Derivation::new(
-            day(2),
-            records.iter().map(|record| record.identity().clone()),
-        ),
+        Derivation::new(day(2), cited(records)),
         Quantity::new(dec!(100.00000000)),
         price(dec!(10.000000)),
         money(dec!(1000.00)),
@@ -208,10 +218,7 @@ fn stock_dividend(entry: &ManualEntry, records: &[SourceRecord]) -> Transaction 
         panic!("the entry supplies a stock election")
     };
     Buy::new(
-        Derivation::new(
-            day(3),
-            records.iter().map(|record| record.identity().clone()),
-        ),
+        Derivation::new(day(3), cited(records)),
         *shares,
         price(dec!(4.000000)),
         money(dec!(12.00)),

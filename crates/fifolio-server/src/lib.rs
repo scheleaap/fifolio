@@ -11,7 +11,9 @@
 //!
 //! Every error response is a problem document; see [`problem`] [ARC-020].
 
+pub mod accounts;
 pub mod problem;
+pub mod securities;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -89,7 +91,10 @@ struct AppState {
 
 /// Every documented route. A handler added here is served and documented at once.
 fn api() -> OpenApiRouter<AppState> {
-    OpenApiRouter::with_openapi(ApiDoc::openapi()).routes(routes!(openapi_json))
+    OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .routes(routes!(openapi_json))
+        .merge(accounts::routes())
+        .merge(securities::routes())
 }
 
 /// The server's OpenAPI document [SRV-005].

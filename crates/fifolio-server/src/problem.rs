@@ -57,6 +57,11 @@ const DETAIL_LIMIT: usize = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum ProblemType {
     DuplicateIsin,
+    DuplicateAccount,
+    UnknownAccount,
+    UnknownSecurity,
+    AccountReferenced,
+    SecurityReferenced,
     UnscaledValue,
     CorruptValue,
     UnknownTransaction,
@@ -95,6 +100,23 @@ impl ProblemType {
                 "duplicate-isin",
                 S::CONFLICT,
                 "A security with this ISIN already exists",
+            ),
+            Self::DuplicateAccount => (
+                "duplicate-account",
+                S::CONFLICT,
+                "An account with this broker and id already exists",
+            ),
+            Self::UnknownAccount => ("unknown-account", S::NOT_FOUND, "No such account"),
+            Self::UnknownSecurity => ("unknown-security", S::NOT_FOUND, "No such security"),
+            Self::AccountReferenced => (
+                "account-referenced",
+                S::CONFLICT,
+                "The account is referenced by stored records",
+            ),
+            Self::SecurityReferenced => (
+                "security-referenced",
+                S::CONFLICT,
+                "The security is referenced by stored records",
             ),
             Self::UnscaledValue => (
                 "unscaled-value",
@@ -228,6 +250,11 @@ impl From<&StorageError> for ProblemType {
     fn from(error: &StorageError) -> Self {
         match error {
             StorageError::DuplicateIsin { .. } => Self::DuplicateIsin,
+            StorageError::DuplicateAccount { .. } => Self::DuplicateAccount,
+            StorageError::UnknownAccount { .. } => Self::UnknownAccount,
+            StorageError::UnknownSecurity { .. } => Self::UnknownSecurity,
+            StorageError::AccountReferenced { .. } => Self::AccountReferenced,
+            StorageError::SecurityReferenced { .. } => Self::SecurityReferenced,
             StorageError::UnscaledValue { .. } => Self::UnscaledValue,
             StorageError::CorruptValue { .. } => Self::CorruptValue,
             StorageError::UnknownTransaction { .. } => Self::UnknownTransaction,
@@ -419,6 +446,31 @@ mod tests {
             409,
         ),
         (
+            ProblemType::DuplicateAccount,
+            "urn:fifolio:problem:duplicate-account",
+            409,
+        ),
+        (
+            ProblemType::UnknownAccount,
+            "urn:fifolio:problem:unknown-account",
+            404,
+        ),
+        (
+            ProblemType::UnknownSecurity,
+            "urn:fifolio:problem:unknown-security",
+            404,
+        ),
+        (
+            ProblemType::AccountReferenced,
+            "urn:fifolio:problem:account-referenced",
+            409,
+        ),
+        (
+            ProblemType::SecurityReferenced,
+            "urn:fifolio:problem:security-referenced",
+            409,
+        ),
+        (
             ProblemType::UnscaledValue,
             "urn:fifolio:problem:unscaled-value",
             422,
@@ -568,6 +620,45 @@ mod tests {
                     isin: "NL0000009538".into(),
                 },
                 ProblemType::DuplicateIsin,
+            ),
+            (
+                StorageError::DuplicateAccount {
+                    broker: "Saxo".into(),
+                    id: "1".into(),
+                },
+                ProblemType::DuplicateAccount,
+            ),
+            (
+                StorageError::UnknownAccount {
+                    broker: "Saxo".into(),
+                    id: "1".into(),
+                },
+                ProblemType::UnknownAccount,
+            ),
+            (
+                StorageError::UnknownSecurity {
+                    isin: "NL0000009538".into(),
+                },
+                ProblemType::UnknownSecurity,
+            ),
+            (
+                StorageError::AccountReferenced {
+                    broker: "Saxo".into(),
+                    id: "1".into(),
+                    source_records: 1,
+                    batches: 1,
+                    manual_entries: 0,
+                    transactions: 0,
+                },
+                ProblemType::AccountReferenced,
+            ),
+            (
+                StorageError::SecurityReferenced {
+                    isin: "NL0000009538".into(),
+                    source_records: 1,
+                    transactions: 0,
+                },
+                ProblemType::SecurityReferenced,
             ),
             (
                 StorageError::UnscaledValue {

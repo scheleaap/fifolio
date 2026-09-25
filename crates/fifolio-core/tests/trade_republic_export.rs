@@ -11,14 +11,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike as _, NaiveDate};
+use fifolio_core::decimal::Scaled;
 use fifolio_core::entities::{Account, RecordIdentity};
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::reader::SourceRow;
+use fifolio_core::import::trade_republic::money::Booked;
 use fifolio_core::import::trade_republic::{
     DIRECTION, HEADERS, QUANTITY_COLUMN, UNIT_PRICE_COLUMN, booking_instant, field, identity,
     is_outflow, ordering_key, read, trade_date,
 };
 use fifolio_core::ordering::assign_orders;
+use fifolio_core::valuation::RateSource;
 use rust_decimal::Decimal;
 
 /// Every committed Trade Republic fixture, with its path.
@@ -339,4 +342,94 @@ fn every_fixture_receipt_states_its_money_as_an_inflow() {
     }
 
     assert_eq!(receipts, 55, "the fixtures' 55 cash receipts");
+}
+
+/// Every row of every fixture states money this reader understands [IMP-TR-005]: a blank cell is
+/// an absent figure, and a populated one parses. No fixture trade states a foreign side, so
+/// none of them meets the refusal of IMP-TR-017 — the files import, and the refusal is a unit
+/// test's.
+#[test]
+fn every_fixture_row_states_money_the_reader_understands() {
+    for (path, rows) in exports() {
+        for row in &rows {
+            Booked::read(row).unwrap_or_else(|error| {
+                panic!(
+                    "{}: {} does not state readable money: {error}",
+                    path.display(),
+                    identity(row).expect("a fixture row is identified")
+                )
+            });
+        }
+    }
+}
+
+/// A buy's gross is its `amount`, fee excluded, and the fee is carried beside it [IMP-TR-016].
+/// A mapping, not an arithmetic claim: the fixtures' amounts are perturbed [TST-014], so the
+/// assertion is that the columns land where the requirement says and never that they multiply
+/// out.
+#[test]
+fn every_fixture_buy_grosses_its_amount_with_the_fee_beside_it() {
+    let mut buys = 0;
+    for (path, rows) in exports() {
+        for row in rows.iter().filter(|row| {
+            field(row, "category") == Ok("TRADING") && field(row, "type") == Ok("BUY")
+        }) {
+            buys += 1;
+            let booked = Booked::read(row).expect("a buy states readable money");
+            let amount = figure(row, "amount").expect("a buy states an amount");
+            let fee = figure(row, "fee").unwrap_or_default();
+
+            assert_eq!(
+                booked.gross().map(Scaled::get),
+                Some(amount.abs()),
+                "{}: the gross is the movement itself",
+                path.display()
+            );
+            assert_eq!(
+                booked.fees().map(Scaled::get),
+                Ok(fee.abs()),
+                "{}: the fee is beside the gross",
+                path.display()
+            );
+        }
+    }
+
+    assert_eq!(buys, 7, "the fixtures' seven buys");
+}
+
+/// The foreign dividends carry the `original_*` triple, and their `fx_rate` is stored as the
+/// file states it — foreign units per EUR already [IMP-TR-006], [DOM-086]. The rate is not an
+/// amount, so it is not perturbed [TST-028]; that a USD rate near 1 is a rate *per EUR* is what
+/// an inversion would break.
+#[test]
+fn the_fixture_dividends_carry_their_conversion_uninverted() {
+    let mut dividends = 0;
+    for (path, rows) in exports() {
+        for row in rows
+            .iter()
+            .filter(|row| field(row, "type") == Ok("DIVIDEND"))
+        {
+            dividends += 1;
+            let booked = Booked::read(row).expect("a dividend states readable money");
+            let conversion = booked
+                .conversion(trade_date(row).expect("a dividend states a date"))
+                .expect("a dividend states a rate");
+
+            assert_eq!(
+                conversion.currency().code(),
+                field(row, "original_currency").expect("the column is carried"),
+                "{}: the conversion names the row's own currency",
+                path.display()
+            );
+            assert_eq!(
+                conversion.rate().get(),
+                figure(row, "fx_rate").expect("a dividend states a rate"),
+                "{}: the rate is the file's, uninverted",
+                path.display()
+            );
+            assert_eq!(conversion.source(), RateSource::Broker);
+        }
+    }
+
+    assert_eq!(dividends, 14, "the fixtures' 14 dividends");
 }
