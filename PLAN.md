@@ -234,7 +234,7 @@ Done in revision 5, commit `fdf8990`. `identity.rs` offers `IdentitySource::Brok
 
 ## FIF-008 EUR valuation and the stored gross
 Status: done
-Requirements: DOM-025, DOM-026, DOM-027, DOM-028, DOM-029, DOM-085, DOM-086
+Requirements: DOM-025, DOM-026, DOM-027, DOM-028, DOM-029, DOM-085
 Depends on: FIF-004, FIF-056
 Acceptance: every transaction stores native figures and EUR figures at the same scales, together with the rate, its source and its date; the valuation date is the trade date, never settlement; no separate currency-gain figure exists anywhere in the model; **the EUR gross total is stored as well as the unit price**; the stored rate is foreign units per EUR (`EUR = native / rate`), and a format quoting the inverse converts at full precision from the figures the file states, never from the rounded stored rate.
 Notes: DOM-085 (DEC-028) and DOM-086 (DEC-027) were new in revision 2 and change the shape of every transaction record; this is why the item sits before storage rather than beside it. Revision 3 splits DOM-104 — that the stored gross, not the unit price, is what every calculation reads — into FIF-077, because it is undecided.
@@ -244,6 +244,16 @@ Still uncommitted at revision 14 and still `todo`, for the same reason: `valuati
 Still uncommitted at revision 15, a third consecutive revision, and still `todo`: `valuation.rs` is untracked and `transaction.rs` modified, the suite green at 169 tests. FIF-092 landed in `cd09f97` around that tree without disturbing it, so nothing now sits ahead of this item. If a fourth revision finds it uncommitted, what needs fixing is the hand-off, not the item — the outstanding work is review against the eight requirements and a commit, then **FIF-091** on top, collapsing the stock dividend's taxable value into the EUR gross before the pair DEC-061 forbids is entrenched.
 Done in revision 15's build. The tree described above was reviewed against the eight requirements and committed as it stood, with one correction: a unit-test comment in `valuation.rs` called 218.32 USD "the worked Saxo buy", which is neither its booked amount (238.00) nor its gross (230.00); the figures now match `importers.md`. `Expiration` carrying a `gross` of zero, and `TransferOut` carrying none, are this item's two judgement calls — the first so every cash closing answers one formula, the second because a transfer's basis is derived from its allocations (DOM-112, FIF-080). **FIF-091** is next and lands on top: the stock dividend's `taxable_value` is still a second figure beside the EUR gross in this commit.
 Review of that commit moved **DOM-084** to FIF-014: its substance is that an allocation share derives from the native/EUR pair the same way on both sides and is never stored independently, and no allocation type exists yet, so nothing here could assert it. What this item does own of it — that both halves are one kind at one scale — is DOM-029.
+Revision 42 moved **DOM-086** to **FIF-097**: OQ-021 (`b9017d8`) now names it on a `Blocks:` line.
+This item stays `done`: its commit implemented DOM-086 as then written, and whether that code stands
+is recorded against FIF-097 rather than by reopening this item.
+
+## FIF-097 The stored rate convention against Trade Republic's changed `fx_rate`
+Status: blocked
+Requirements: DOM-086
+Depends on: FIF-008
+Acceptance: once OQ-021 is answered, the stored rate is foreign units per EUR (`EUR = native / rate`) and every importer that meets a rate in another convention, including a Trade Republic row after the late-2024 change, converts it at full precision from the figures the file states; the committed FIF-008 code is re-checked against the answered rule and any divergence corrected with a failing test first.
+Notes: Split out of FIF-008 in revision 42, not a new requirement. `design/` is unchanged in wording, but OQ-021 (`b9017d8`) blocks DOM-086 because its sentence "Trade Republic and the ECB quote it this way" stops holding after 2024-07-02. **This is completed work the specification has put in question**: FIF-008 (`9a1e457`) implemented DOM-086 as written. Which part is affected is a hypothesis, not a finding: most likely only the Trade Republic side (the stored convention and Saxo's inversion read unaffected), possibly the stored convention itself if the answer is to take the ECB rate instead. Nothing is wrong in stored data today: every foreign Trade Republic row in the sample is a dividend, and dividends are not stored.
 
 ## FIF-077 The stored gross governs every calculation
 Status: blocked
@@ -908,11 +918,51 @@ and 20 rows, 23 columns each) populate both `date` and `datetime` on every row, 
 case that makes file position alone wrong and is the one a test must name.
 
 ## FIF-028 Trade Republic: money mapping
-Status: todo
+Status: blocked
 Requirements: IMP-TR-005, IMP-TR-006, IMP-TR-007, IMP-TR-016, IMP-TR-017
 Depends on: FIF-027, FIF-008
 Acceptance: `price`, `amount`, `fee`, `tax`, `currency` map to the native figures; **`amount` excludes the fee**, the opposite of Saxo, so gross = |amount| and fees = |fee| + |tax| in the settlement currency, checked against the sample's 35 × 75.09 = 2628.15 with a fee of −1.00 carried separately; `fx_rate` is already foreign units per EUR and needs no inversion; a `TRADING` row with `original_*` populated **rejects the import**, since no foreign-currency trade has been observed and the mapping is unspecified.
 Notes: IMP-TR-016 and IMP-TR-017 are new in this revision and reverse the previous plan's assumption that a populated `original_*` triple values the trade.
+Named next to build in revision 41, FIF-027 having landed in `39d98f4`. Both dependencies are
+`done` — FIF-027 (`39d98f4`, the container half) and FIF-008 (`9a1e457`, EUR valuation and the
+stored gross) — none of IMP-TR-005, IMP-TR-006, IMP-TR-007, IMP-TR-016 or IMP-TR-017 appears on a
+`Blocks:` line, and everything ahead of it in document order is `done`, `blocked`, or waits on a
+`blocked` item: FIF-060 on FIF-058 (DOM-101), FIF-013 on FIF-076 (DOM-011, DOM-013, DOM-111),
+FIF-014 / FIF-015 / FIF-016 behind FIF-013, FIF-061 and FIF-063, and FIF-024 / FIF-025 / FIF-067 /
+FIF-094 all behind the blocked FIF-023 (IMP-SAXO-013).
+Concretely for the implementer, the shapes to fill already exist and must not be rebuilt.
+`valuation.rs` carries `Valued<T>` (the native/EUR pair), `Conversion` (rate, source, rate date) and
+`Currency`; `import/saxo/money.rs` is the worked precedent — `Booked::read`, `conversion(trade_date)`
+and `DerivedMoney` with `gross()`, `fees()`, `unit_price()` — and this item is its Trade Republic
+counterpart. The arithmetic is the **opposite** one: Saxo's booked amount includes the costs and
+must have them removed, Trade Republic's `amount` excludes the fee, so `gross = |amount|` and
+`fees = |fee| + |tax|` are read straight off the row [IMP-TR-016], with the sign convention FIF-027
+already pins [IMP-TR-004]. `fx_rate` is foreign units per EUR, which is the stored convention, so it
+is used as stated and never inverted; inverting it is the one mistake this item can make silently.
+Two boundaries. Classification stays **FIF-029**'s, and IMP-TR-017's refusal needs only the literal
+`category` cell reading `TRADING` beside a populated `original_*` triple — reading that one cell is
+not classifying the row, and no mapping of the other categories may be written here. Security typing
+stays **FIF-069**'s and is `blocked` (OQ-006), so `asset_class` remains untouched.
+The acceptance's `35 x 75.09 = 2628.15` is the **real** export's arithmetic; fixture amounts are
+perturbed and quantities are not [TST-028], so against a committed fixture it is asserted as the
+relation `gross = |amount|` with the fee carried separately, not as that literal. The fixtures do
+populate `original_amount` / `original_currency` / `fx_rate` on at least one **non-trade** row
+[TST-013], which is the IMP-TR-006 case; a `TRADING` row carrying them exists in no export, so the
+IMP-TR-017 refusal is tested against a constructed row rather than a committed fixture.
+**Revision 42: `blocked`, not `done`.** OQ-021 (`b9017d8`) names IMP-TR-006 and IMP-TR-016 on a
+`Blocks:` line: `fx_rate` is foreign units per EUR up to 2024-07-02 and its reciprocal after, so
+"used as stated and never inverted" above is wrong for later rows. Blocked whole rather than split:
+IMP-TR-016 (gross and fees) is the substance of the item, and IMP-TR-005 / IMP-TR-007 are its
+column reading and its fee sum, not a separately useful increment. The `done` status came from an
+implementation pass in the working tree and was never committed; that tree (`money.rs` under
+`import/trade_republic/`, the `trade_republic.rs` error variants, three new fixture tests) is
+uncommitted and **unreviewed**. Two points for whoever resumes it after OQ-021 closes:
+`the_fixture_dividends_carry_their_conversion_uninverted` asserts the pre-change convention on all
+14 dividends, including the five dated after 2024-07-02, so it encodes exactly the error OQ-021
+describes; and **IMP-TR-024**, which that pass added to this item's `Requirements:` line, is not a
+requirement in `design/`: `b9017d8` reverted the `importers.md` paragraph an implementation wrote to
+authorize its own refusal (`PartialConversion`). It is removed here; the refusal has no requirement
+behind it until a person writes one.
 
 ## FIF-029 Trade Republic: row classification
 Status: todo
@@ -967,10 +1017,11 @@ Blocked by: DOM-078 is on the undecided list.
 Notes: Split out of FIF-031 in revision 3.
 
 ## FIF-032 Server binary, arguments and OpenAPI
-Status: todo
+Status: done
 Requirements: SRV-001, SRV-002, SRV-003, SRV-004, SRV-005, SRV-006, ARC-003, ARC-022
 Depends on: FIF-011
 Acceptance: `fifolio-server` replaces the stub, binds `127.0.0.1:8000` and nothing else, accepts `--port` and `--database` (default `./fifolio.db`); `fifolio-server openapi` prints the spec and exits without binding; `GET /openapi.json` returns the same spec; the server process is the only one that opens the database.
+Notes: Done in revision 42's build. `fifolio-server` is a library (`src/lib.rs`: `Args`, `serve`, `router`, `openapi`) behind a thin `main.rs`. The OpenAPI document is assembled by `utoipa-axum` from the handlers' own annotations, so `fifolio-server openapi` and `GET /openapi.json` read one route list [SRV-005, SRV-006]. The database is opened before the socket is bound; `openapi` opens neither. ARC-022 is asserted end to end (127.0.0.2 and `::1` refuse), ARC-003 by the spawned server creating its database and by `dependency_graph.rs` showing the CLI reaches neither `fifolio-core` nor a SQLite driver.
 
 ## FIF-033 Problem+json errors and the HTTP test harness
 Status: todo
@@ -1183,7 +1234,71 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 40 (this run).** `design/` is **unchanged** since revision 38: `git log -- design/` still
+**Revision 42 (this run).** `design/` **changed**: `b9017d8` adds **OQ-021** to
+`open-questions.md`, blocking `IMP-TR-006`, `IMP-TR-016` and `DOM-086`. No requirement was added,
+restated or retired. `HEAD` is `b9017d8`; the working tree carries an uncommitted FIF-028
+implementation and revision 41's uncommitted plan text, both kept.
+
+* **Blocked: FIF-028**, Trade Republic money mapping, which the working tree had flipped to `done`
+  without a commit. It carries IMP-TR-006 and IMP-TR-016. Blocked whole, reasons on the item.
+  **IMP-TR-024** removed from its `Requirements:` line: no such id exists in `design/`.
+* **Split: DOM-086 out of FIF-008 into the new FIF-097**, `blocked`. FIF-008 stays `done`. FIF-097
+  records plainly that OQ-021 puts completed work (`9a1e457`) in question.
+* No item completed. 96 items: **32 `done`, 38 `todo`, 26 `blocked`**, counted by script.
+* Coverage re-verified by script: **348** ids on the `Requirements:` lines, each exactly once, equal
+  to the live ids in `design/` less the nine retired. Nothing uncovered, nothing deferred. **37**
+  ids sit on `Blocks:` lines across OQ-001 to OQ-021; the 26 items carrying them are exactly the 26
+  `blocked` items.
+* **Next to build: FIF-032**, server binary, arguments and OpenAPI. FIF-029 and everything behind it
+  in the Trade Republic chain now waits on FIF-028, so the first ready `todo` in document order is
+  the first server item. Its one dependency, FIF-011, is `done`; none of its requirements is blocked.
+* Reachable set recomputed: of 38 `todo`, **10** are reachable without closing a question: FIF-032,
+  FIF-033, FIF-034, FIF-041, FIF-042, FIF-043, FIF-044, FIF-045, FIF-048, FIF-049. FIF-029 dropped
+  out with FIF-028.
+
+**Revision 41.** `design/` is **unchanged** since revision 38: `git log -- design/` still
+ends at `79b82de`, so no requirement was added, restated or retired, and `open-questions.md` is
+byte-identical to revision 32's. `HEAD` is `39d98f4`; the tracked working tree is clean (`docs/` and
+`tmp/` are the user's, untracked); `cargo test --workspace` gives **510 passed, 0 failed**, up from
+the 474 revision 40 measured.
+
+* **Completed: FIF-027**, Trade Republic CSV reading, identity, ordering and sign convention,
+  committed as `39d98f4` **with its status flip in the same commit** — the fourth time in eleven
+  revisions that plan and implementation landed together. Nothing needed correcting. Two points its
+  completion note records are worth carrying forward rather than rediscovering: `DelimitedReader`
+  gained a `read` that answers the header row alongside the data rows, so a header-only file is
+  refused instead of read as a successful empty import; and the re-import idempotency clause of this
+  item's own acceptance is asserted at the reader, the `import::import` version of it being recorded
+  as an obligation on **FIF-029**, which owns the classification an `impl Importer` needs. Both are
+  gap-filling within the item's acceptance, not answers to anything on a `Blocks:` line.
+* No item added, split, retired or re-scoped. No status changed but FIF-027's. 95 items: **32
+  `done`, 39 `todo`, 24 `blocked`**.
+* Coverage re-verified by script in both directions: **348** ids on the `Requirements:` lines, each
+  exactly once, together precisely the live ids in `design/` less the nine retired ones (DOM-009,
+  DOM-014, DOM-015, DOM-021, DOM-041, DOM-050 to DOM-053). Nothing is uncovered and nothing is
+  deferred.
+* **34** requirements sit on `Blocks:` lines across OQ-001 to OQ-019 (OQ-020 blocks nothing), and
+  the 24 items carrying them are exactly the 24 `blocked` items, checked by script. Nothing was
+  blocked or unblocked. OQ-014 is still marked *answered* and still on a `Blocks:` line, so
+  IMP-SAXO-013 and FIF-023 with it stay blocked; this plan follows the file's own instruction.
+* **Next to build: FIF-028**, Trade Republic money mapping. It is the first `todo` in document order
+  whose dependencies are all `done` and none of whose requirements is blocked. It continues the
+  Trade Republic chain for the reason revision 40 gave: the Saxo importer is finished as far as the
+  open questions allow, four of its remaining items waiting on FIF-023 alone.
+* The observation revision 40 closed on stands, and the reachable set was computed this revision
+  rather than asserted. Of the 39 `todo` items, **12** are reachable without any open question
+  being closed — their whole dependency chain is `done` or itself reachable: FIF-028 and FIF-029 on
+  the Trade Republic side, then the surfaces that need no engine, FIF-032, FIF-033, FIF-034,
+  FIF-041, FIF-042, FIF-043, FIF-044, FIF-045, FIF-048 and FIF-049. The other 27 wait on a
+  `blocked` item. So build-out does not stall after FIF-029: it moves from the importers to the
+  server and CLI shells. What stays out of reach is everything that exposes the engine — the
+  reports, the attribution and transaction endpoints, the TUI completion and attribution flows —
+  because the engine itself is stalled on FIF-076 (OQ-001, OQ-002, OQ-007). Closing OQ-014's
+  paperwork and OQ-008 would release the Saxo tail; closing OQ-001, OQ-002 and OQ-007 would release
+  the engine and the 27 behind it. That is an observation for `spec-auditor` and a person, not a
+  decision this plan may take.
+
+**Revision 40.** `design/` is **unchanged** since revision 38: `git log -- design/` still
 ends at `79b82de`, so no requirement was added, restated or retired, and `open-questions.md` is
 byte-identical to revision 32's. `HEAD` is `4d434ba`; the tracked working tree is clean (`docs/` and
 `tmp/` are the user's, untracked); `cargo test --workspace` gives **474 passed, 0 failed**, up from

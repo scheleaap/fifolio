@@ -51,6 +51,22 @@ fn the_walk_reports_a_crate_that_is_really_in_a_graph() {
     assert!(reachable_from("fifolio-server").contains("axum"));
 }
 
+/// The server is the only process that opens the database [ARC-003]: the CLI cannot, because
+/// neither the storage layer nor a SQLite driver is in its graph.
+#[test]
+fn the_cli_cannot_open_the_database() {
+    let reachable = reachable_from("fifolio-cli");
+    assert!(reachable.contains("fifolio-cli"), "the walk found the CLI");
+    let found: Vec<&str> = ["fifolio-core", "sqlx", "libsqlite3-sys"]
+        .into_iter()
+        .filter(|crate_name| reachable.contains(*crate_name))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "fifolio-cli reaches {found:?}; ARC-003 leaves the database to the server"
+    );
+}
+
 /// Every package name reachable from `root`, `root` included.
 fn reachable_from(root: &str) -> BTreeSet<String> {
     let lockfile = Lockfile::load(workspace_root().join("Cargo.lock"))

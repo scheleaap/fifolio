@@ -4,10 +4,10 @@
 //! extraction and response path without a socket. The socket is the end-to-end layer's
 //! business.
 //!
-//! The router below is local to this file because the real one arrives with FIF-032, so this
-//! is a demonstration of the harness and not coverage of `fifolio-server`: status codes, the
-//! problem+json shape, the fingerprint conflict and the pending-records refusal (TST-005) land
-//! with FIF-033, which is where this file starts naming ids.
+//! The router below is local to this file, so this is a demonstration of the harness and not
+//! coverage of `fifolio-server`; the real router's first route is covered in `openapi.rs`.
+//! Status codes, the problem+json shape, the fingerprint conflict and the pending-records
+//! refusal (TST-005) land with FIF-033, which is where this file starts naming ids.
 
 use axum::Router;
 use axum::body::Body;
