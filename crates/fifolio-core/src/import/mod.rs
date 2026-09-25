@@ -38,7 +38,9 @@
 //! row, and any failed row refuses the import as a whole [SRV-058] (DEC-074, DEC-087): skipping
 //! it would leave a batch owning part of a file, and without a row's key the file has no total
 //! order, so every row's `order` would depend on which rows were dropped. Every row is still
-//! tried first, so that the refusal names every failed row and one round of fixes suffices.
+//! tried first, so that the refusal names every failed row and one round of fixes suffices. For
+//! the same reason the year and account guards do not stop at their own refusal: every ground a
+//! file is refused on is reported together [SRV-059] (DEC-088).
 
 pub mod reader;
 pub mod saxo;
@@ -170,6 +172,21 @@ pub struct RowFailure {
 pub enum ImportError {
     #[error("the file could not be read: {0}")]
     Read(#[from] ReadError),
+    /// The file was read and refused on every ground in `grounds`, reported together so that one
+    /// round of fixes suffices [SRV-059] (DEC-088): no guard stops the others from being judged.
+    /// Never empty; at most one ground of each kind, in the order years, account, failed rows.
+    #[error("{}", grounds.iter().map(Ground::to_string).collect::<Vec<_>>().join(". "))]
+    Refused { grounds: Vec<Ground> },
+    /// An importer that answers a different number of rows than it was given has lost the
+    /// correspondence between row and classification; pairing them anyway would file one row's
+    /// outcome against another's record.
+    #[error("the importer classified {classified} of {rows} rows")]
+    ClassificationCount { rows: usize, classified: usize },
+}
+
+/// One reason a file that was read is refused [SRV-059].
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum Ground {
     /// Broker exports are taken a year at a time, so a file spanning two is refused whole
     /// [IMP-001]. The years are those of the rows' **trade dates** [IMP-002], ascending.
     #[error("the file carries trade dates in more than one calendar year: {}", years.iter().map(i32::to_string).collect::<Vec<_>>().join(", "))]
@@ -182,11 +199,6 @@ pub enum ImportError {
     /// compared, since no one target could be right for all of them. Ascending; at least two.
     #[error("the file carries rows from more than one account: {}", accounts.join(", "))]
     MultipleAccounts { accounts: Vec<String> },
-    /// An importer that answers a different number of rows than it was given has lost the
-    /// correspondence between row and classification; pairing them anyway would file one row's
-    /// outcome against another's record.
-    #[error("the importer classified {classified} of {rows} rows")]
-    ClassificationCount { rows: usize, classified: usize },
     /// Rows whose ordering key, identity or classification could not be read refuse the file
     /// whole [SRV-058]. Every one is named, in file order, not only the first (DEC-074,
     /// DEC-087); never empty.
@@ -291,10 +303,11 @@ pub trait Importer {
 ///
 /// # Errors
 ///
-/// [`ImportError`] when the file cannot be read; when its trade dates span more than one year
-/// [IMP-001]; when it names an account other than `account`, or more than one [IMP-003]; or
-/// when any row's ordering key, account, identity or classification cannot be read, in which
-/// case every such row is named [SRV-058].
+/// [`ImportError`] when the file cannot be read, or [`ImportError::Refused`] naming every
+/// ground that applies [SRV-059]: its trade dates span more than one year [IMP-001]; it names
+/// an account other than `account`, or more than one [IMP-003]; any row's ordering key,
+/// account, identity or classification cannot be read, in which case every such row is named
+/// [SRV-058].
 pub fn import(
     importer: &dyn Importer,
     account: &Account,
@@ -309,24 +322,21 @@ pub fn import(
     // The year guard reads the ordering keys' trade dates and nothing else [IMP-002]: not a
     // booking timestamp, which a format may also put in its ordering columns, and not the
     // filename, which `import` never sees. A partial year is a single year and passes. A row
-    // whose key is unreadable has no trade date to contribute, and refuses the file below, so no
-    // file is imported with a trade date the guard has not seen. Reporting the years and the
-    // failed rows together [SRV-059] is FIF-103's, not this refusal's.
+    // whose key is unreadable has no trade date to contribute, and is a failed row below, so no
+    // file is imported with a trade date the guard has not seen.
     let years: BTreeSet<i32> = keys
         .iter()
         .flatten()
         .map(|key| key.trade_date.year())
         .collect();
-    if years.len() > 1 {
-        return Err(ImportError::MultipleCalendarYears {
-            years: years.into_iter().collect(),
-        });
-    }
+    let year_ground = (years.len() > 1).then(|| Ground::MultipleCalendarYears {
+        years: years.into_iter().collect(),
+    });
 
     // The account guard [IMP-003], like the year guard, reads every row first and judges only
-    // the ids it could read; a row whose id is unreadable is a failed row and refuses the file
-    // below, so no file is imported with an account the guard has not seen. Combining this
-    // refusal with the others [SRV-059] is FIF-103's.
+    // the ids it could read; a row whose id is unreadable is a failed row below, so no file is
+    // imported with an account the guard has not seen. Several accounts are refused without
+    // comparing any of them to the target, so at most one of the two account grounds applies.
     let named: Vec<Result<Option<String>, RowError>> =
         rows.iter().map(|row| importer.account_id(row)).collect();
     let accounts: BTreeSet<&str> = named
@@ -335,18 +345,21 @@ pub fn import(
         .flatten()
         .map(String::as_str)
         .collect();
-    if accounts.len() > 1 {
-        return Err(ImportError::MultipleAccounts {
+    let account_ground = if accounts.len() > 1 {
+        Some(Ground::MultipleAccounts {
             accounts: accounts.into_iter().map(str::to_owned).collect(),
-        });
-    }
-    if let Some(file) = accounts.first().filter(|file| **file != account.id()) {
-        return Err(ImportError::AccountMismatch {
-            file: (*file).to_owned(),
-            target: account.id().to_owned(),
-        });
-    }
+        })
+    } else {
+        accounts
+            .first()
+            .filter(|file| **file != account.id())
+            .map(|file| Ground::AccountMismatch {
+                file: (*file).to_owned(),
+                target: account.id().to_owned(),
+            })
+    };
 
+    // Not a ground: an importer defect, which leaves no row-by-row answer to judge the rest by.
     let classifications = importer.classify(&rows);
     if classifications.len() != rows.len() {
         return Err(ImportError::ClassificationCount {
@@ -387,8 +400,16 @@ pub fn import(
             })
         })
         .collect();
-    if !failures.is_empty() {
-        return Err(ImportError::FailedRows { failures });
+    let failed_ground = (!failures.is_empty()).then_some(Ground::FailedRows { failures });
+
+    // Every ground is judged before any refuses, so one refusal names them all [SRV-059]
+    // (DEC-088).
+    let grounds: Vec<Ground> = [year_ground, account_ground, failed_ground]
+        .into_iter()
+        .flatten()
+        .collect();
+    if !grounds.is_empty() {
+        return Err(ImportError::Refused { grounds });
     }
 
     // Every outcome is `Ok` past the refusal above, so flattening drops nothing and the keys
@@ -892,25 +913,27 @@ mod tests {
 
         assert_eq!(
             error,
-            ImportError::FailedRows {
-                failures: vec![
-                    RowFailure {
-                        position: 1,
-                        error: RowError::new("not-a-date is not a date"),
-                    },
-                    RowFailure {
-                        position: 2,
-                        error: RowError::new("unknown kind Some(\"nonsense\")"),
-                    },
-                    RowFailure {
-                        position: 4,
-                        error: RowError::new("no id"),
-                    },
-                    RowFailure {
-                        position: 5,
-                        error: RowError::new(" is not a date"),
-                    },
-                ],
+            ImportError::Refused {
+                grounds: vec![Ground::FailedRows {
+                    failures: vec![
+                        RowFailure {
+                            position: 1,
+                            error: RowError::new("not-a-date is not a date"),
+                        },
+                        RowFailure {
+                            position: 2,
+                            error: RowError::new("unknown kind Some(\"nonsense\")"),
+                        },
+                        RowFailure {
+                            position: 4,
+                            error: RowError::new("no id"),
+                        },
+                        RowFailure {
+                            position: 5,
+                            error: RowError::new(" is not a date"),
+                        },
+                    ],
+                }],
             }
         );
         assert_eq!(
@@ -932,10 +955,12 @@ mod tests {
 
         assert_eq!(
             error,
-            ImportError::FailedRows {
-                failures: vec![RowFailure {
-                    position: 0,
-                    error: RowError::new("not-a-date is not a date"),
+            ImportError::Refused {
+                grounds: vec![Ground::FailedRows {
+                    failures: vec![RowFailure {
+                        position: 0,
+                        error: RowError::new("not-a-date is not a date"),
+                    }],
                 }],
             }
         );

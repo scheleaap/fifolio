@@ -588,12 +588,19 @@ keys, one unclassifiable and one unidentifiable row among good ones and asserts 
 `cargo test --workspace`: **596 passed, 0 failed**. The multi-ground combination stays FIF-103.
 
 ## FIF-089 Import guard: one account per file
-Status: todo
+Status: done
 Requirements: IMP-003
 Depends on: FIF-017, FIF-065
 Acceptance: where the format states an account id, an import whose file names a different account than the target is refused naming both, and a file carrying rows from more than one account is refused outright. A format stating none, as Trade Republic's does not, is not checked and is imported into the account the caller names. Tested against the Saxo fixture (matching, mismatching) and a Trade Republic fixture (unchecked).
 Notes: Split out of FIF-065 in revision 8. OQ-015 observes that the Trade Republic export carries no account identifier at all, so the check has nothing to read there; whether the requirement admits uncheckable formats or Trade Republic files are matched some other way decides the shape of this item, not merely a detail of it. Its server-side counterpart is SRV-056 in FIF-090, blocked by the same question.
 Unblocked in revision 47: DEC-075 closed OQ-015 and rewrote IMP-003. Saxo's account id is the normalized one FIF-020 derives (DOM-003), so the comparison is against the normalized id and not the raw suffixed cell.
+
+Revision 60: **done**, committed as `d086bf8`. `ImportError::AccountMismatch` (naming both ids) and
+`ImportError::MultipleAccounts`, mapped to 422 problem types `account-mismatch` and
+`multiple-accounts`; a format with no account id is not checked, and a row whose account cannot be
+read is a failed row. Tested in `fifolio-core/tests/import_account_guard.rs` against the Saxo fixture
+(matching, mismatching) and Trade Republic (unchecked). `cargo test --workspace`: **602 passed, 0
+failed**. The combination with the other guards stays FIF-103.
 
 ## FIF-103 One refusal reports every ground
 Status: todo
@@ -1305,6 +1312,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 60.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-089**, committed as `d086bf8`; suite 602 passed, 0 failed.
+* No item added, split, retired, blocked or unblocked. 101 items: **41 `done`, 46 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-103.** Its dependencies FIF-099 and FIF-089 are both `done`, and SRV-059 is
+  not blocked. It is the first ready `todo` in document order and corrects completed work in
+  FIF-065. Also ready: FIF-083, FIF-028, FIF-069, FIF-034, FIF-041, FIF-042.
 
 **Revision 59.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
 `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
@@ -2307,7 +2327,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 59** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 60** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2373,6 +2393,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 60: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `d086bf8`. One hundred and one items: 41 `done`, 46 `todo`, 14 `blocked`.
 
 Revision 59: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `116be0c`. One hundred and one items: 40 `done`, 47 `todo`, 14 `blocked`.

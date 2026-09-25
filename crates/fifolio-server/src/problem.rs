@@ -36,7 +36,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use fifolio_core::ecb::{FeedError, IngestError};
 use fifolio_core::fx::RateError;
-use fifolio_core::import::ImportError;
+use fifolio_core::import::{Ground, ImportError};
 use fifolio_core::storage::StorageError;
 use serde::{Serialize, Serializer};
 use utoipa::ToSchema;
@@ -81,6 +81,7 @@ pub enum ProblemType {
     AccountMismatch,
     MultipleAccounts,
     FailedRows,
+    SeveralGrounds,
     ImporterDefect,
     RateBeforeSeries,
     RateUnavailable,
@@ -210,6 +211,11 @@ impl ProblemType {
                 S::UNPROCESSABLE_ENTITY,
                 "Rows of the file could not be read",
             ),
+            Self::SeveralGrounds => (
+                "several-grounds",
+                S::UNPROCESSABLE_ENTITY,
+                "The file was refused on more than one ground",
+            ),
             Self::ImporterDefect => (
                 "importer-defect",
                 S::INTERNAL_SERVER_ERROR,
@@ -293,12 +299,26 @@ impl From<&ImportError> for ProblemType {
     fn from(error: &ImportError) -> Self {
         match error {
             ImportError::Read(_) => Self::UnreadableFile,
-            ImportError::MultipleCalendarYears { .. } => Self::MultipleCalendarYears,
-            ImportError::AccountMismatch { .. } => Self::AccountMismatch,
-            ImportError::MultipleAccounts { .. } => Self::MultipleAccounts,
-            ImportError::FailedRows { .. } => Self::FailedRows,
+            // A refusal on one ground keeps that ground's own type; one on several takes a type
+            // of its own, and the detail names every ground [SRV-059]. How the grounds reach
+            // the caller beyond that is the endpoint items' (FIF-070, FIF-090).
+            ImportError::Refused { grounds } => match grounds.as_slice() {
+                [ground] => Self::from(ground),
+                _ => Self::SeveralGrounds,
+            },
             // The importer answered the wrong number of rows: a defect here, not in the file.
             ImportError::ClassificationCount { .. } => Self::ImporterDefect,
+        }
+    }
+}
+
+impl From<&Ground> for ProblemType {
+    fn from(ground: &Ground) -> Self {
+        match ground {
+            Ground::MultipleCalendarYears { .. } => Self::MultipleCalendarYears,
+            Ground::AccountMismatch { .. } => Self::AccountMismatch,
+            Ground::MultipleAccounts { .. } => Self::MultipleAccounts,
+            Ground::FailedRows { .. } => Self::FailedRows,
         }
     }
 }
@@ -584,6 +604,11 @@ mod tests {
             422,
         ),
         (
+            ProblemType::SeveralGrounds,
+            "urn:fifolio:problem:several-grounds",
+            422,
+        ),
+        (
             ProblemType::ImporterDefect,
             "urn:fifolio:problem:importer-defect",
             500,
@@ -640,6 +665,38 @@ mod tests {
 
     fn date() -> NaiveDate {
         NaiveDate::from_ymd_opt(2024, 3, 1).expect("a date")
+    }
+
+    fn refused(grounds: Vec<Ground>) -> ImportError {
+        ImportError::Refused { grounds }
+    }
+
+    fn years() -> Ground {
+        Ground::MultipleCalendarYears {
+            years: vec![2023, 2024],
+        }
+    }
+
+    fn mismatch() -> Ground {
+        Ground::AccountMismatch {
+            file: "40100/9000001".to_owned(),
+            target: "40100/9000002".to_owned(),
+        }
+    }
+
+    fn accounts() -> Ground {
+        Ground::MultipleAccounts {
+            accounts: vec!["40100/9000001".to_owned(), "40100/9000002".to_owned()],
+        }
+    }
+
+    fn failed() -> Ground {
+        Ground::FailedRows {
+            failures: vec![RowFailure {
+                position: 1,
+                error: RowError::new("unknown kind"),
+            }],
+        }
     }
 
     /// One value of every core error variant and the type it answers with. The compiler proves
@@ -802,33 +859,21 @@ mod tests {
                 ImportError::Read(ReadError::NoHeaderRow),
                 ProblemType::UnreadableFile,
             ),
+            (refused(vec![years()]), ProblemType::MultipleCalendarYears),
+            (refused(vec![mismatch()]), ProblemType::AccountMismatch),
+            (refused(vec![accounts()]), ProblemType::MultipleAccounts),
+            (refused(vec![failed()]), ProblemType::FailedRows),
             (
-                ImportError::MultipleCalendarYears {
-                    years: vec![2023, 2024],
-                },
-                ProblemType::MultipleCalendarYears,
+                refused(vec![years(), mismatch()]),
+                ProblemType::SeveralGrounds,
             ),
             (
-                ImportError::AccountMismatch {
-                    file: "40100/9000001".to_owned(),
-                    target: "40100/9000002".to_owned(),
-                },
-                ProblemType::AccountMismatch,
+                refused(vec![accounts(), failed()]),
+                ProblemType::SeveralGrounds,
             ),
             (
-                ImportError::MultipleAccounts {
-                    accounts: vec!["40100/9000001".to_owned(), "40100/9000002".to_owned()],
-                },
-                ProblemType::MultipleAccounts,
-            ),
-            (
-                ImportError::FailedRows {
-                    failures: vec![RowFailure {
-                        position: 1,
-                        error: RowError::new("unknown kind"),
-                    }],
-                },
-                ProblemType::FailedRows,
+                refused(vec![years(), mismatch(), failed()]),
+                ProblemType::SeveralGrounds,
             ),
             (
                 ImportError::ClassificationCount {

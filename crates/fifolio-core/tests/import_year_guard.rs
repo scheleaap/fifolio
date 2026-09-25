@@ -10,7 +10,7 @@ use chrono::NaiveDate;
 use fifolio_core::entities::{Account, SourceFormat};
 use fifolio_core::import::reader::{DelimitedReader, RowReader, SourceRow};
 use fifolio_core::import::{
-    ImportError, Importer, RowClassification, RowError, RowIdentity, import,
+    Ground, ImportError, Importer, RowClassification, RowError, RowIdentity, import,
 };
 use fifolio_core::ordering::{FileDirection, RowOrderingKey};
 
@@ -88,8 +88,10 @@ fn a_file_spanning_two_calendar_years_is_refused_naming_the_years() {
 
     assert_eq!(
         error,
-        ImportError::MultipleCalendarYears {
-            years: vec![2023, 2024]
+        ImportError::Refused {
+            grounds: vec![Ground::MultipleCalendarYears {
+                years: vec![2023, 2024]
+            }],
         }
     );
     let message = error.to_string();
@@ -111,8 +113,10 @@ fn the_refusal_names_every_year_the_file_carries() {
 
     assert_eq!(
         error,
-        ImportError::MultipleCalendarYears {
-            years: vec![2022, 2023, 2024]
+        ImportError::Refused {
+            grounds: vec![Ground::MultipleCalendarYears {
+                years: vec![2022, 2023, 2024]
+            }],
         }
     );
 }

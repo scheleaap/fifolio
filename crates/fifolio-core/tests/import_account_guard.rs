@@ -17,7 +17,7 @@ use fifolio_core::entities::{Account, SourceFormat};
 use fifolio_core::import::reader::{DelimitedReader, ReadError, RowReader, SourceRow};
 use fifolio_core::import::saxo::{self, SaxoWorkbook};
 use fifolio_core::import::{
-    ImportError, Importer, RowClassification, RowError, RowFailure, RowIdentity, import,
+    Ground, ImportError, Importer, RowClassification, RowError, RowFailure, RowIdentity, import,
     trade_republic,
 };
 use fifolio_core::ordering::{FileDirection, RowOrderingKey};
@@ -227,9 +227,11 @@ fn a_saxo_file_naming_another_account_is_refused_naming_both() {
 
     assert_eq!(
         error,
-        ImportError::AccountMismatch {
-            file: SAXO_DEPOT.to_owned(),
-            target: "40100/9000002".to_owned(),
+        ImportError::Refused {
+            grounds: vec![Ground::AccountMismatch {
+                file: SAXO_DEPOT.to_owned(),
+                target: "40100/9000002".to_owned(),
+            }],
         }
     );
     let message = error.to_string();
@@ -253,9 +255,11 @@ fn saxo_is_compared_on_the_normalized_account_not_the_raw_cell() {
 
         assert_eq!(
             error,
-            ImportError::AccountMismatch {
-                file: SAXO_DEPOT.to_owned(),
-                target: raw,
+            ImportError::Refused {
+                grounds: vec![Ground::AccountMismatch {
+                    file: SAXO_DEPOT.to_owned(),
+                    target: raw,
+                }],
             }
         );
     }
@@ -297,8 +301,10 @@ fn a_file_carrying_two_accounts_is_refused_outright() {
 
     assert_eq!(
         error,
-        ImportError::MultipleAccounts {
-            accounts: vec!["40100/9000001".to_owned(), "40100/9000002".to_owned()],
+        ImportError::Refused {
+            grounds: vec![Ground::MultipleAccounts {
+                accounts: vec!["40100/9000001".to_owned(), "40100/9000002".to_owned()],
+            }],
         }
     );
     assert_eq!(
@@ -325,10 +331,12 @@ fn a_row_whose_account_cannot_be_read_is_a_failed_row() {
 
     assert_eq!(
         error,
-        ImportError::FailedRows {
-            failures: vec![RowFailure {
-                position: 1,
-                error: RowError::new("no account"),
+        ImportError::Refused {
+            grounds: vec![Ground::FailedRows {
+                failures: vec![RowFailure {
+                    position: 1,
+                    error: RowError::new("no account"),
+                }],
             }],
         }
     );
