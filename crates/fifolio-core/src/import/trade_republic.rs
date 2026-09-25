@@ -3,7 +3,8 @@
 //!
 //! This module is the container half of the Trade Republic importer and the [`TradeRepublic`]
 //! format that binds it to [`import`](super::import). What a money column is worth is
-//! [`money`]'s, and what a row *is* is [`classification`]'s.
+//! [`money`]'s, what a row *is* is [`classification`]'s, and which security it names is
+//! [`security`]'s.
 //!
 //! # One header row, 23 columns
 //!
@@ -41,6 +42,7 @@
 
 pub mod classification;
 pub mod money;
+pub mod security;
 
 use chrono::{DateTime, NaiveDate};
 use rust_decimal::Decimal;
@@ -182,6 +184,10 @@ pub enum TradeRepublicError {
          (original_amount, original_currency or fx_rate), which cannot be valued reliably"
     )]
     ForeignSideOnStoredRow { transaction_id: String },
+    /// A row naming a security states an `asset_class` the table does not map [IMP-TR-020].
+    /// This is also how a bond is refused: no value maps to `bond` (DEC-077, IMP-TR-021).
+    #[error("the security {isin} is of asset_class {value:?}, which is not recognized")]
+    UnknownAssetClass { value: String, isin: String },
 }
 
 /// The Trade Republic DE CSV format, as [`import`](super::import) drives it [SRV-013].

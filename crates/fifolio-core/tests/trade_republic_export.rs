@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike as _, NaiveDate, Utc};
 use fifolio_core::decimal::Scaled;
-use fifolio_core::entities::{Account, ImportBatch, RecordIdentity, SourceFormat};
+use fifolio_core::entities::{Account, ImportBatch, RecordIdentity, SecurityType, SourceFormat};
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::reader::SourceRow;
 use fifolio_core::import::trade_republic::money::Booked;
+use fifolio_core::import::trade_republic::security::Instrument;
 use fifolio_core::import::trade_republic::{
     DIRECTION, HEADERS, QUANTITY_COLUMN, TradeRepublic, UNIT_PRICE_COLUMN, booking_instant, field,
     identity, is_outflow, ordering_key, read, trade_date,
@@ -628,4 +629,34 @@ async fn a_second_import_of_a_fixture_stores_no_new_source_record() {
             );
         }
     }
+}
+
+/// Every fixture row naming a security states an `asset_class` the table maps, and the fixtures
+/// carry both of its rows; every row naming none reads no type [IMP-TR-020].
+#[test]
+fn every_fixture_row_maps_onto_the_asset_class_table() {
+    let mut types = BTreeSet::new();
+    let mut none = 0_usize;
+    for (path, rows) in exports() {
+        for (index, row) in rows.iter().enumerate() {
+            match Instrument::read(row).unwrap_or_else(|error| {
+                panic!("{} row {} is refused: {error}", path.display(), index + 2)
+            }) {
+                Instrument::Security(security) => {
+                    assert!(security.is_auto_created());
+                    types.insert(security.security_type());
+                }
+                Instrument::None => none += 1,
+            }
+        }
+    }
+
+    assert_eq!(
+        types,
+        BTreeSet::from([SecurityType::Stock, SecurityType::Fund])
+    );
+    assert_eq!(
+        none, 41,
+        "the deposits and interest payments name no security"
+    );
 }

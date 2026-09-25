@@ -1056,7 +1056,7 @@ obsolete uninverted-convention test was replaced. The foreign-trade refusal left
 `money.rs` were removed).
 
 ## FIF-029 Trade Republic: row classification
-Status: todo
+Status: done
 Requirements: IMP-TR-008, IMP-TR-009, IMP-TR-010, IMP-TR-011, IMP-TR-012, IMP-TR-013, IMP-TR-014, IMP-TR-017
 Depends on: FIF-028, FIF-056
 Acceptance: `TRADING`/`BUY` and `TRADING`/`SELL` derive automatically; `CORPORATE_ACTION`/`TAX_EXCHANGE` is handled by FIF-068 and `CORPORATE_ACTION`/anything else rejects the import naming the type, the row and the transaction id; `CASH`/`DIVIDEND`, `INTEREST_PAYMENT`, `CUSTOMER_INBOUND`, `TRANSFER_INBOUND`, `STOCKPERK` are recognized as non-position and not stored, the `STOCKPERK` credit specifically without any check that its paired `TRADING`/`BUY` exists; any other type **naming a security** rejects the import, and any other type naming no security is not stored but is counted and named in the summary; nothing is inferred from quantity signs for an unrecognized type; the Saxo `Positie-ID` heuristic is not applied here; a row that would be stored with `original_*` populated **rejects the import naming the row**, while a non-stored foreign-currency row, such as every dividend in the fixtures, imports fine.
@@ -1072,6 +1072,11 @@ year guard accepts the single-year file.
 Revision 47 moves IMP-TR-017 here from FIF-028. DEC-073 extended it from `TRADING` rows to every stored row, and "would be stored" is this item's classification. The stored case exists in no export, so it is tested against a constructed row.
 Revision 64: FIF-028 landed in `e395518` without any refusal on `original_*`; IMP-TR-017's
 refusal is wholly this item's to write, on top of the `money.rs` reading FIF-028 left.
+Revision 65: **done**, committed as `365fefd`. `import/trade_republic/classification.rs` classifies
+every row [IMP-TR-008 to IMP-TR-014]; a stored row with `original_*` populated refuses the import
+naming the row [IMP-TR-017]; the FIF-027 obligation is met by driving a fixture through
+`import::import` twice in `fifolio-core/tests/trade_republic_export.rs`. `cargo test --workspace`:
+**634 passed, 0 failed**.
 
 ## FIF-068 Trade Republic: `TAX_EXCHANGE`
 Status: todo
@@ -1335,6 +1340,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 65.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-029**, committed as `365fefd`; suite 634 passed, 0 failed.
+* No item added, split, retired, blocked or unblocked. 101 items: **46 `done`, 41 `todo`, 14
+  `blocked`**.
+* Coverage re-verified by script: **352** live ids, each on exactly one item. Uncovered: only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-069.** Its dependencies FIF-027 and FIF-005 are `done`, and neither
+  IMP-TR-020 nor IMP-TR-021 is blocked. It is the first ready `todo` in document order. Also ready:
+  FIF-034, FIF-041, FIF-042. FIF-068 still waits on FIF-063.
 
 **Revision 64.** A status reconciliation. `design/` is **unchanged** since `951cb67`.
 `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
@@ -2402,7 +2420,7 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
-**As of revision 64** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
+**As of revision 65** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
 
@@ -2468,6 +2486,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 65: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `365fefd`. One hundred and one items: 46 `done`, 41 `todo`, 14 `blocked`.
 
 Revision 64: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `e395518`. One hundred and one items: 45 `done`, 42 `todo`, 14 `blocked`.
