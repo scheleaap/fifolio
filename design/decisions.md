@@ -616,3 +616,11 @@ learn of the row, which DEC-074's "one round of fixes" rules out. Every ground t
 determine is reported together. And since a failed row refuses the whole import (SRV-058), a stored
 batch can never have failed rows, so the batch's `failed` count is removed from its fields, as it
 already was from the response summary (SRV-017). [DEC-088, SRV-059]
+
+**DEC-089 — A referenced account is neither deleted nor renamed.** An account's only fields, broker
+and id, are its key: record identities are scoped to it (DOM-024) and IMP-003 checks imported files
+against its id. Rewriting that key under existing records would change their identities and
+re-judge files already accepted, against the immutability DOM-008 gives records. SRV-008 already
+refused deletion over a source record; batches, manual entries and transactions name the account
+too, and deleting it under them would orphan them. A mistaken account is corrected by undoing its
+batches, fixing it, and re-importing, which idempotence (SRV-015) makes cheap. [DEC-089, SRV-008]

@@ -20,7 +20,7 @@ CLI:
 ## Accounts and securities
 
 * CRUDL endpoints for accounts and securities [SRV-007]
-* An account cannot be deleted if it is referenced by any source record [SRV-008]
+* An account cannot be deleted, nor its broker or id changed, while anything references it: a source record, an import batch, a manual entry or a transaction [SRV-008]
 * A security cannot be deleted if it is referenced by any source record [SRV-009]
 * A security's ISIN is unique; creating a duplicate is a conflict [SRV-010]
 * A security's type and quotation are editable, which is how an auto-created record is corrected [SRV-011]
