@@ -178,11 +178,12 @@ Partly corrected by FIF-091: DEC-061 (revision 13) settled that the taxable valu
 **Partly invalidated in revision 13 by DEC-061 (DOM-123).** The shipped shape holds the taxable value as a field of its own, and the very fixture this item's note cites as its safeguard — 81.00 against a stated 3 × 26.10 — is the divergence DEC-061 names and forbids. The item is **not** reopened and its acceptance is left as written, so the record of what was built and why stays legible; the correction is **FIF-091**, which carries DOM-123 and states what must change. DOM-082 itself is unchanged: the basis is still the taxable value and is still never computed here.
 
 ## FIF-058 Consumption versus citation
-Status: blocked
+Status: todo
 Requirements: DOM-101
 Depends on: FIF-056
 Acceptance: a transaction consumes the source records its existence answers and may cite further records without consuming them; consumption is what clears a record from the completion queue, citation is what preserves the audit trail; a decomposition names which of its transactions consumes.
-Blocked by: DOM-101 is on the undecided list.
+Blocked by (until revision 69): DOM-101 is on the undecided list.
+Revision 69: unblocked. OQ-001 is provisionally answered by DEC-090: of a decomposition the `sell` consumes and the `transfer_out` only cites. Outside the server scope the user set, so not selected this run.
 Notes: Split out of FIF-056. DOM-070 (at most one consumer) is in FIF-060 and blocked alongside it; SRV-022 and DOM-119 (batch deletion refused on a citation the batch did not derive) are in FIF-012 and FIF-036, which can only be finished once this is settled.
 
 ## FIF-059 Manual entry entity
@@ -217,13 +218,16 @@ Notes: Rewritten in revision 2; the revision-1 acceptance — trade date, execut
 Done in revision 5, commit `17cb593`. `ordering.rs` assigns orders from trade date, then the format-supplied ordering columns in their stated precedence, then row position normalized by `FileDirection`; tested to be a permutation and to reproduce exactly on a second read. The Saxo binding of the ordering columns (FIF-066) is now blocked by OQ-013, which does not affect this mechanism.
 
 ## FIF-076 Canonical order across files and the transaction order key
-Status: blocked
+Status: done
 Requirements: DOM-011, DOM-013, DOM-111
 Depends on: FIF-006, FIF-056
 Acceptance: the canonical order over an account and security is (trade date, `order`, batch age), so two records from different files sharing a date are settled by the age of the owning batch; every transaction variant carries the `order` of the source record it consumes and relations to account, security and one or more source records.
-Blocked by: DOM-011 (OQ-001) and DOM-111 (OQ-007) are on the undecided list. DOM-013 left it in revision 47 (OQ-002, DEC-079) but stays here: it is one sentence of `domain.md` with DOM-011.
+Blocked by (until revision 69): DOM-011 (OQ-001) and DOM-111 (OQ-007) are on the undecided list. DOM-013 left it in revision 47 (OQ-002, DEC-079) but stays here: it is one sentence of `domain.md` with DOM-011.
+Revision 69: **unblocked** by the provisional DEC-090 and DEC-092, and the acceptance is amended accordingly, not rewritten: (a) a transaction consuming several records takes the **lowest** of their orders; (b) of a decomposition's two legs the `sell` sorts first and the `transfer_out` immediately after it (the legs themselves are FIF-100's; this item provides the key that can express "immediately after"); (c) the third key is the age of the **oldest** batch that supplied the record, not the owning batch, and it never changes when ownership moves. Test: re-importing a year into a newer batch leaves the canonical order of every record unchanged. Named next to build in revision 69.
 Notes: Split out of FIF-006 and FIF-056 in revision 3; DOM-011 and DOM-013 are one sentence of `domain.md` and belong together. Everything that reads the canonical order — FIF-013, FIF-061, FIF-014, FIF-015 — depends on this rather than on FIF-006 alone.
 FIF-012 built DOM-066 and DOM-068 over the stand-in **(trade date, row id)**, the canonical order being unavailable, and DOM-072 over a single `derived_by_batch` per transaction rather than over the records a transaction was derived from. Both are this item's to replace: the two comparisons in `storage/attributions.rs` and their note, and `derived_transactions` in `storage/entities.rs`, which must be re-keyed on the transaction-to-source-record relation so DOM-072 answers for every batch whose records a transaction was derived from. Its acceptance therefore reads DOM-066, DOM-068 and DOM-072 through, and their integration tests move with the comparison.
+Revision 69 note: `source_record` has a single `batch_id` today (migration `0003`), which is the first batch to insert the row because a re-import currently leaves it untouched. DEC-092 needs the oldest supplier fixed apart from the owner, since FIF-071 moves ownership to the newest supplier; record the first supplying batch as its own fact (set once at insert, or read from the supplier relation FIF-071 needs) rather than reading the owner. If DEC-090 or DEC-092 is overridden on ratification, this item reopens.
+Done in revision 70: migration `0006_canonical_order.sql` adds a record's first supplying batch and a transaction's `order`, batch age and leg; the canonical order is (trade date, `order`, oldest supplier batch) and replaces FIF-012's stand-in in `storage/attributions.rs` and `derived_transactions`. Provisional DEC-094, DEC-095, DEC-096.
 
 ## FIF-007 Source record identity and idempotency
 Status: done
@@ -372,11 +376,12 @@ Revision 24 re-confirmed this item as next and confirmed it was **not started**:
 Done in revision 25, commit `3136a8a`: migration `0003_invariants.sql` adds the relations the invariants read (attribution keyed on account and security with its allocations, a transaction's account and security, a record's owning batch, the `transfer_out`-to-`transfer_in` emission link) and no more; each refusal is its own `StorageError` variant — `EarlierClosingUnattributed`, `LaterAttributionExists`, `TransactionAttributed`, `EmittedTransferIn`, `BatchTransactionAttributed`, `BatchRecordsCited` — and `crates/fifolio-core/tests/invariants.rs` covers all seven requirements against a real temporary database. Two things the implementation pinned that later items inherit: `approve(closing, &[])` stores an attribution with no allocation rows and that closing then unblocks later ones (FIF-078 must refuse it under DOM-065, and that is a change to a test written here), and an emitted `transfer_in` belongs to no batch, so an undo reaches it only through the group its `transfer_out` heads.
 
 ## FIF-078 Allocation quantity invariants
-Status: blocked
+Status: todo
 Requirements: DOM-064, DOM-065
 Depends on: FIF-012, FIF-061
 Acceptance: allocated quantities against an opening, each scaled to a common position in the canonical order, never exceed its effective quantity at that position, and a closing's allocations sum exactly to its quantity; both refused at the persistence/service boundary with a distinguishable error, integration tested against a real temporary database.
-Blocked by: DOM-064 and DOM-065 are on the undecided list.
+Blocked by (until revision 69): DOM-064 and DOM-065 are on the undecided list.
+Revision 69: unblocked by the provisional DEC-091. Acceptance amended: both comparisons are made at the 8-decimal quantity scale, half away from zero; a parcel whose remaining effective quantity rounds to zero there is exhausted. Outside the server scope the user set, so not selected this run.
 Notes: Split out of FIF-012 in revision 3. DOM-064 compares effective quantities at a common position, which is why this half, and not FIF-012, carries the FIF-061 dependency.
 The boundary DOM-065's refusal must cover is the **empty** allocation set: FIF-012 stores `approve(closing, &[])` as an attribution with no allocation rows, and that closing then counts as attributed and unblocks every later closing under DOM-066 while consuming nothing. The behavior is pinned by a test of FIF-012's, so refusing it here is a change to that test rather than a silent one.
 
@@ -403,11 +408,12 @@ Blocked by: DOM-092 and DOM-114 are on the undecided list.
 Notes: Split out of FIF-013 in revision 3. IMP-SAXO-013's `Expiratie` mapping (FIF-023) states the same pending rule from the importer side and is blocked too.
 
 ## FIF-061 Splits and effective quantity
-Status: blocked
+Status: todo
 Requirements: DOM-089, DOM-103, DOM-113
 Depends on: FIF-076, FIF-054
 Acceptance: a `split` carries an integer numerator and denominator; an opening's effective quantity **as of a position in the canonical order** is its stated quantity times the ratios of every split for that security falling between the opening and that position, computed as an exact rational and rounded only for display; its effective unit price at that position is its total cost over that effective quantity; stated figures are never rewritten; successive splits compose with no accumulated residue, so 1-for-3 then 3-for-1 returns the original quantity exactly.
-Blocked by: DOM-113 is on the undecided list, and it is the substance of the item: the rational representation is what the rest of the rule is built on. ARC-009 (FIF-054) bears on it too.
+Blocked by (until revision 69): DOM-113 is on the undecided list, and it is the substance of the item: the rational representation is what the rest of the rule is built on. ARC-009 (FIF-054) bears on it too.
+Revision 69: unblocked by the provisional DEC-091. Acceptance amended: effective quantity stays an exact rational, and wherever it is compared (exhaustion, allocation sums) it is taken at the 8-decimal quantity scale, half away from zero; the residue below 1e-8 of a share is dropped. Provide that scaled view here so FIF-013, FIF-014 and FIF-078 share one rounding. If DEC-091 is overridden on ratification, this item reopens.
 Notes: New in this revision, replacing the "quantity adjustment" half of the retired FIF-018. DOM-103 is the reason effective quantity is parameterized by position at all: measuring as of today halves the cost of everything sold before a split.
 
 ## FIF-014 Allocation figure derivation and the drift rule
@@ -420,11 +426,12 @@ DOM-084 moved here from FIF-008 in revision 15: allocation shares derive from th
 DOM-125 is new in revision 14 (DEC-066). It belongs here, with the rounding rule it qualifies, and not with the reports: its second half — a total is the sum of the rounded rows — is a consequence the report items FIF-030 and FIF-031 inherit by summing what this item produces, and neither is built yet. It costs up to two cents against the exact figure per allocation, deliberately; say so in the code comment, or someone will "fix" it.
 
 ## FIF-080 Transfer out has no proceeds and no gain
-Status: blocked
+Status: todo
 Requirements: DOM-112
 Depends on: FIF-014, FIF-063
 Acceptance: a `transfer_out`'s `eur_gross` is the basis it carries onward rather than proceeds — derived from its own allocations, not stored — so the opening side is computed first and no gain is ever computed for it.
-Blocked by: DOM-112 is on the undecided list (OQ-011). As of revision 47 OQ-003 and OQ-016 are closed, and the transfer rules it rests on (FIF-063) are decided.
+Blocked by (until revision 69): DOM-112 is on the undecided list (OQ-011). As of revision 47 OQ-003 and OQ-016 are closed, and the transfer rules it rests on (FIF-063) are decided.
+Revision 69: unblocked; OQ-011 is provisionally answered by DEC-093. Outside the server scope the user set, so not selected this run.
 Notes: Split out of FIF-014 in revision 3 so the cash closings' formulas can be built.
 
 ## FIF-015 Attribution service
@@ -443,11 +450,12 @@ Notes: New in revision 2, replacing the "lot transfer" half of the retired FIF-0
 Revision 47 splits and unblocks this item. DEC-079 to DEC-083 closed OQ-002, OQ-003, OQ-016, OQ-017 and OQ-018, and DOM-090, DOM-106, DOM-107 and DOM-115 were rewritten accordingly. DOM-091 (OQ-001) is still undecided, so the decomposition moves to the new **FIF-100** with DOM-116, which divides that decomposition's money and cannot be reviewed without it. Revision 3's objection to splitting was that DOM-115 and DOM-116 each qualify an open rule. That now holds only for DOM-116. The emission is a complete increment: it is reviewable against DOM-090 alone. DOM-107 reaches the importers: FIF-067 and FIF-068 surface the refusal on a row, and this item owns the rule that a transfer's fee is never divided. It is still not startable, because FIF-015 waits on FIF-013 and FIF-061 is blocked.
 
 ## FIF-100 Cash-and-exchange decomposition
-Status: blocked
+Status: todo
 Requirements: DOM-091, DOM-116
 Depends on: FIF-063
 Acceptance: an event paying cash for part of a holding and exchanging the rest decomposes into a `sell` and a `transfer_out`, both citing the same source records. The sell leg takes the group's summed cash net of any reversal and **all** of its costs. The transfer leg carries no money of its own, only the basis it inherits.
-Blocked by: DOM-091 is on the undecided list (OQ-001: which record each leg consumes and what orders the two legs). DOM-116 divides the money of that decomposition and is blocked with it rather than split into an unreviewable half.
+Blocked by (until revision 69): DOM-091 is on the undecided list (OQ-001: which record each leg consumes and what orders the two legs). DOM-116 divides the money of that decomposition and is blocked with it rather than split into an unreviewable half.
+Revision 69: unblocked by the provisional DEC-090. Acceptance amended: the `sell` consumes the group's records and sorts first; the `transfer_out` cites them and sorts immediately after, so FIFO gives the sale the oldest parcels. Outside the server scope the user set, so not selected this run.
 Notes: Split out of FIF-063 in revision 47, recorded on both halves. FIF-067 derives Saxo's cash mergers against this.
 
 ## FIF-016 Property tests for the engine
@@ -1112,12 +1120,13 @@ Acceptance: every opening transaction listed with date, account, security, effec
 Notes: Renamed from "Buy report" in revision 2; the report covers both opening variants and the CLI token is `acquisitions` (DEC-034). Blocked in revision 2 on DOM-076 and DOM-078; DOM-076 is now decided and DOM-078, the per-disposal detail lines, moved to FIF-082 in revision 3. What is left is the opening-level table.
 
 ## FIF-082 Acquisition report: per-disposal detail lines
-Status: blocked
+Status: todo
 Requirements: DOM-078
 Depends on: FIF-031, FIF-014
 Acceptance: beneath each opening, every attributed disposal is listed with its date, quantity consumed, allocated proceeds, allocated sell fee, allocated cost, allocated buy fee and gain/loss.
-Blocked by: DOM-078 is on the undecided list.
+Blocked by (until revision 69): DOM-078 is on the undecided list.
 Notes: Split out of FIF-031 in revision 3.
+Revision 69: unblocked by the provisional DEC-093. Acceptance amended: a `transfer_out` is not a disposal and has no line; the parcels it carried appear under the disposals that later consume their emitted `transfer_in` records, with the inherited cost and buy fee. If DEC-093 is overridden on ratification, this item reopens.
 
 ## FIF-032 Server binary, arguments and OpenAPI
 Status: done
@@ -1153,7 +1162,7 @@ Status: todo
 Requirements: SRV-012, SRV-013, SRV-014, SRV-015, SRV-016, SRV-018, SRV-049
 Depends on: FIF-034, FIF-029
 Acceptance: the caller supplies target account, format and file; formats are Saxo NL XLSX and Trade Republic DE CSV; unknown ISINs are auto-created and flagged; re-posting the same file changes nothing; non-position rows are counted and not stored; the response **names every unrecognized row type it met with how many rows carried it**; a sell exceeding holdings imports fine and surfaces only at attribution.
-Notes: Revision 3 splits the counted summary (SRV-017) into FIF-085, it being undecided; SRV-049's naming of unrecognized types is decided and stays here. Revision 58 (user: server first, importers later): no longer waits on FIF-023. Until the Saxo importer can classify rows, a Saxo file sent to the endpoint is refused as a format not yet supported, naming FIF-023; Trade Republic imports work end to end.
+Notes: Revision 3 splits the counted summary (SRV-017) into FIF-085, it being undecided; SRV-049's naming of unrecognized types is decided and stays here. Revision 69 (recorded in `6921150` under a duplicate "Revision 58" label; user: server first, importers later): no longer waits on FIF-023. Until the Saxo importer can classify rows, a Saxo file sent to the endpoint is refused as a format not yet supported, naming FIF-023; Trade Republic imports work end to end.
 Revision 47: a failed row now refuses the whole import (SRV-058). FIF-099 builds that in core. Here it is one more refusal mapped to problem+json, naming every failed row.
 
 ## FIF-085 Import response summary counts
@@ -1189,19 +1198,21 @@ Acceptance: every import creates a batch; batches are readable and listable with
 Notes: Revision 3 splits the deletion behavior itself (SRV-021) into FIF-086; what remains is batch creation, reading and the two refusals, which is reviewable on its own because a refused deletion never reaches the removal path.
 
 ## FIF-086 Batch deletion removes its records
-Status: blocked
+Status: todo
 Requirements: SRV-021
 Depends on: FIF-036, FIF-071
 Acceptance: deleting a batch removes exactly the source records it owns and everything derived from them, and never a manual entry.
-Blocked by: SRV-021 is on the undecided list. What "the records it owns" means is itself open (SRV-052, FIF-071).
+Blocked by (until revision 69): SRV-021 is on the undecided list. What "the records it owns" means is itself open (SRV-052, FIF-071).
+Notes: Revision 69: unblocked by the provisional DEC-092. Acceptance amended: a record the deleted batch owns that a remaining batch also supplied is **not** removed; ownership returns to the newest remaining supplier, so undoing a re-import restores the previous import. Test: import a year, re-import it, delete the newer batch; every record and its derived transactions survive under the older batch. If DEC-092 is overridden on ratification, this item reopens.
 
 ## FIF-071 Batch ownership on re-import
-Status: blocked
+Status: todo
 Requirements: SRV-052
 Depends on: FIF-036
 Acceptance: a source record belongs to every batch that supplied it and the **newest** owns it; re-importing a year transfers ownership to the new batch and the superseded batches then own nothing.
-Blocked by: SRV-052 is on the undecided list.
+Blocked by (until revision 69): SRV-052 is on the undecided list.
 Notes: New in this revision. It decides what "the records a batch owns" in SRV-021 and SRV-022 means, so FIF-036 is only fully reviewable once this is settled.
+Revision 69: unblocked; OQ-007 is provisionally answered by DEC-092, which leaves SRV-052's rule as written. Storage needs the supplier relation (every batch that supplied a record), not only the owner in `source_record.batch_id`; the oldest supplier FIF-076 keys on must not move when this item moves ownership.
 
 ## FIF-037 Source record endpoints
 Status: todo
@@ -1353,10 +1364,36 @@ Ids are never reused.
 
 # Revision history
 
-**Revision 58.** The user put the server first and the importers, CLI and UI later. OQ-001, OQ-004,
-OQ-007 and OQ-011 are provisionally answered (DEC-090 to DEC-093), which unblocks FIF-076, FIF-061,
-FIF-071, FIF-086 and FIF-082 and with them the engine the attribution and report endpoints need.
-FIF-035 no longer waits on FIF-023.
+**Revision 69.** `design/` **changed** in `6921150`: OQ-001, OQ-004, OQ-007 and OQ-011 are
+provisionally answered (DEC-090 to DEC-093), awaiting the user's ratification; DOM-011, DOM-064,
+DOM-065, DOM-078, DOM-111 and SRV-021 were reworded to carry the answers. No id added or removed.
+The user put the server first and the importers, CLI and UI later.
+
+That commit first recorded this revision as a second "Revision 58" with no status changes; it is
+renumbered here, its text kept in substance: "OQ-001, OQ-004, OQ-007 and OQ-011 are provisionally
+answered (DEC-090 to DEC-093), which unblocks FIF-076, FIF-061, FIF-071, FIF-086 and FIF-082 and with
+them the engine the attribution and report endpoints need. FIF-035 no longer waits on FIF-023."
+
+* **Unblocked (now `todo`), acceptance amended by note, not rewritten:** FIF-076 (DEC-090, DEC-092),
+  FIF-058 (DEC-090), FIF-078 (DEC-091), FIF-061 (DEC-091), FIF-080 (DEC-093), FIF-100 (DEC-090),
+  FIF-082 (DEC-093), FIF-086 (DEC-092), FIF-071 (DEC-092). Each records that an override on
+  ratification reopens it.
+* **Still `blocked`:** FIF-075, FIF-077 (OQ-010), FIF-079 (OQ-005), FIF-066 (OQ-013), FIF-023
+  (OQ-005, OQ-008, OQ-014). `open-questions.md` now names **7** ids on `Blocks:` lines, and the 5
+  items carrying one are exactly the 5 `blocked` (checked by script).
+* **Invalidated completed work:** none. SRV-021's rewording touches FIF-086, never built; DOM-111's
+  touches FIF-076, never built. FIF-012's stand-in order and FIF-076's replacing it were already
+  recorded.
+* No item added, split or retired. 101 items: **48 `done`, 48 `todo`, 5 `blocked`**. Coverage:
+  **352** live ids, each on exactly one item; uncovered only the retired DOM-009, 014, 015, 021, 041
+  and 050 to 053.
+* **Server scope** (user's instruction): FIF-076, 061, 013, 014, 015, 063, 030, 031, 082, 035, 085,
+  070, 090, 036, 071, 086, 037, 072, 038, 087, 073, 039, 040, 041. The `todo` engine items outside it
+  (FIF-058, FIF-060, FIF-078, FIF-080, FIF-100) are not selected; FIF-039's refusal of a security
+  with pending records is DOM-067 in FIF-060, which lies outside that scope.
+* **Next to build: FIF-076.** Its dependencies FIF-006 and FIF-056 are `done`, and none of DOM-011,
+  DOM-013, DOM-111 is blocked. It is the first ready in-scope `todo` in document order. Also ready
+  in scope: FIF-035 and FIF-041. FIF-061 follows once FIF-076 is done.
 
 **Revision 68.** A status reconciliation. `design/` is **unchanged** since `e98430a`.
 `open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
@@ -2474,6 +2511,21 @@ remains the only `done` item and its acceptance still holds.
 
 # Decisions required
 
+**As of revision 69**, `open-questions.md` names **seven** ids on `Blocks:` lines; OQ-001, OQ-004,
+OQ-007 and OQ-011 are provisionally answered (DEC-090 to DEC-093) and block nothing. Current mapping:
+
+* **OQ-005** — DOM-092, DOM-114 (FIF-079), IMP-SAXO-013 (FIF-023)
+* **OQ-008**, **OQ-014** — IMP-SAXO-013 (FIF-023)
+* **OQ-010** — ARC-008, DOM-038 (FIF-075), DOM-104 (FIF-077)
+* **OQ-013** — IMP-SAXO-026 (FIF-066)
+
+None of the five `blocked` items is in the server scope, and no in-scope item depends on one, so the
+server is not held up by an open question. Items built on DEC-090 to DEC-093 (FIF-076, FIF-061,
+FIF-071, FIF-086, FIF-082, and outside scope FIF-058, FIF-078, FIF-080, FIF-100) reopen if the user
+overrides the provisional answer on ratification.
+
+The revision 67 state follows, kept for audit.
+
 **As of revision 67** (unchanged since 47), `open-questions.md` names **eighteen** distinct ids, and the items carrying
 them are `blocked`. OQ-002, 003, 006, 009, 012, 015 to 021 are closed (DEC-073 to DEC-083). Current
 mapping:
@@ -2540,6 +2592,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 69: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `6921150`. One hundred and one items: 48 `done`, 48 `todo`, 5 `blocked`.
 
 Revision 67: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `e98430a`. One hundred and one items: 47 `done`, 40 `todo`, 14 `blocked`.

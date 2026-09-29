@@ -18,10 +18,16 @@
 //!
 //! # What every variant carries
 //!
-//! A trade date, and the source records the transaction was derived from [DOM-016] — together,
-//! its [`Derivation`]. The records are named by their [`RecordIdentity`] rather than held as a
-//! relation: the relation to account, security and source record is DOM-013, which is undecided
-//! and belongs to FIF-076.
+//! A trade date, the source records the transaction was derived from [DOM-016], and its place in
+//! the canonical order [DOM-011] — together, its [`Derivation`]. The records are named by their
+//! [`RecordIdentity`]; the relations to account, security and those records [DOM-013] are held by
+//! storage, as a source record's relation to its batch is, and written with the transaction.
+//!
+//! The place is an [`OrderKey`]: the trade date, the [`RecordPosition`] of the lowest record the
+//! transaction was derived from (DEC-090, DEC-094, provisional), and a [`Leg`] that lets a
+//! decomposition's `transfer_out` sort immediately after its `sell`. Until consumption is
+//! distinguished from citation (FIF-058), every record derived from counts, which is the same set
+//! for every transaction built so far.
 //!
 //! # Nothing is created from nothing
 //!
@@ -38,7 +44,7 @@
 //! undo may have removed it since, or the handle may come from another database. Storing the
 //! transaction therefore refuses a citation of a record that is not stored at that moment
 //! [DOM-047]; what keeps a stored transaction's citations standing afterwards is the import
-//! undo's refusal [DOM-119]. Which cited record a transaction *relates to* in the sense of DOM-013 is FIF-076's.
+//! undo's refusal [DOM-119].
 //!
 //! The distinction between **consuming** a record and merely **citing** it [DOM-101] is
 //! undecided (FIF-058). What every variant holds until then is the citation — the audit trail
@@ -87,10 +93,9 @@
 //!
 //! | Absent | Variant | Owner |
 //! | --- | --- | --- |
-//! | account, security, source-record relations, the `order` consumed | all | FIF-076 (DOM-011, DOM-013) |
 //! | the EUR gross | `transfer_out` | FIF-080 (DOM-112): it is derived from its own allocations, not stored |
 //! | quantity | `expiration` | FIF-079 (DOM-092): it is the unattributed remainder, not a stated figure |
-//! | target security and ratio | `transfer_out` | FIF-063 (DOM-090), FIF-076 |
+//! | target security and ratio | `transfer_out` | FIF-063 (DOM-090) |
 //! | ratio, as an integer numerator and denominator | `split` | FIF-061 (DOM-113) |
 //!
 //! The money fields present are the figures the variant states, at the scales of
@@ -101,10 +106,12 @@ use vec1::Vec1;
 
 use crate::decimal::{Money, Quantity, QuotedPrice};
 use crate::entities::RecordIdentity;
+use crate::ordering::{Leg, OrderKey, RecordPosition};
 use crate::storage::RecordHandle;
 use crate::valuation::{Conversion, Valued};
 
-/// What every variant carries: its trade date, and the records it was derived from [DOM-016].
+/// What every variant carries: its trade date, the records it was derived from [DOM-016], and
+/// its place in the canonical order [DOM-011].
 ///
 /// The trade date is the date of the obligating transaction and never the settlement date
 /// [DOM-027]; which column of an export supplies it is each importer's item.
@@ -112,6 +119,8 @@ use crate::valuation::{Conversion, Valued};
 pub struct Derivation {
     trade_date: NaiveDate,
     cites: Vec1<RecordIdentity>,
+    position: RecordPosition,
+    leg: Leg,
 }
 
 impl Derivation {
@@ -170,11 +179,45 @@ impl Derivation {
     /// let account = Account::new("Saxo", "69900/1000000");
     /// let _ = RecordHandle::new(identify(&account, &IdentitySource::BrokerReference("r1")));
     /// ```
+    ///
+    /// Its position is the lowest of the records' positions, so the transaction sorts where its
+    /// first row does [DOM-011] (DEC-090, provisional). Records from different files are compared
+    /// by `order` then batch age, as though they shared the transaction's trade date (DEC-094,
+    /// provisional). It leads its position; [`Derivation::trailing`] makes it the second leg.
     #[must_use]
     pub fn new(trade_date: NaiveDate, cites: Vec1<RecordHandle>) -> Self {
+        let position = cites
+            .iter()
+            .map(RecordHandle::position)
+            .fold(cites.first().position(), Ord::min);
         Self {
             trade_date,
             cites: cites.mapped(RecordHandle::into_identity),
+            position,
+            leg: Leg::Lead,
+        }
+    }
+
+    /// A derivation as storage wrote it, its place read back rather than recomputed: the records
+    /// it cites may since have gone [DOM-099], and a place taken from anything but the records a
+    /// transaction was derived from (an emitted `transfer_in`'s, DEC-079) cannot be recomputed.
+    pub(crate) fn stored(trade_date: NaiveDate, cites: Vec1<RecordHandle>, key: OrderKey) -> Self {
+        Self {
+            trade_date,
+            cites: cites.mapped(RecordHandle::into_identity),
+            position: key.position(),
+            leg: key.leg(),
+        }
+    }
+
+    /// The same derivation as the trailing leg of a decomposition: it sorts immediately after the
+    /// leg derived from the same records (DEC-090, provisional). Building the decomposition is
+    /// FIF-100's.
+    #[must_use]
+    pub fn trailing(self) -> Self {
+        Self {
+            leg: Leg::Trailing,
+            ..self
         }
     }
 
@@ -187,6 +230,13 @@ impl Derivation {
     #[must_use]
     pub fn cites(&self) -> &[RecordIdentity] {
         &self.cites
+    }
+
+    /// Where the transaction sits in the canonical order of its account and security [DOM-011],
+    /// [DOM-111].
+    #[must_use]
+    pub fn order_key(&self) -> OrderKey {
+        OrderKey::new(self.trade_date, self.position, self.leg)
     }
 }
 
@@ -520,6 +570,12 @@ impl Transaction {
         self.derivation().cites()
     }
 
+    /// Where this transaction sits in the canonical order [DOM-011], [DOM-111].
+    #[must_use]
+    pub fn order_key(&self) -> OrderKey {
+        self.derivation().order_key()
+    }
+
     /// The opening this is, if it opens a parcel [DOM-081]. `None` for a split.
     #[must_use]
     pub fn opening(&self) -> Option<&Opening> {
@@ -589,8 +645,9 @@ mod tests {
     use vec1::vec1;
 
     use crate::decimal::{FxRate, Scaled};
-    use crate::entities::Account;
+    use crate::entities::{Account, Order};
     use crate::identity::{IdentitySource, identify};
+    use crate::ordering::BatchAge;
     use crate::valuation::{Currency, RateSource};
 
     fn account() -> Account {
@@ -603,7 +660,15 @@ mod tests {
 
     /// Storage's handle on the record `reference` names, as it would issue one on insert.
     fn stored(reference: &str) -> RecordHandle {
-        RecordHandle::for_test(cite(reference))
+        stored_at(reference, 0, 1)
+    }
+
+    /// A handle on a record at `order` in the file batch `batch` first supplied.
+    fn stored_at(reference: &str, order: u32, batch: i64) -> RecordHandle {
+        RecordHandle::for_test(
+            cite(reference),
+            RecordPosition::new(Order::new(order), BatchAge::new(batch)),
+        )
     }
 
     fn date() -> NaiveDate {
@@ -739,14 +804,66 @@ mod tests {
     }
 
     /// Every variant carries a trade date [DOM-010].
-    ///
-    /// The trade date is the decided half of DOM-011's sentence; the `order` of the record
-    /// consumed, and the relations, are FIF-076's.
     #[test]
     fn every_variant_carries_a_trade_date() {
         for transaction in every_variant() {
             assert_eq!(transaction.trade_date(), date());
         }
+    }
+
+    /// Every variant carries the `order` of the record it was derived from, keyed with its trade
+    /// date and that record's batch age [DOM-011], [DOM-111].
+    #[test]
+    fn every_variant_carries_the_order_of_its_record() {
+        let expected = OrderKey::new(
+            date(),
+            RecordPosition::new(Order::new(0), BatchAge::new(1)),
+            Leg::Lead,
+        );
+        for transaction in every_variant() {
+            assert_eq!(transaction.order_key(), expected);
+        }
+    }
+
+    /// A transaction derived from several records takes the lowest of their orders, whatever
+    /// order they are cited in (DEC-090) [DOM-011]; across files the lower `order` wins before the
+    /// older batch does (DEC-094) [DOM-111].
+    #[test]
+    fn a_transaction_from_several_records_takes_the_lowest_order() {
+        let derivation = Derivation::new(
+            date(),
+            vec1![
+                stored_at("cash-row", 7, 1),
+                stored_at("position-row", 4, 3),
+                stored_at("reversal-row", 5, 1),
+            ],
+        );
+
+        assert_eq!(
+            derivation.order_key().position(),
+            RecordPosition::new(Order::new(4), BatchAge::new(3))
+        );
+        // The citations keep the caller's shape; only the key takes the minimum [DOM-016].
+        assert_eq!(derivation.cites()[0], cite("cash-row"));
+    }
+
+    /// Of two transactions derived from the same records, the trailing one sorts immediately after
+    /// the other: the key a decomposition's `transfer_out` needs against its `sell` (DEC-090)
+    /// [DOM-011].
+    #[test]
+    fn a_trailing_leg_sorts_immediately_after_the_leg_it_shares_records_with() {
+        let rows = vec1![stored_at("merger-row", 2, 1)];
+        let sell = Derivation::new(date(), rows.clone());
+        let transfer_out = Derivation::new(date(), rows).trailing();
+
+        assert_eq!(sell.cites(), transfer_out.cites());
+        assert_eq!(sell.order_key().leg(), Leg::Lead);
+        assert!(sell.order_key() < transfer_out.order_key());
+        assert!(
+            transfer_out.order_key()
+                < Derivation::new(date(), vec1![stored_at("next-row", 3, 1)]).order_key(),
+            "the next record of the day still sorts after both legs"
+        );
     }
 
     /// A transaction cites the source records it was derived from, so a multi-row event keeps

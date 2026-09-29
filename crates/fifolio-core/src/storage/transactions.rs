@@ -11,7 +11,8 @@ use sqlx::sqlite::{SqliteConnection, SqlitePool, SqliteRow};
 use sqlx::{Row, query};
 use vec1::Vec1;
 
-use crate::entities::{Account, Isin, RecordIdentity};
+use crate::entities::{Account, Isin, Order, RecordIdentity};
+use crate::ordering::{BatchAge, Leg, OrderKey, RecordPosition};
 use crate::storage::codec::{
     at_scale, buy_origin, buy_origin_code, date_provenance, date_provenance_code, money_pair,
     pair_at_scale, price_pair, quantity as read_quantity, rate, rate_source, rate_source_code,
@@ -26,7 +27,7 @@ use crate::valuation::{Conversion, Currency};
 
 row_id!(
     /// A transaction's key. Surrogate: the natural key would be the source record it consumes,
-    /// which is DOM-011 and undecided.
+    /// and which record that is, as against one it only cites, is DOM-101's.
     TransactionId
 );
 
@@ -50,11 +51,12 @@ pub(super) fn is_closing(kind: &str) -> bool {
 /// Where a transaction belongs: the account and security it is a transaction of, and the import
 /// that derived it.
 ///
-/// A parameter of the insert rather than a field of [`Transaction`], because the type carries no
-/// relations — DOM-013 is undecided (OQ-002) and belongs to FIF-076. What is stored here is only
-/// what the invariants read: the pair DOM-066 and DOM-068 key on, and the batch DOM-072 and
-/// DOM-119 ask about. It is deliberately *not* a record-level derivation: which source record a
-/// transaction consumes is DOM-101 and undecided.
+/// A parameter of the insert rather than a field of [`Transaction`]: these are the transaction's
+/// relations to account and security [DOM-013], and like a source record's relation to its batch
+/// they are held by storage rather than by the value. The relation to source records is the
+/// transaction's citations. What is stored here is the pair DOM-066 and DOM-068 key on, and the
+/// batch DOM-119 asks about; DOM-072 reads the records instead. Which of its records a
+/// transaction consumes rather than cites is DOM-101's (FIF-058).
 #[derive(Debug, Clone)]
 pub struct Placement {
     account: Account,
@@ -115,11 +117,18 @@ impl<'a> TransactionRepository<'a> {
             Transaction::Split(_) => SPLIT,
         };
 
-        let header = query("insert into transaction_record (kind, trade_date) values (?, ?)")
-            .bind(kind)
-            .bind(transaction.trade_date())
-            .execute(&mut *tx)
-            .await?;
+        let key = transaction.order_key();
+        let header = query(
+            "insert into transaction_record (kind, trade_date, ordering, batch_age, leg)
+             values (?, ?, ?, ?, ?)",
+        )
+        .bind(kind)
+        .bind(key.trade_date())
+        .bind(i64::from(key.position().order().get()))
+        .bind(key.position().batch_age().get())
+        .bind(leg_rank(key.leg()))
+        .execute(&mut *tx)
+        .await?;
         let id = header.last_insert_rowid();
 
         match transaction {
@@ -277,10 +286,12 @@ impl<'a> TransactionRepository<'a> {
     }
 
     pub async fn find(&self, id: TransactionId) -> Result<Option<Transaction>, StorageError> {
-        let Some(header) = query("select kind, trade_date from transaction_record where id = ?")
-            .bind(id.get())
-            .fetch_optional(self.pool)
-            .await?
+        let Some(header) = query(
+            "select kind, trade_date, ordering, batch_age, leg from transaction_record where id = ?",
+        )
+        .bind(id.get())
+        .fetch_optional(self.pool)
+        .await?
         else {
             return Ok(None);
         };
@@ -293,7 +304,7 @@ impl<'a> TransactionRepository<'a> {
         .fetch_all(self.pool)
         .await?
         .into_iter()
-        .map(|row| RecordHandle::new(RecordIdentity::new(row.get::<String, _>("record_identity"))))
+        .map(|row| RecordIdentity::new(row.get::<String, _>("record_identity")))
         .collect();
         // `insert` writes every citation a derivation holds, and a derivation holds at least one
         // [DOM-047], so a header without citations was not written by this code; it is refused
@@ -304,7 +315,11 @@ impl<'a> TransactionRepository<'a> {
             value: id.to_string(),
         })?;
 
-        let derivation = Derivation::new(header.get::<NaiveDate, _>("trade_date"), cites);
+        let key = order_key(&header)?;
+        // Each handle carries the transaction's own stored position: the records themselves may
+        // be gone [DOM-099], and `Derivation::stored` reads the key, not the handles, for it.
+        let cites = cites.mapped(|identity| RecordHandle::new(identity, key.position()));
+        let derivation = Derivation::stored(key.trade_date(), cites, key);
         let kind = header.get::<String, _>("kind");
 
         let transaction = match kind.as_str() {
@@ -590,6 +605,39 @@ pub(super) async fn delete_transactions(
         }
     }
     Ok(())
+}
+
+/// The stored rank of a leg: an integer, so that the row comparison the attribution invariants
+/// order by reads a lead before its trailing leg (DEC-090).
+fn leg_rank(leg: Leg) -> i64 {
+    match leg {
+        Leg::Lead => 0,
+        Leg::Trailing => 1,
+    }
+}
+
+/// A transaction's stored place in the canonical order [DOM-011], [DOM-111].
+fn order_key(header: &SqliteRow) -> Result<OrderKey, StorageError> {
+    let ordering = header.get::<i64, _>("ordering");
+    let order = u32::try_from(ordering).map_err(|_| StorageError::CorruptValue {
+        field: "ordering",
+        value: ordering.to_string(),
+    })?;
+    let leg = match header.get::<i64, _>("leg") {
+        0 => Leg::Lead,
+        1 => Leg::Trailing,
+        other => {
+            return Err(StorageError::CorruptValue {
+                field: "leg",
+                value: other.to_string(),
+            });
+        }
+    };
+    Ok(OrderKey::new(
+        header.get::<NaiveDate, _>("trade_date"),
+        RecordPosition::new(Order::new(order), BatchAge::new(header.get("batch_age"))),
+        leg,
+    ))
 }
 
 fn text(row: &SqliteRow, column: &str) -> String {

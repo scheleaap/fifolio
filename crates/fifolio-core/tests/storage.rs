@@ -15,6 +15,7 @@ use fifolio_core::entities::{
 };
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
+use fifolio_core::ordering::{BatchAge, Leg, OrderKey, RecordPosition};
 use fifolio_core::storage::{
     BatchId, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, RecordHandle, StorageError,
     TransactionId,
@@ -596,6 +597,41 @@ async fn a_transaction_derived_from_a_record_an_undo_removed_is_refused() {
     }
 }
 
+/// No handle, and so no position, is issued for a record that was never stored or that an undo
+/// removed: a transaction reconnected to it cannot take a stale place in the order [DOM-011],
+/// [DOM-047].
+#[tokio::test]
+async fn a_record_not_stored_or_undone_yields_no_handle() {
+    let (_db, database) = open().await;
+    let (_, batch) = place(&database).await;
+    assert_eq!(
+        database
+            .source_records()
+            .handle(&cite("never-stored"))
+            .await
+            .expect("read the handle"),
+        None,
+        "a record never stored has no handle"
+    );
+
+    store_record(&database, batch, "undone", &[]).await;
+    database
+        .import_batches()
+        .delete(batch)
+        .await
+        .expect("nothing cites the record, so the undo goes through");
+
+    assert_eq!(
+        database
+            .source_records()
+            .handle(&cite("undone"))
+            .await
+            .expect("read the handle"),
+        None,
+        "a record its batch's undo removed has no handle"
+    );
+}
+
 /// A handle issued by one database names a record the other never stored, and is refused there
 /// on the same rule [DOM-047].
 #[tokio::test]
@@ -1169,6 +1205,51 @@ async fn a_stored_transaction_without_citations_is_refused_on_reading_back() {
             assert_eq!(value, id.to_string());
         }
         other => panic!("a transaction citing nothing must be refused, got {other:?}"),
+    }
+}
+
+/// A transaction's stored place in the canonical order is guarded too: a leg that is neither a
+/// lead nor a trailing leg, and an `order` no file can have, are reported rather than read as some
+/// other position [DOM-011], [TST-004].
+#[tokio::test]
+async fn a_stored_place_this_version_cannot_read_is_reported() {
+    let (db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let id = database
+        .transactions()
+        .insert(
+            &placement,
+            &Split::new(derivation(&database, batch).await).into(),
+        )
+        .await
+        .expect("insert");
+
+    for (statement, field, value) in [
+        (
+            "update transaction_record set leg = 2, ordering = 0",
+            "leg",
+            "2",
+        ),
+        (
+            "update transaction_record set leg = 0, ordering = -1",
+            "ordering",
+            "-1",
+        ),
+    ] {
+        let pool = raw(&db).await;
+        query(statement).execute(&pool).await.expect("edit the row");
+        pool.close().await;
+
+        match database.transactions().find(id).await {
+            Err(StorageError::CorruptValue {
+                field: reported,
+                value: stored,
+            }) => {
+                assert_eq!(reported, field);
+                assert_eq!(stored, value);
+            }
+            other => panic!("an unreadable {field} must be reported, got {other:?}"),
+        }
     }
 }
 
@@ -1830,6 +1911,162 @@ async fn the_migration_marks_earlier_auto_created_securities_as_needing_review()
             ("NL0000009538".to_owned(), true),
             ("US0378331005".to_owned(), false),
         ]
+    );
+}
+
+/// Records stored before the oldest supplier was a fact of its own take their owner as it, which
+/// until a re-import moves ownership is the batch that first supplied them; transactions take the
+/// position of the lowest record they cite [DOM-011], [DOM-111], [TST-004].
+///
+/// The edges: two cited records of one `order` from different batches, where the older batch
+/// wins, while a higher `order` from an older batch still loses; a record no batch owns, whose age stays 0; and a transaction citing only a record no
+/// longer stored, whose position stays (0, 0), as early as any can be.
+#[tokio::test]
+async fn the_migration_fills_the_canonical_order_of_earlier_rows() {
+    let db = TempDb::new();
+    let earlier = tempfile::tempdir().expect("a directory for the earlier migrations");
+    let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for name in [
+        "0001_initial.sql",
+        "0002_fx_rate.sql",
+        "0003_invariants.sql",
+        "0004_no_failed_count.sql",
+        "0005_needs_review.sql",
+    ] {
+        std::fs::copy(migrations.join(name), earlier.path().join(name)).expect("copy a migration");
+    }
+    let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.path().display()))
+        .await
+        .expect("create the database");
+    sqlx::migrate::Migrator::new(earlier.path())
+        .await
+        .expect("read the earlier migrations")
+        .run(&pool)
+        .await
+        .expect("migrate to the schema before the canonical order");
+    for statement in [
+        "insert into account (broker, id) values ('Saxo', '69900/1000000')",
+        "insert into import_batch
+             (id, account_broker, account_id, filename, format, imported_at,
+              derived, pending, non_position)
+         values (3, 'Saxo', '69900/1000000', '2024.xlsx', 'saxo_nl_xlsx',
+                 '2024-05-03T09:00:00Z', 1, 0, 0)",
+        "insert into import_batch
+             (id, account_broker, account_id, filename, format, imported_at,
+              derived, pending, non_position)
+         values (2, 'Saxo', '69900/1000000', '2023.xlsx', 'saxo_nl_xlsx',
+                 '2024-05-03T09:00:00Z', 1, 0, 0)",
+        "insert into import_batch
+             (id, account_broker, account_id, filename, format, imported_at,
+              derived, pending, non_position)
+         values (1, 'Saxo', '69900/1000000', '2022.xlsx', 'saxo_nl_xlsx',
+                 '2024-05-03T09:00:00Z', 1, 0, 0)",
+        "insert into transaction_record (id, kind, trade_date) values (1, 'split', '2024-05-02')",
+        "insert into transaction_record (id, kind, trade_date) values (2, 'split', '2024-05-02')",
+    ] {
+        query(statement)
+            .execute(&pool)
+            .await
+            .expect("write a row under the earlier schema");
+    }
+    // The cash row is cited first and sits later in the file. The older batch's row shares the
+    // position row's `order` and is written after it, so only the batch age picks it. The oldest
+    // batch's row has a higher `order`, so keying on the batch age first would pick it instead.
+    for (ordinal, reference, ordering, batch) in [
+        (0i64, "cash", 7i64, 3i64),
+        (1, "position", 4, 3),
+        (2, "position-older", 4, 2),
+        (3, "later-in-oldest", 5, 1),
+    ] {
+        query(
+            "insert into source_record (identity, ordering, raw, parsed, batch_id)
+             values (?, ?, '', '{}', ?)",
+        )
+        .bind(cite(reference).as_str())
+        .bind(ordering)
+        .bind(batch)
+        .execute(&pool)
+        .await
+        .expect("write a record under the earlier schema");
+        query(
+            "insert into transaction_citation (transaction_id, ordinal, record_identity)
+             values (1, ?, ?)",
+        )
+        .bind(ordinal)
+        .bind(cite(reference).as_str())
+        .execute(&pool)
+        .await
+        .expect("write a citation under the earlier schema");
+    }
+    query("insert into source_record (identity, ordering, raw, parsed) values (?, 2, '', '{}')")
+        .bind(cite("unowned").as_str())
+        .execute(&pool)
+        .await
+        .expect("write a record no batch owns under the earlier schema");
+    query(
+        "insert into transaction_citation (transaction_id, ordinal, record_identity)
+         values (2, 0, ?)",
+    )
+    .bind(cite("gone").as_str())
+    .execute(&pool)
+    .await
+    .expect("write a citation of a record no longer stored under the earlier schema");
+    pool.close().await;
+
+    let database = Database::open(db.path()).await.expect("migrate to current");
+
+    let handle = database
+        .source_records()
+        .handle(&cite("cash"))
+        .await
+        .expect("read the handle")
+        .expect("the record is stored");
+    assert_eq!(
+        handle.position(),
+        RecordPosition::new(Order::new(7), BatchAge::new(3))
+    );
+    let split = database
+        .transactions()
+        .find(TransactionId::new(1))
+        .await
+        .expect("read back")
+        .expect("the transaction is stored");
+    assert_eq!(
+        split.order_key(),
+        OrderKey::new(
+            date(),
+            RecordPosition::new(Order::new(4), BatchAge::new(2)),
+            Leg::Lead
+        ),
+        "the lowest cited record's position, not the first cited, the older batch on a tie, \
+         the order before the batch age"
+    );
+
+    let unowned = database
+        .source_records()
+        .handle(&cite("unowned"))
+        .await
+        .expect("read the handle")
+        .expect("the record is stored");
+    assert_eq!(
+        unowned.position(),
+        RecordPosition::new(Order::new(2), BatchAge::new(0)),
+        "a record no batch owns keeps age 0"
+    );
+    let citing_nothing_stored = database
+        .transactions()
+        .find(TransactionId::new(2))
+        .await
+        .expect("read back")
+        .expect("the transaction is stored");
+    assert_eq!(
+        citing_nothing_stored.order_key(),
+        OrderKey::new(
+            date(),
+            RecordPosition::new(Order::new(0), BatchAge::new(0)),
+            Leg::Lead
+        ),
+        "a transaction whose records are gone keeps the earliest position"
     );
 }
 

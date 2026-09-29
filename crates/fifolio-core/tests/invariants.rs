@@ -17,6 +17,7 @@ use fifolio_core::entities::{
 };
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
+use fifolio_core::ordering::Leg;
 use fifolio_core::storage::{
     Allocation, AttributionId, BatchId, Database, Placement, RecordHandle, StorageError,
     TransactionId,
@@ -176,9 +177,14 @@ fn emitted_transfer_in(on: NaiveDate, emitter: RecordHandle) -> Transaction {
 }
 
 fn record(reference: &str) -> SourceRecord {
+    record_at(reference, 1)
+}
+
+/// A record at `order` in the file it was read from [DOM-040].
+fn record_at(reference: &str, order: u32) -> SourceRecord {
     SourceRecord::new(
         cite(reference),
-        Order::new(1),
+        Order::new(order),
         "\"2024-05-02\",\"BUY\"",
         BTreeMap::new(),
     )
@@ -190,6 +196,20 @@ async fn stored_record(database: &Database, batch: BatchId, reference: &str) -> 
     database
         .source_records()
         .insert(batch, &record(reference))
+        .await
+        .expect("the record a transaction is derived from")
+}
+
+/// As [`stored_record`], at `order` in its file.
+async fn stored_record_at(
+    database: &Database,
+    batch: BatchId,
+    reference: &str,
+    order: u32,
+) -> RecordHandle {
+    database
+        .source_records()
+        .insert(batch, &record_at(reference, order))
         .await
         .expect("the record a transaction is derived from")
 }
@@ -288,6 +308,9 @@ async fn blocked_by(
 /// Closings are attributed in canonical order per account and security: the later closing is
 /// refused while an earlier one is unattributed, whichever of the three closing kinds that
 /// earlier one is [DOM-066], [DOM-081], [TST-004].
+///
+/// The closings of another account and of another security are what make the transaction's
+/// stored relations to account and security the ones read [DOM-013].
 #[tokio::test]
 async fn a_later_closing_is_refused_while_an_earlier_one_is_unattributed() {
     let (_db, database, batch) = open().await;
@@ -395,33 +418,33 @@ async fn a_later_closing_is_refused_while_an_earlier_one_is_unattributed() {
         .expect("another account is not in the same order");
 }
 
-/// Two closings on one trade date are ordered among themselves, by the order they were written
-/// [DOM-066], [TST-004].
+/// Two closings on one trade date are ordered by the `order` of the records they were derived
+/// from, not by the order they were written in [DOM-066], [DOM-111], [TST-004].
 ///
-/// Two sells on one day is the ordinary case, and the tie-break is the stand-in that FIF-076
-/// replaces, which is why it is asserted rather than left to the date comparison.
+/// Two sells on one day is the ordinary case. The one written first carries the higher `order`,
+/// so a comparison that fell back on the row id would name the wrong closing.
 #[tokio::test]
-async fn closings_on_one_trade_date_are_ordered_among_themselves() {
+async fn closings_on_one_trade_date_are_ordered_by_their_records_order() {
     let (_db, database, batch) = open().await;
     let opening = store(
         &database,
         batch,
         isin(),
-        &buy(day(1), stored_record(&database, batch, "b1").await),
-    )
-    .await;
-    let first = store(
-        &database,
-        batch,
-        isin(),
-        &sell(day(2), stored_record(&database, batch, "s1").await),
+        &buy(day(1), stored_record_at(&database, batch, "b1", 0).await),
     )
     .await;
     let second = store(
         &database,
         batch,
         isin(),
-        &sell(day(2), stored_record(&database, batch, "s2").await),
+        &sell(day(2), stored_record_at(&database, batch, "s2", 5).await),
+    )
+    .await;
+    let first = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record_at(&database, batch, "s1", 4).await),
     )
     .await;
     let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
@@ -429,7 +452,7 @@ async fn closings_on_one_trade_date_are_ordered_among_themselves() {
     assert_eq!(
         blocked_by(&database, second, &allocation).await,
         first,
-        "the closing written first on that date is the earlier one"
+        "the closing whose record comes first in the file is the earlier one"
     );
 
     database
@@ -442,6 +465,349 @@ async fn closings_on_one_trade_date_are_ordered_among_themselves() {
         .approve(second, &allocation)
         .await
         .expect("the block is lifted");
+}
+
+/// Two closings of one trade date and one `order`, from different files, are ordered by the age
+/// of the batch that first supplied each record: the older batch first [DOM-066], [DOM-111],
+/// [TST-004].
+///
+/// The newer batch's closing is written first, so the row id disagrees with the batch age.
+#[tokio::test]
+async fn closings_of_one_date_and_order_from_two_files_are_ordered_by_batch_age() {
+    let (_db, database, older) = open().await;
+    let newer = database
+        .import_batches()
+        .insert(&import("2024-q2.xlsx"))
+        .await
+        .expect("the newer import");
+    let opening = store(
+        &database,
+        older,
+        isin(),
+        &buy(day(1), stored_record_at(&database, older, "b1", 0).await),
+    )
+    .await;
+    let from_newer = store(
+        &database,
+        newer,
+        isin(),
+        &sell(day(2), stored_record_at(&database, newer, "s2", 3).await),
+    )
+    .await;
+    let from_older = store(
+        &database,
+        older,
+        isin(),
+        &sell(day(2), stored_record_at(&database, older, "s1", 3).await),
+    )
+    .await;
+    let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
+
+    assert_eq!(
+        blocked_by(&database, from_newer, &allocation).await,
+        from_older,
+        "the older batch's closing is the earlier one"
+    );
+}
+
+/// Approves `earlier` then `later`, and expects deleting the first attribution to be refused
+/// naming the second, which is the DOM-068 half of the order the DOM-066 refusal reads.
+async fn deletion_is_refused_in_order(
+    database: &Database,
+    earlier: TransactionId,
+    later: TransactionId,
+    allocation: &[Allocation],
+) {
+    let first = database
+        .attributions()
+        .approve(earlier, allocation)
+        .await
+        .expect("the earlier closing");
+    let second = database
+        .attributions()
+        .approve(later, allocation)
+        .await
+        .expect("the later closing");
+    match database.attributions().delete(first).await {
+        Err(StorageError::LaterAttributionExists {
+            later: blocking, ..
+        }) => assert_eq!(blocking, second, "the later attribution is named"),
+        other => panic!("deleting the earlier attribution must be refused, got {other:?}"),
+    }
+}
+
+/// On one trade date the record's `order` outranks the batch age: a newer file's earlier row
+/// comes before an older file's later row [DOM-111], [DOM-066], [DOM-068], [TST-004].
+///
+/// Keying on the batch age before the order would name the older batch's closing; the lower
+/// order is also written last, so the row id disagrees too.
+#[tokio::test]
+async fn on_one_trade_date_the_order_outranks_the_batch_age() {
+    let (_db, database, older) = open().await;
+    let newer = database
+        .import_batches()
+        .insert(&import("2024-q2.xlsx"))
+        .await
+        .expect("the newer import");
+    let opening = store(
+        &database,
+        older,
+        isin(),
+        &buy(day(1), stored_record_at(&database, older, "b1", 0).await),
+    )
+    .await;
+    let from_older = store(
+        &database,
+        older,
+        isin(),
+        &sell(day(2), stored_record_at(&database, older, "s1", 5).await),
+    )
+    .await;
+    let from_newer = store(
+        &database,
+        newer,
+        isin(),
+        &sell(day(2), stored_record_at(&database, newer, "s2", 2).await),
+    )
+    .await;
+    let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
+
+    assert_eq!(
+        blocked_by(&database, from_older, &allocation).await,
+        from_newer,
+        "the lower order is the earlier closing, whatever its batch"
+    );
+    deletion_is_refused_in_order(&database, from_newer, from_older, &allocation).await;
+}
+
+/// The trade date outranks the record's `order`: an earlier date's late row comes before a later
+/// date's early row [DOM-111], [DOM-066], [DOM-068], [TST-004].
+///
+/// Keying on the order before the date would name the later date's closing; the earlier date is
+/// also written last, so the row id disagrees too.
+#[tokio::test]
+async fn the_trade_date_outranks_the_order() {
+    let (_db, database, batch) = open().await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record_at(&database, batch, "b1", 0).await),
+    )
+    .await;
+    let later_date = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(3), stored_record_at(&database, batch, "s2", 1).await),
+    )
+    .await;
+    let earlier_date = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record_at(&database, batch, "s1", 9).await),
+    )
+    .await;
+    let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
+
+    assert_eq!(
+        blocked_by(&database, later_date, &allocation).await,
+        earlier_date,
+        "the earlier trade date is the earlier closing, whatever its order"
+    );
+    deletion_is_refused_in_order(&database, earlier_date, later_date, &allocation).await;
+}
+
+/// Re-importing a year into a newer batch leaves every record's canonical order unchanged:
+/// ownership moves to the newest supplier [SRV-052], the batch age the order reads is the oldest
+/// supplier's and does not move (DEC-092) [DOM-111], [DOM-066], [DOM-068], [TST-004].
+///
+/// The move is made in SQL, exactly as FIF-071 will make it, since no repository moves ownership
+/// yet. Transactions store their position when written, so the stored key and the attribution
+/// order hold whether or not the record's age moves; what would flip, were the age read from the
+/// owner, is the reread handle and the closing a re-import derives from it, which would sort
+/// after the one the middle batch supplied.
+#[tokio::test]
+async fn re_importing_a_year_leaves_the_canonical_order_unchanged() {
+    let (db, database, first) = open().await;
+    let middle = database
+        .import_batches()
+        .insert(&import("2024-q2.xlsx"))
+        .await
+        .expect("the middle import");
+    let opening = store(
+        &database,
+        first,
+        isin(),
+        &buy(day(1), stored_record_at(&database, first, "b1", 0).await),
+    )
+    .await;
+    let re_imported_handle = stored_record_at(&database, first, "s1", 3).await;
+    let re_imported = store(
+        &database,
+        first,
+        isin(),
+        &sell(day(2), re_imported_handle.clone()),
+    )
+    .await;
+    let untouched = store(
+        &database,
+        middle,
+        isin(),
+        &sell(day(2), stored_record_at(&database, middle, "s2", 3).await),
+    )
+    .await;
+    let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
+    let earlier = database
+        .attributions()
+        .approve(re_imported, &allocation)
+        .await
+        .expect("the earlier closing");
+    let later = database
+        .attributions()
+        .approve(untouched, &allocation)
+        .await
+        .expect("the later closing");
+
+    let newest = database
+        .import_batches()
+        .insert(&import("2024.xlsx"))
+        .await
+        .expect("the re-import");
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}", db.path().display()))
+        .await
+        .expect("open the database file directly");
+    sqlx::query("update source_record set batch_id = ? where batch_id = ?")
+        .bind(newest.get())
+        .bind(first.get())
+        .execute(&pool)
+        .await
+        .expect("move ownership to the re-import");
+    pool.close().await;
+
+    let reread = database
+        .source_records()
+        .handle(re_imported_handle.identity())
+        .await
+        .expect("read the handle")
+        .expect("the record is still stored");
+    assert_eq!(
+        reread.position(),
+        re_imported_handle.position(),
+        "the record's position survives the ownership move"
+    );
+    let untouched_key = database
+        .transactions()
+        .find(untouched)
+        .await
+        .expect("read back")
+        .expect("the middle batch's closing is stored")
+        .order_key();
+    assert!(
+        sell(day(2), reread).order_key() < untouched_key,
+        "a closing the re-import derives from the reread record still sorts first"
+    );
+    let stored = database
+        .transactions()
+        .find(re_imported)
+        .await
+        .expect("read back")
+        .expect("the transaction is still stored");
+    assert_eq!(
+        stored.order_key().position(),
+        re_imported_handle.position(),
+        "the transaction keeps the position it was derived at"
+    );
+    match database.attributions().delete(earlier).await {
+        Err(StorageError::LaterAttributionExists {
+            later: blocking, ..
+        }) => assert_eq!(blocking, later, "the order between the two closings stands"),
+        other => panic!("deleting out of order must still be refused, got {other:?}"),
+    }
+}
+
+/// A decomposition's `transfer_out` sorts immediately after its `sell`: both derived from the same
+/// record, the trailing leg is later than the sell and earlier than the next record of the day
+/// (DEC-090) [DOM-011], [DOM-066], [TST-004].
+///
+/// The legs are written in reverse, and the next record's closing before both, so neither the row
+/// id nor the kind can be what orders them. Deleting the sell leg's attribution is then refused
+/// while the `transfer_out` leg's stands, which is the same order read by DOM-068's query.
+#[tokio::test]
+async fn a_trailing_leg_sorts_immediately_after_its_sell() {
+    let (_db, database, batch) = open().await;
+    let opening = store(
+        &database,
+        batch,
+        isin(),
+        &buy(day(1), stored_record_at(&database, batch, "b1", 0).await),
+    )
+    .await;
+    let merger_row = stored_record_at(&database, batch, "m1", 2).await;
+    let next = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record_at(&database, batch, "s2", 3).await),
+    )
+    .await;
+    let transfer_leg: Transaction = TransferOut::new(
+        Derivation::new(day(2), vec1![merger_row.clone()]).trailing(),
+        Quantity::new(dec!(10.00000000)),
+        money(dec!(0.00)),
+        conversion(),
+    )
+    .into();
+    let transfer_leg = store(&database, batch, isin(), &transfer_leg).await;
+    let sell_leg = store(&database, batch, isin(), &sell(day(2), merger_row)).await;
+    let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
+
+    assert_eq!(
+        database
+            .transactions()
+            .find(transfer_leg)
+            .await
+            .expect("read back")
+            .expect("stored")
+            .order_key()
+            .leg(),
+        Leg::Trailing,
+        "the leg round-trips"
+    );
+    assert_eq!(blocked_by(&database, next, &allocation).await, sell_leg);
+    assert_eq!(
+        blocked_by(&database, transfer_leg, &allocation).await,
+        sell_leg,
+        "the sell comes before the transfer_out it shares its record with"
+    );
+    let sell_attribution = database
+        .attributions()
+        .approve(sell_leg, &allocation)
+        .await
+        .expect("the sell leg");
+    assert_eq!(
+        blocked_by(&database, next, &allocation).await,
+        transfer_leg,
+        "the transfer_out comes before the next record of the day"
+    );
+
+    // [DOM-068]: the transfer_out leg has the lower row id, so only its leg makes it later.
+    let transfer_attribution = database
+        .attributions()
+        .approve(transfer_leg, &allocation)
+        .await
+        .expect("the transfer_out leg");
+    match database.attributions().delete(sell_attribution).await {
+        Err(StorageError::LaterAttributionExists { attribution, later }) => {
+            assert_eq!(attribution, sell_attribution);
+            assert_eq!(
+                later, transfer_attribution,
+                "the trailing leg is the later one"
+            );
+        }
+        other => panic!("deleting the sell leg's attribution must be refused, got {other:?}"),
+    }
 }
 
 /// What was approved is what is stored: the allocations read back carrying their own openings and
@@ -781,10 +1147,13 @@ async fn an_attribution_with_a_later_one_is_not_deleted() {
     );
 }
 
-/// Two attributions whose closings share a trade date are ordered among themselves, by the order
-/// the closings were written [DOM-068], [TST-004].
+/// Two attributions whose closings share a trade date are ordered by the `order` of the records
+/// the closings were derived from [DOM-068], [DOM-111], [TST-004].
+///
+/// The second closing is written first, so a comparison falling back on the row id would let the
+/// first attribution be deleted.
 #[tokio::test]
-async fn attributions_of_one_trade_date_are_ordered_among_themselves() {
+async fn attributions_of_one_trade_date_are_ordered_by_their_records_order() {
     let (_db, database, batch) = open().await;
     let opening = store(
         &database,
@@ -795,18 +1164,18 @@ async fn attributions_of_one_trade_date_are_ordered_among_themselves() {
     .await;
     let allocation = [Allocation::new(opening, Quantity::new(dec!(10.00000000)))];
 
-    let first_closing = store(
-        &database,
-        batch,
-        isin(),
-        &sell(day(2), stored_record(&database, batch, "s1").await),
-    )
-    .await;
     let second_closing = store(
         &database,
         batch,
         isin(),
-        &sell(day(2), stored_record(&database, batch, "s2").await),
+        &sell(day(2), stored_record_at(&database, batch, "s2", 6).await),
+    )
+    .await;
+    let first_closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record_at(&database, batch, "s1", 5).await),
     )
     .await;
     let first = database
@@ -1253,12 +1622,13 @@ async fn a_batch_whose_transaction_is_attributed_is_not_deleted() {
 }
 
 /// An import undo is refused while a record the batch's `transfer_out` emitted is attributed
-/// [DOM-072], [DOM-094], [DOM-069], [TST-004].
+/// [DOM-072], [DOM-094], [DOM-069], [DEC-086], [TST-004].
 ///
-/// An emitted record belongs to no batch [DOM-090], so the up-front check over the transactions
-/// the batch derived never sees it; it is reached only through the group its `transfer_out`
-/// heads. That guard is all that stands between an undo and the destruction of an opening the
-/// user approved an attribution against, so it is asserted on its own.
+/// An emitted record belongs to no batch [DOM-090], but it is derived from the `transfer_out`'s
+/// records, which it cites [DEC-079], and DOM-072 is read through the records a transaction was
+/// derived from. So the up-front check names it, as it would any transaction of the batch's own.
+/// That refusal is all that stands between an undo and the destruction of an opening the user
+/// approved an attribution against, so it is asserted on its own.
 #[tokio::test]
 async fn a_batch_whose_emitted_record_is_attributed_is_not_deleted() {
     let (_db, database, batch) = open().await;
@@ -1281,8 +1651,8 @@ async fn a_batch_whose_emitted_record_is_attributed_is_not_deleted() {
         .await
         .expect("record the emission");
 
-    // The closing belongs to a second import, so nothing the batch under test derived is
-    // attributed and the up-front check passes: only the emitted record holds the batch.
+    // The closing belongs to a second import, so no transaction placed on the batch under test is
+    // attributed: only the emitted record holds the batch.
     let second = database
         .import_batches()
         .insert(&import("2025.xlsx"))
@@ -1305,15 +1675,16 @@ async fn a_batch_whose_emitted_record_is_attributed_is_not_deleted() {
         .expect("attribute the emitted record as an opening");
 
     match database.import_batches().delete(batch).await {
-        Err(StorageError::TransactionAttributed {
-            transaction,
-            attribution: named,
+        Err(StorageError::BatchTransactionAttributed {
+            batch: refused,
+            transactions,
         }) => {
+            assert_eq!(refused, batch);
             assert_eq!(
-                transaction, emitted,
+                transactions,
+                vec![emitted],
                 "the emitted record the undo would have taken is named"
             );
-            assert_eq!(named, attribution);
         }
         other => panic!("undoing the import must be refused, got {other:?}"),
     }
@@ -1357,6 +1728,63 @@ async fn a_batch_whose_emitted_record_is_attributed_is_not_deleted() {
         None,
         "the permitted undo takes the emitted record with its transfer_out"
     );
+}
+
+/// DOM-072 answers for every batch whose records a transaction was derived from, not only for the
+/// batch that derived it [DOM-072], [DOM-013], [TST-004].
+///
+/// The sell is placed on the second import and derived from a record of each; attributed, it holds
+/// the first import too, and the refusal is DOM-072's, naming it as attributed.
+#[tokio::test]
+async fn a_batch_one_of_whose_records_an_attributed_transaction_was_derived_from_is_not_deleted() {
+    let (_db, database, batch) = open().await;
+    let second = database
+        .import_batches()
+        .insert(&import("2025.xlsx"))
+        .await
+        .expect("the second import");
+    let opening = store(
+        &database,
+        second,
+        isin(),
+        &buy(day(1), stored_record_at(&database, second, "b1", 0).await),
+    )
+    .await;
+    let across_files: Transaction = Sell::new(
+        Derivation::new(
+            day(2),
+            vec1![
+                stored_record_at(&database, second, "s1-cash", 1).await,
+                stored_record_at(&database, batch, "s1-position", 7).await,
+            ],
+        ),
+        Quantity::new(dec!(10.00000000)),
+        price(dec!(12.000000)),
+        money(dec!(120.00)),
+        money(dec!(8.00)),
+        conversion(),
+    )
+    .into();
+    let closing = store(&database, second, isin(), &across_files).await;
+    database
+        .attributions()
+        .approve(
+            closing,
+            &[Allocation::new(opening, Quantity::new(dec!(10.00000000)))],
+        )
+        .await
+        .expect("approve");
+
+    match database.import_batches().delete(batch).await {
+        Err(StorageError::BatchTransactionAttributed {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, batch);
+            assert_eq!(transactions, vec![closing]);
+        }
+        other => panic!("deleting the first import must be refused, got {other:?}"),
+    }
 }
 
 /// An import batch may only be deleted if none of the records it owns is cited by a transaction
@@ -1429,6 +1857,82 @@ async fn a_batch_whose_records_a_foreign_transaction_cites_is_not_deleted() {
         database.transactions().find(own).await.expect("read back"),
         None,
         "the batch's own transaction goes with it"
+    );
+}
+
+/// A transaction a batch derived answers to that batch even when it cites none of the records the
+/// batch owns: undoing the batch takes it, and while it is attributed the undo is refused naming
+/// it [DOM-072], [DOM-119], [DOM-013], [TST-004].
+///
+/// Read through the citations alone, such a transaction would be neither derived from the batch's
+/// records nor a foreign citer of them, and the undo would reach the batch row with a placement
+/// still pointing at it.
+#[tokio::test]
+async fn a_batch_answers_for_a_transaction_it_derived_from_another_imports_records() {
+    let (_db, database, batch) = open().await;
+    let r1 = stored_record(&database, batch, "r1").await;
+    let second = database
+        .import_batches()
+        .insert(&import("2025.xlsx"))
+        .await
+        .expect("the second import");
+    let opening = store(&database, second, isin(), &buy(day(1), r1)).await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
+    let attribution = database
+        .attributions()
+        .approve(
+            closing,
+            &[Allocation::new(opening, Quantity::new(dec!(10.00000000)))],
+        )
+        .await
+        .expect("approve");
+
+    match database.import_batches().delete(second).await {
+        Err(StorageError::BatchTransactionAttributed {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, second);
+            assert_eq!(transactions, vec![opening]);
+        }
+        other => {
+            panic!("deleting the batch that derived the opening must be refused, got {other:?}")
+        }
+    }
+
+    database
+        .attributions()
+        .delete(attribution)
+        .await
+        .expect("delete the attribution");
+    database
+        .import_batches()
+        .delete(second)
+        .await
+        .expect("the batch's own transaction no longer holds it");
+    assert_eq!(
+        database
+            .transactions()
+            .find(opening)
+            .await
+            .expect("read back"),
+        None,
+        "the undo takes the transaction the batch derived"
+    );
+    assert!(
+        database
+            .source_records()
+            .handle(&cite("r1"))
+            .await
+            .expect("read the handle")
+            .is_some(),
+        "the record another import owns stays"
     );
 }
 

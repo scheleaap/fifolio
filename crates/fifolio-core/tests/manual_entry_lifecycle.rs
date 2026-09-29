@@ -24,7 +24,7 @@ use fifolio_core::import::{
     StoredAs, completion, import,
 };
 use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
-use fifolio_core::ordering::{FileDirection, RowOrderingKey};
+use fifolio_core::ordering::{BatchAge, FileDirection, RowOrderingKey};
 use fifolio_core::storage::{BatchId, Database, Placement, RecordHandle, TransactionId};
 use fifolio_core::transaction::{Buy, BuyOrigin, Derivation, Transaction};
 use fifolio_core::valuation::{Conversion, Valued};
@@ -287,9 +287,8 @@ fn entry_for(records: &[SourceRecord]) -> ManualEntry {
 /// leaves another import's records and transactions standing, and leaves every manual entry
 /// standing [DOM-108], [TST-004].
 ///
-/// "Derived from them" is read through the batch that derived a transaction, which is the
-/// relation that is stored: a transaction's relation to the individual records it consumes is
-/// DOM-013 and undecided.
+/// "Derived from them" is read through the records a transaction cites [DOM-013], together with
+/// the batch its placement names as the one that derived it.
 ///
 /// The second import is what makes "**its** source records" an assertion: with one batch present
 /// an undo that deleted every record and every transaction in the account would pass.
@@ -527,6 +526,86 @@ async fn an_undo_followed_by_a_re_import_returns_the_account_where_it_was() {
     }
 
     assert_eq!(after, before, "the account is where it was before the undo");
+}
+
+/// With a newer import standing, an undo followed by a re-import restores the same transactions
+/// except their batch age, which is the re-import's: the undone batch was the records' oldest
+/// supplier and is gone (DEC-096, provisional) [TST-010], [DOM-111], [DEC-092], [TST-004].
+///
+/// The newer import's purchase ties with this file's on trade date and `order`, so the age is
+/// what orders them, and the order between them turns.
+#[tokio::test]
+async fn an_undo_and_re_import_beside_a_newer_import_takes_the_re_imports_age() {
+    let (_db, database) = open().await;
+    let (batch, imported, issued) = import_file(&database).await;
+    let (other_batch, other, other_issued) = import_bytes(&database, "other.csv", OTHER_FILE).await;
+    let answered = pending(&imported);
+    let entry = entry_for(&answered);
+    database
+        .manual_entries()
+        .insert(&entry)
+        .await
+        .expect("the manual entry");
+    let before = [
+        purchase(handles(&issued, &derived(&imported))),
+        stock_dividend(&entry, handles(&issued, &answered)),
+    ];
+    for transaction in &before {
+        store(&database, batch, transaction).await;
+    }
+    let tied = purchase(handles(&other_issued, &derived(&other)));
+    store(&database, other_batch, &tied).await;
+    assert!(before[0].order_key() < tied.order_key());
+
+    database
+        .import_batches()
+        .delete(batch)
+        .await
+        .expect("undo the import");
+    let (reimported_batch, reimported, reissued) = import_file(&database).await;
+    assert!(reimported_batch.get() > other_batch.get());
+
+    let mut rebuilt = vec![purchase(handles(&reissued, &derived(&reimported)))];
+    let mut after = Vec::new();
+    for reconnection in database
+        .manual_entries()
+        .reconnected(reimported_batch)
+        .await
+        .expect("list what the import reconnected")
+    {
+        rebuilt.push(stock_dividend(reconnection.entry(), reconnection.handles()));
+    }
+    for transaction in &rebuilt {
+        let id = store(&database, reimported_batch, transaction).await;
+        after.push(
+            database
+                .transactions()
+                .find(id)
+                .await
+                .expect("read back")
+                .expect("the restored transaction is stored"),
+        );
+    }
+    assert_eq!(after, rebuilt, "what was derived is what is stored");
+
+    assert_eq!(after.len(), before.len());
+    for (was, is) in before.iter().zip(&after) {
+        assert_eq!(is.cites(), was.cites(), "the same records");
+        let (was, is) = (was.order_key(), is.order_key());
+        assert_eq!(is.trade_date(), was.trade_date());
+        assert_eq!(is.position().order(), was.position().order());
+        assert_eq!(is.leg(), was.leg());
+        assert_eq!(was.position().batch_age(), BatchAge::new(batch.get()));
+        assert_eq!(
+            is.position().batch_age(),
+            BatchAge::new(reimported_batch.get()),
+            "the re-import is now the oldest supplier"
+        );
+    }
+    assert!(
+        tied.order_key() < after[0].order_key(),
+        "the newer import's tied purchase now comes first"
+    );
 }
 
 /// An entry that names a record the re-import did not bring back stays waiting, and names only

@@ -655,3 +655,35 @@ year. [DEC-092, DOM-111, SRV-021, SRV-052]
 gain and has no proceeds, so it is not a disposal; its parcels are reported where the emitted
 `transfer_in` records are later consumed, carrying their inherited cost and buy fee. [DEC-093,
 DOM-078, DOM-112]
+
+**DEC-094 — Provisional: the records a transaction's `order` is taken from, across files.** Until
+consumption is told apart from citation (DOM-101), a transaction's `order` and batch age come from
+every record it was derived from, which for every transaction built so far are the records it
+consumes. When those records come from different files, the lowest is the one with the lowest
+`order`, then the oldest batch, as though all shared the transaction's trade date, which is the
+comparison DOM-111 makes after the date. Alternative not taken: comparing each record by its own
+trade date first. A record stores no trade date of its own, and the transaction has one date, so
+that alternative needs a field nothing defines. [DEC-094, DOM-011, DOM-111]
+
+**DEC-095 — Provisional: batch age is the order batches were stored in.** The age DOM-111 and
+DEC-092 compare is the batch's id, which SQLite assigns in import order. A reused id never
+collides: only the newest batch's id is reused, and a record whose oldest supplier is the newest
+batch has no other supplier and is deleted with it. Where two transactions still share trade date,
+position and leg, which only two transactions derived from the same lowest record can, storage
+falls back on the order they were written in, so the comparison stays total. Alternative not
+taken: the batch's `imported_at`, which the caller supplies and which can tie or run backwards
+against import order. [DEC-095, DOM-111, DEC-092]
+
+**DEC-096 — Provisional: "exactly" in undo-then-re-import excludes batch age.** TST-010's undo
+followed by a re-import restores exactly the transactions that existed before: the same kinds,
+figures, trade dates, citations, `order` and leg. It does not restore the batch age. The records
+the undo removed had the undone batch as their oldest supplier, and that batch no longer exists,
+so the re-import is now their oldest supplier and its age is the one DOM-111 and DEC-092 read. If
+a newer batch still stands, a re-derived transaction that ties with one of that batch's on trade
+date and `order` now sorts after it. No attributed figure moves without notice: DOM-072 refuses
+the undo while any transaction derived from the batch is attributed, and an attributed closing of
+the newer batch that allocated from the undone batch's openings holds those openings too.
+Alternative not taken: keeping the undone batch's age for the records it supplied, so that a
+re-import takes it back. That needs a record of deleted batches and their ages that nothing
+defines, and it contradicts DEC-092's "oldest batch that supplied the record" once that batch is
+gone. [DEC-096, TST-010, DOM-111, DEC-092, DEC-095]

@@ -37,10 +37,17 @@
 //! next key when either side is absent would not be a total order, because `5` and `3` would each
 //! tie with a missing value while differing from each other.
 //!
-//! # What this does not do
+//! # Across files: the canonical order
 //!
-//! Comparing rows across files. `order` is scoped to the file it came from, and the canonical
-//! order over an account is a wider key; that is FIF-076's, and is undecided.
+//! `order` is scoped to the file it came from, so comparing records of different files takes a
+//! wider key: **(trade date, `order`, batch age)** [DOM-111], where the batch age is that of the
+//! **oldest** batch that supplied the record (DEC-092, provisional). A later import supplying the
+//! same record again never changes that age, so a re-import reorders nothing.
+//!
+//! A transaction sorts by the same key [DOM-011]: its trade date, then the [`RecordPosition`] of
+//! the lowest record it was derived from (DEC-090, DEC-094, provisional), then its [`Leg`], which
+//! is what lets a decomposition's `transfer_out` sort immediately after its `sell`. That is the
+//! [`OrderKey`].
 
 use chrono::NaiveDate;
 
@@ -114,6 +121,104 @@ pub fn assign_orders(rows: &[RowOrderingKey], direction: FileDirection) -> Vec<O
             Order::new(u32::try_from(order).expect("a file cannot hold more than u32::MAX rows"));
     }
     orders
+}
+
+/// The age of the oldest import batch that supplied a record, smaller being older [DOM-111].
+///
+/// Fixed when the record is first stored and never moved (DEC-092, provisional): ownership passes
+/// to the newest supplier on a re-import, age does not. It is the batch's insertion sequence in
+/// the database, not the timestamp the batch records (DEC-095, provisional).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BatchAge(i64);
+
+impl BatchAge {
+    #[must_use]
+    pub fn new(sequence: i64) -> Self {
+        Self(sequence)
+    }
+
+    #[must_use]
+    pub fn get(self) -> i64 {
+        self.0
+    }
+}
+
+/// Where a record sits among the records of one trade date across files: its `order`, then its
+/// batch age [DOM-111].
+///
+/// The derived `Ord` compares the fields in declaration order, which is the precedence DOM-111
+/// states; reordering the fields reorders every holding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RecordPosition {
+    order: Order,
+    batch_age: BatchAge,
+}
+
+impl RecordPosition {
+    #[must_use]
+    pub fn new(order: Order, batch_age: BatchAge) -> Self {
+        Self { order, batch_age }
+    }
+
+    #[must_use]
+    pub fn order(self) -> Order {
+        self.order
+    }
+
+    #[must_use]
+    pub fn batch_age(self) -> BatchAge {
+        self.batch_age
+    }
+}
+
+/// Which of the transactions sharing a record position comes first (DEC-090, provisional).
+///
+/// Of a decomposition's two legs the `sell` leads and the `transfer_out` trails. Both are derived
+/// from the same records and so share trade date and position; nothing else can sit between two
+/// keys that differ only here, which is what "immediately after" requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Leg {
+    /// Every transaction that is not the trailing leg of a decomposition.
+    Lead,
+    /// A decomposition's `transfer_out`, sorting immediately after its `sell`.
+    Trailing,
+}
+
+/// A transaction's place in the canonical order of its account and security [DOM-011],
+/// [DOM-111].
+///
+/// The derived `Ord` compares trade date, then record position, then leg, in declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OrderKey {
+    trade_date: NaiveDate,
+    position: RecordPosition,
+    leg: Leg,
+}
+
+impl OrderKey {
+    #[must_use]
+    pub fn new(trade_date: NaiveDate, position: RecordPosition, leg: Leg) -> Self {
+        Self {
+            trade_date,
+            position,
+            leg,
+        }
+    }
+
+    #[must_use]
+    pub fn trade_date(self) -> NaiveDate {
+        self.trade_date
+    }
+
+    #[must_use]
+    pub fn position(self) -> RecordPosition {
+        self.position
+    }
+
+    #[must_use]
+    pub fn leg(self) -> Leg {
+        self.leg
+    }
 }
 
 #[cfg(test)]
@@ -247,5 +352,50 @@ mod tests {
             orders(&[row(1, vec![None])], FileDirection::NewestFirst),
             vec![0]
         );
+    }
+
+    fn position(order: u32, batch: i64) -> RecordPosition {
+        RecordPosition::new(Order::new(order), BatchAge::new(batch))
+    }
+
+    fn key(day: u32, order: u32, batch: i64, leg: Leg) -> OrderKey {
+        OrderKey::new(date(day), position(order, batch), leg)
+    }
+
+    /// The canonical order is trade date, then `order`, then batch age [DOM-111]: each key
+    /// decides only what the ones before it leave equal.
+    #[test]
+    fn the_canonical_order_is_trade_date_then_order_then_batch_age() {
+        // An older batch loses to a lower order, and a lower order to an earlier date.
+        assert!(key(1, 9, 9, Leg::Lead) < key(2, 0, 0, Leg::Lead));
+        assert!(key(1, 0, 9, Leg::Lead) < key(1, 1, 0, Leg::Lead));
+        // Two records of one date and one `order`, from different files: the older batch first.
+        assert!(key(1, 3, 1, Leg::Lead) < key(1, 3, 2, Leg::Lead));
+    }
+
+    /// A trailing leg sorts immediately after the lead it shares a position with, and before
+    /// anything the position or the date puts later (DEC-090) [DOM-011].
+    #[test]
+    fn a_trailing_leg_sorts_immediately_after_its_lead() {
+        let sell = key(1, 3, 1, Leg::Lead);
+        let transfer_out = key(1, 3, 1, Leg::Trailing);
+
+        assert!(sell < transfer_out);
+        for next in [
+            key(1, 3, 2, Leg::Lead),
+            key(1, 4, 0, Leg::Lead),
+            key(2, 0, 0, Leg::Lead),
+        ] {
+            assert!(
+                transfer_out < next,
+                "nothing later sits before it: {next:?}"
+            );
+        }
+        for earlier in [key(1, 3, 0, Leg::Trailing), key(1, 2, 9, Leg::Trailing)] {
+            assert!(
+                earlier < sell,
+                "the leg never outranks the position: {earlier:?}"
+            );
+        }
     }
 }

@@ -8,13 +8,15 @@
 //! # The order two of the invariants read
 //!
 //! DOM-066 and DOM-068 are stated over "earlier" and "later" closings of the same account and
-//! security, which is the canonical order — (trade date, `order`, batch age) [DOM-111]. That
-//! order is undecided (OQ-007), and the `order` a transaction takes from the record it consumes
-//! is undecided too (OQ-001), so neither is available to read. The stand-in used here is
-//! **(trade date, row id)**: it agrees with the canonical order on the trade date, which is the
-//! key both invariants are about, and settles a tie by the order the rows were written rather
-//! than by a rule this item is not entitled to invent. When FIF-076 lands, this comparison is the
-//! one place that changes.
+//! security, which is the canonical order: (trade date, `order`, batch age) [DOM-111], with the
+//! `order` and batch age a transaction took from the lowest record it was derived from [DOM-011]
+//! and then its leg (DEC-090). All of it is stored on the transaction when it is written, so the
+//! comparison is one row comparison in SQL. Batch age is the oldest supplier's, which a re-import
+//! does not move (DEC-092), so re-importing a year never reorders what is already attributed.
+//!
+//! The row id closes the comparison as a backstop only (DEC-095): records of one file have
+//! distinct orders and each batch its own age, so it decides nothing but two transactions derived
+//! from the same lowest record in the same leg, which keeps both comparisons strict and total.
 
 use chrono::NaiveDate;
 use sqlx::sqlite::SqliteRow;
@@ -87,6 +89,9 @@ struct Position {
     isin: String,
     kind: String,
     trade_date: NaiveDate,
+    ordering: i64,
+    batch_age: i64,
+    leg: i64,
     id: i64,
 }
 
@@ -97,7 +102,8 @@ impl Position {
         transaction: TransactionId,
     ) -> Result<Self, StorageError> {
         let row = query(
-            "select p.account_broker, p.account_id, p.security_isin, t.kind, t.trade_date
+            "select p.account_broker, p.account_id, p.security_isin, t.kind, t.trade_date,
+                    t.ordering, t.batch_age, t.leg
              from transaction_placement p
                   join transaction_record t on t.id = p.transaction_id
              where p.transaction_id = ?",
@@ -113,6 +119,9 @@ impl Position {
             isin: row.get("security_isin"),
             kind: row.get("kind"),
             trade_date: row.get("trade_date"),
+            ordering: row.get("ordering"),
+            batch_age: row.get("batch_age"),
+            leg: row.get("leg"),
             id: transaction.get(),
         })
     }
@@ -292,9 +301,9 @@ async fn earlier_unattributed_closing(
                     left join attribution a on a.closing_transaction_id = t.id
                where p.account_broker = ? and p.account_id = ? and p.security_isin = ?
                  and t.kind in ('sell', 'expiration', 'transfer_out')
-                 and (t.trade_date < ? or (t.trade_date = ? and t.id < ?))
+                 and (t.trade_date, t.ordering, t.batch_age, t.leg, t.id) < (?, ?, ?, ?, ?)
                  and a.id is null
-               order by t.trade_date, t.id
+               order by t.trade_date, t.ordering, t.batch_age, t.leg, t.id
                limit 1";
 
     Ok(position
@@ -319,8 +328,8 @@ async fn later_attribution(
                     join transaction_placement p on p.transaction_id = t.id
                where p.account_broker = ? and p.account_id = ? and p.security_isin = ?
                  and t.kind in ('sell', 'expiration', 'transfer_out')
-                 and (t.trade_date > ? or (t.trade_date = ? and t.id > ?))
-               order by t.trade_date, t.id
+                 and (t.trade_date, t.ordering, t.batch_age, t.leg, t.id) > (?, ?, ?, ?, ?)
+               order by t.trade_date, t.ordering, t.batch_age, t.leg, t.id
                limit 1";
 
     Ok(position
@@ -331,7 +340,7 @@ async fn later_attribution(
 }
 
 impl Position {
-    /// Binds the six parameters both comparisons above take, in their one order.
+    /// Binds the eight parameters both comparisons above take, in their one order.
     fn bind_to<'q>(
         &'q self,
         query: sqlx::query::Query<'q, Sqlite, SqliteArguments>,
@@ -341,7 +350,9 @@ impl Position {
             .bind(&self.account)
             .bind(&self.isin)
             .bind(self.trade_date)
-            .bind(self.trade_date)
+            .bind(self.ordering)
+            .bind(self.batch_age)
+            .bind(self.leg)
             .bind(self.id)
     }
 }

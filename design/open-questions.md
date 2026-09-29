@@ -79,4 +79,5 @@ built on it.
 * **OQ-004** (exact rationals against 8-decimal allocations) → DEC-091
 * **OQ-007** (ownership moving under re-import) → DEC-092
 * **OQ-011** (a `transfer_out` in the acquisition report) → DEC-093
-
+* **FIF-076** (a transaction's `order` from records of several files; batch age) → DEC-094, DEC-095
+* **FIF-076** (whether undo-then-re-import restores batch age as well) → DEC-096

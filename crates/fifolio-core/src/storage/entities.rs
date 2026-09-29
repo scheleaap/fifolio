@@ -10,6 +10,7 @@ use crate::entities::{
     Account, ImportBatch, ImportCounts, Isin, Order, Quotation, RecordIdentity, Security,
     SecurityType, SourceRecord,
 };
+use crate::ordering::{BatchAge, RecordPosition};
 use crate::storage::codec::{
     quotation, quotation_code, security_type, security_type_code, source_format, source_format_code,
 };
@@ -414,6 +415,10 @@ impl<'a> SourceRecordRepository<'a> {
     /// Stores `record` as owned by `batch`, which is what "the records it owns" means when a
     /// deletion of that batch is refused [DOM-119] or carried out.
     ///
+    /// `batch` is also recorded as the first batch to supply the record, as a fact of its own:
+    /// the canonical order reads that age, and it stays put when ownership moves (DEC-092)
+    /// [DOM-111].
+    ///
     /// The handle it answers with is what a transaction is then derived from [DOM-047]: a record
     /// that was not written yields none.
     pub async fn insert(
@@ -428,17 +433,44 @@ impl<'a> SourceRecordRepository<'a> {
             })?;
 
         query(
-            "insert into source_record (identity, ordering, raw, parsed, batch_id)
-             values (?, ?, ?, ?, ?)",
+            "insert into source_record (identity, ordering, raw, parsed, batch_id, first_batch_id)
+             values (?, ?, ?, ?, ?, ?)",
         )
         .bind(record.identity().as_str())
         .bind(i64::from(record.order().get()))
         .bind(record.raw())
         .bind(parsed)
         .bind(batch.get())
+        .bind(batch.get())
         .execute(self.pool)
         .await?;
-        Ok(RecordHandle::new(record.identity().clone()))
+        Ok(RecordHandle::new(
+            record.identity().clone(),
+            RecordPosition::new(record.order(), BatchAge::new(batch.get())),
+        ))
+    }
+
+    /// A handle on the record `identity` names, if it is stored now, carrying the position the
+    /// canonical order reads [DOM-111]: its `order` and the age of the oldest batch that supplied
+    /// it.
+    pub async fn handle(
+        &self,
+        identity: &RecordIdentity,
+    ) -> Result<Option<RecordHandle>, StorageError> {
+        query("select ordering, first_batch_id from source_record where identity = ?")
+            .bind(identity.as_str())
+            .fetch_optional(self.pool)
+            .await?
+            .map(|row| {
+                Ok(RecordHandle::new(
+                    identity.clone(),
+                    RecordPosition::new(
+                        Order::new(count("ordering", row.get::<i64, _>("ordering"))?),
+                        BatchAge::new(row.get("first_batch_id")),
+                    ),
+                ))
+            })
+            .transpose()
     }
 
     pub async fn find(
@@ -502,10 +534,10 @@ impl<'a> ImportBatchRepository<'a> {
         Ok(BatchId::new(inserted.last_insert_rowid()))
     }
 
-    /// Deletes a batch with the records it owns and the transactions it derived, refusing it in
-    /// two cases.
+    /// Deletes a batch with the records it owns, the transactions derived from them and the
+    /// transactions it derived, refusing it in two cases.
     ///
-    /// Refused while any transaction the batch derived participates in an attribution [DOM-072],
+    /// Refused while any of those transactions participates in an attribution [DOM-072],
     /// and while any record it owns is cited by a transaction it did not derive, the refusal
     /// naming those transactions so that the user can see what holds the batch in place
     /// [DOM-119].
@@ -577,15 +609,30 @@ impl<'a> ImportBatchRepository<'a> {
     }
 }
 
-/// The transactions `batch` derived [DOM-072].
+/// The transactions derived from a record `batch` owns [DOM-072], read through the relation from
+/// a transaction to the records it was derived from [DOM-013], [DOM-016].
+///
+/// Record by record rather than by the batch a transaction names as its deriver, so a
+/// transaction derived from the records of several batches answers to each of them, and an
+/// emitted `transfer_in`, which cites its `transfer_out`'s records (DEC-079), answers to the batch
+/// owning those (DEC-086).
+///
+/// A transaction placed on `batch` answers to it as well, whatever records it cites: the batch
+/// derived it, so DOM-119 does not count it as foreign, and leaving it behind would leave a
+/// placement pointing at a deleted batch.
 async fn derived_transactions(
     connection: &mut SqliteConnection,
     batch: BatchId,
 ) -> Result<Vec<TransactionId>, StorageError> {
     Ok(query(
-        "select transaction_id from transaction_placement
-         where derived_by_batch = ? order by transaction_id",
+        "select c.transaction_id from transaction_citation c
+              join source_record r on r.identity = c.record_identity
+         where r.batch_id = ?
+         union
+         select transaction_id from transaction_placement where derived_by_batch = ?
+         order by transaction_id",
     )
+    .bind(batch.get())
     .bind(batch.get())
     .fetch_all(connection)
     .await?

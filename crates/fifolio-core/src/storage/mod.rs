@@ -11,10 +11,12 @@
 //! [`Transaction`] variants with their [`Valued`] pairs and [`Conversion`], and [`ManualEntry`]
 //! with its [`Supplied`] shapes, plus the ECB daily reference rates the imports resolve against
 //! [ARC-015], the approved attributions with their allocations, and the relations the invariants
-//! below read: a transaction's account and security and the import that derived it, a source
-//! record's owning batch, and the `transfer_in` a `transfer_out` emitted. No column exists for a
-//! rule that is still undecided — which source record a transaction *consumes* is DOM-013 and
-//! FIF-076's — because a guessed column is a schema that must be unpicked rather than extended.
+//! below read: a transaction's account and security [DOM-013] and the import that derived it, the
+//! source records it was derived from [DOM-013], [DOM-016], its place in the canonical order
+//! [DOM-011], a source record's owning batch and the oldest batch that supplied it [DOM-111], and
+//! the `transfer_in` a `transfer_out` emitted. No column exists for a rule that is still
+//! undecided — which of its records a transaction *consumes* rather than cites is DOM-101 and
+//! FIF-058's — because a guessed column is a schema that must be unpicked rather than extended.
 //!
 //! [`Account`]: crate::entities::Account
 //! [`Security`]: crate::entities::Security
@@ -65,6 +67,7 @@ use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 
 use crate::entities::RecordIdentity;
+use crate::ordering::RecordPosition;
 
 pub use attributions::{Allocation, Attribution, AttributionId, AttributionRepository};
 pub use entities::{
@@ -87,9 +90,11 @@ static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 /// Storage's word that a source record exists: the only thing a
 /// [`Derivation`](crate::transaction::Derivation) is made from [DOM-047].
 ///
-/// Its constructor is private to this module, so outside it a handle is obtained in exactly two
-/// ways: [`SourceRecordRepository::insert`] issues one for the record it has just written, and
-/// [`ReconnectedEntry::handles`] one for each record an import brought back. A record identity
+/// Its constructor is private to this module, so outside it a handle is obtained in exactly three
+/// ways: [`SourceRecordRepository::insert`] issues one for the record it has just written,
+/// [`SourceRecordRepository::handle`] one for a record it holds now, and
+/// [`ReconnectedEntry::handles`] one for each record an import brought back. Each carries the
+/// record's [`RecordPosition`], which is what a transaction's `order` is taken from [DOM-011]. A record identity
 /// alone is not enough, since [`crate::identity::identify`] computes one for a row that was
 /// never read; a handle is what makes "derived from source records" a fact of the types rather
 /// than a check someone must remember.
@@ -104,28 +109,39 @@ static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 /// [`TransactionRepository::insert`] refuses a citation of a record not stored at that moment,
 /// which closes both gaps where the transaction is created [DOM-047].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordHandle(RecordIdentity);
+pub struct RecordHandle {
+    identity: RecordIdentity,
+    position: RecordPosition,
+}
 
 impl RecordHandle {
-    fn new(identity: RecordIdentity) -> Self {
-        Self(identity)
+    fn new(identity: RecordIdentity, position: RecordPosition) -> Self {
+        Self { identity, position }
     }
 
     /// A unit test outside storage has no database to be issued a handle by; this compiles into
     /// the crate's own test build and nowhere else.
     #[cfg(test)]
-    pub(crate) fn for_test(identity: RecordIdentity) -> Self {
-        Self(identity)
+    pub(crate) fn for_test(identity: RecordIdentity, position: RecordPosition) -> Self {
+        Self { identity, position }
     }
 
     #[must_use]
     pub fn identity(&self) -> &RecordIdentity {
-        &self.0
+        &self.identity
+    }
+
+    /// Where the record sits in the canonical order [DOM-111], as storage holds it: both halves
+    /// are fixed when the record is first stored, so the position a handle carries cannot go
+    /// stale [DOM-008], DEC-092.
+    #[must_use]
+    pub fn position(&self) -> RecordPosition {
+        self.position
     }
 
     #[must_use]
     pub fn into_identity(self) -> RecordIdentity {
-        self.0
+        self.identity
     }
 }
 

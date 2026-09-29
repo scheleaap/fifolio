@@ -189,7 +189,13 @@ impl<'a> ManualEntryRepository<'a> {
                 .ok()
                 .and_then(|records| Vec1::try_from_vec(records).ok())
             {
-                reconnected.push(ReconnectedEntry { id, entry, records });
+                let handles = self.handles(&records).await?;
+                reconnected.push(ReconnectedEntry {
+                    id,
+                    entry,
+                    records,
+                    handles,
+                });
             }
         }
         Ok(reconnected)
@@ -220,6 +226,28 @@ impl<'a> ManualEntryRepository<'a> {
             .iter()
             .map(|row| ManualEntryId::new(row.get("id")))
             .collect())
+    }
+
+    /// A handle on each of `records`, carrying the position a transaction derived from them takes
+    /// its `order` from [DOM-011]. They were read just now, so each is stored; one gone since is
+    /// a record an undo removed in between, which a stale handle would hide until insert.
+    async fn handles(
+        &self,
+        records: &Vec1<SourceRecord>,
+    ) -> Result<Vec1<RecordHandle>, StorageError> {
+        let repository = SourceRecordRepository::new(self.pool);
+        let mut handles = Vec::with_capacity(records.len());
+        for record in records {
+            handles.push(repository.handle(record.identity()).await?.ok_or_else(|| {
+                StorageError::UnknownRecord {
+                    identity: record.identity().as_str().to_owned(),
+                }
+            })?);
+        }
+        Vec1::try_from_vec(handles).map_err(|_| StorageError::CorruptValue {
+            field: "manual_entry_answer",
+            value: String::new(),
+        })
     }
 
     /// The records `entry` names as they stand: the record where the identity is present, the
@@ -278,6 +306,7 @@ pub struct ReconnectedEntry {
     id: ManualEntryId,
     entry: ManualEntry,
     records: Vec1<SourceRecord>,
+    handles: Vec1<RecordHandle>,
 }
 
 impl ReconnectedEntry {
@@ -303,8 +332,7 @@ impl ReconnectedEntry {
     /// [DOM-108].
     #[must_use]
     pub fn handles(&self) -> Vec1<RecordHandle> {
-        self.records
-            .mapped_ref(|record| RecordHandle::new(record.identity().clone()))
+        self.handles.clone()
     }
 }
 
