@@ -76,6 +76,7 @@ pub use entities::{
 };
 pub use manual_entries::{ManualEntryId, ManualEntryRepository, ReconnectedEntry, WaitingEntry};
 pub use rates::{CachedRates, RateRepository};
+pub(crate) use transactions::StoredOpening;
 pub use transactions::{Placement, TransactionId, TransactionRepository};
 
 /// The database file used when nothing names another [ARC-013].

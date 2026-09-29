@@ -810,3 +810,28 @@ opening, rather than store a parcel of no units that carries a cost, whose effec
 divides by zero. It arises only below 1e-7 of a unit. Alternative not taken: storing it, as DEC-101
 lets a money share go negative; a negative quantity is not a parcel at all. [DEC-106, DOM-115,
 DEC-083, DEC-101]
+
+**DEC-107 — Provisional: the acquisition report's year filter selects rows and changes no figure.**
+DOM-079 says the year filter selects the openings with at least one allocation in that year, and
+DOM-076 gives each opening "its realized gain/loss", without saying whether a filtered row's gain
+is that year's or the opening's whole. A selected row shows every gain the opening has realized,
+in any year, and its quantities as of today (DOM-118), exactly as with no filter; an allocation to
+a `transfer_out` counts toward selection, being an allocation (DOM-093), though it realizes
+nothing. This matches the income tax overview, whose filters select rows and never change a
+figure, and keeps a row the same wherever it appears. The year's own figures are the income tax
+overview's, and the per-disposal lines (FIF-082) show each allocation's year. Alternative not
+taken: summing only the gains of that year's allocations, which makes one opening's gain differ
+between reports and leaves the remaining quantity, which is as of today, out of step with it.
+[DEC-107, DOM-076, DOM-079, DOM-118]
+
+**DEC-108 — Provisional: an emitted `transfer_in` names its parent until the parent is
+deleted, and names none after.** DOM-096 has an emitted `transfer_in` name the opening it inherited
+from; storage now records that opening on the emission link. The parcel is frozen while the
+`transfer_out`'s attribution exists (DOM-069), but once that attribution is deleted the parcel can
+be deleted while the emitted record stays. The link is then set to null, and the record names no
+opening, as an imported one does. Existing emissions are backfilled from the one allocated opening
+of their `transfer_out` holding their own place (DEC-105), and left null where none or several do.
+Alternatives not taken: refusing the parcel's deletion while an emitted record descends from it,
+which adds a deletion rule DOM-069 and DOM-094 do not state; and keeping the id, which SQLite may
+reuse for another transaction, so the report could name the wrong purchase. [DEC-108, DOM-096,
+DOM-069, DOM-094, DEC-105]

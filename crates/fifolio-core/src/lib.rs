@@ -2,6 +2,7 @@
 //!
 //! No HTTP and no terminal: see `design/architecture.md` [ARC-002].
 
+pub mod acquisitions;
 pub mod allocation;
 pub mod attribution;
 pub mod decimal;

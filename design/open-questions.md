@@ -91,3 +91,5 @@ built on it.
 * **FIF-015** (which layer holds DOM-054's "proposal written unchanged") → DEC-104
 * **FIF-063** (an emitted record's trade date, conversion, placement; reaching back) → DEC-105
 * **FIF-063** (an emitted record of zero or fewer units) → DEC-106
+* **FIF-031** (whether a year-filtered row's gain is that year's or the opening's whole) → DEC-107
+* **FIF-031** (what an emitted record names once its parent opening is deleted) → DEC-108

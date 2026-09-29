@@ -2345,3 +2345,81 @@ async fn a_security_a_transaction_is_placed_on_is_not_deleted() {
         "{refused:?}"
     );
 }
+
+/// An emission stored before the inherited opening was a fact of its own takes the one allocated
+/// opening of its `transfer_out` that holds its own place, which an emitted record takes from its
+/// parcel (DEC-105) [DOM-096], [TST-004]. The edges guess nothing: an emission whose place two
+/// allocated openings share (DEC-095), and one whose `transfer_out` has no attribution any more,
+/// both stay null.
+#[tokio::test]
+async fn the_migration_fills_the_inherited_opening_of_earlier_emissions() {
+    let db = TempDb::new();
+    let earlier = tempfile::tempdir().expect("a directory for the earlier migrations");
+    let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for name in [
+        "0001_initial.sql",
+        "0002_fx_rate.sql",
+        "0003_invariants.sql",
+        "0004_no_failed_count.sql",
+        "0005_needs_review.sql",
+        "0006_canonical_order.sql",
+        "0007_split_ratio.sql",
+        "0008_transfer_out_target.sql",
+    ] {
+        std::fs::copy(migrations.join(name), earlier.path().join(name)).expect("copy a migration");
+    }
+    let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.path().display()))
+        .await
+        .expect("create the database");
+    sqlx::migrate::Migrator::new(earlier.path())
+        .await
+        .expect("read the earlier migrations")
+        .run(&pool)
+        .await
+        .expect("migrate to the schema before the inherited opening");
+    // Only what the backfill reads: headers with their places, attributions, allocations and the
+    // emission links. Transfer 10 consumed openings 1 and 2 and emitted 11 at 2's place; transfer
+    // 20 consumed 3 and 4, which share a place, and emitted 21 there; transfer 30 emitted 31 and
+    // its attribution is gone.
+    for statement in [
+        "insert into transaction_record (id, kind, trade_date, ordering, batch_age, leg) values
+             (1, 'buy', '2024-01-01', 0, 1, 0),
+             (2, 'buy', '2024-01-02', 0, 1, 0),
+             (3, 'buy', '2024-01-03', 4, 1, 0),
+             (4, 'buy', '2024-01-03', 4, 1, 0),
+             (10, 'transfer_out', '2024-02-01', 0, 1, 0),
+             (11, 'transfer_in', '2024-01-02', 0, 1, 0),
+             (20, 'transfer_out', '2024-02-02', 0, 1, 0),
+             (21, 'transfer_in', '2024-01-03', 4, 1, 0),
+             (30, 'transfer_out', '2024-02-03', 0, 1, 0),
+             (31, 'transfer_in', '2024-01-01', 0, 1, 0)",
+        "insert into attribution (id, closing_transaction_id) values (1, 10), (2, 20)",
+        "insert into attribution_allocation
+             (attribution_id, ordinal, opening_transaction_id, quantity) values
+             (1, 0, 1, '1'), (1, 1, 2, '1'), (2, 0, 3, '1'), (2, 1, 4, '1')",
+        "insert into emitted_transfer_in (transfer_in_id, transfer_out_id) values
+             (11, 10), (21, 20), (31, 30)",
+    ] {
+        query(statement)
+            .execute(&pool)
+            .await
+            .expect("insert under the earlier schema");
+    }
+    pool.close().await;
+
+    let database = Database::open(db.path()).await.expect("migrate to current");
+    database.close().await;
+
+    let pool = raw(&db).await;
+    let inherited: Vec<(i64, Option<i64>)> = query(
+        "select transfer_in_id, inherited_opening_id from emitted_transfer_in
+         order by transfer_in_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read the links")
+    .iter()
+    .map(|row| (row.get("transfer_in_id"), row.get("inherited_opening_id")))
+    .collect();
+    assert_eq!(inherited, vec![(11, Some(2)), (21, None), (31, None)]);
+}

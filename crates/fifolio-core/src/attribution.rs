@@ -173,25 +173,27 @@ pub async fn approve(
     };
 
     let id = AttributionRepository::approve_in(&mut tx, closing, allocations).await?;
-    for (target, transfer_in) in emitted {
+    for (parcel, target, transfer_in) in emitted {
         let placement = Placement::emitted(closing_party.account.clone(), target);
         let transfer_in =
             TransactionRepository::insert_in(&mut tx, &placement, &transfer_in.into()).await?;
-        TransactionRepository::record_emission_in(&mut tx, closing, transfer_in).await?;
+        TransactionRepository::record_emission_in(&mut tx, closing, transfer_in, Some(parcel))
+            .await?;
     }
     tx.commit().await.map_err(StorageError::from)?;
     Ok(id)
 }
 
-/// The `transfer_in` records approving `transfer_out` emits, each with the security it is placed
-/// in, derived from each consumed parcel's own opening side [DOM-090], [DOM-106].
+/// The `transfer_in` records approving `transfer_out` emits, each with the opening whose parcel it
+/// carries [DOM-096] and the security it is placed in, derived from each consumed parcel's own
+/// opening side [DOM-090], [DOM-106].
 async fn emission(
     connection: &mut SqliteConnection,
     closing: &Party,
     transfer_out: &TransferOut,
     openings: &[(Party, Quantity)],
     parcels: &[Opening],
-) -> Result<Vec<(Isin, TransferIn)>, AttributionError> {
+) -> Result<Vec<(TransactionId, Isin, TransferIn)>, AttributionError> {
     let splits =
         TransactionRepository::splits_in(&mut *connection, &closing.account, &closing.security)
             .await?;
@@ -249,7 +251,7 @@ async fn emission(
             source,
         })?
         .into_iter()
-        .map(|(_, transfer_in)| (target.clone(), transfer_in))
+        .map(|(parcel, transfer_in)| (parcel, target.clone(), transfer_in))
         .collect())
 }
 

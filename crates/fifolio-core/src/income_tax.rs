@@ -194,7 +194,13 @@ pub async fn overview(database: &Database, filter: &Filter) -> Result<Vec<Row>, 
             .is_none_or(|year| disposal.trade_date.year() == year)
     }) {
         let figures = match disposal.attribution {
-            Some(attribution) => Some(figures(&mut tx, &disposal, attribution).await?),
+            Some(attribution) => Some(
+                figures(&mut tx, &disposal, attribution)
+                    .await?
+                    .into_iter()
+                    .map(|(_, figures)| figures)
+                    .collect(),
+            ),
             None => None,
         };
         contributions.push(Contribution {
@@ -230,13 +236,14 @@ fn tabulate(contributions: impl IntoIterator<Item = Contribution>) -> Vec<Row> {
         .collect()
 }
 
-/// The figures of each allocation of an attributed disposal, both sides derived as
-/// [`crate::attribution`] derives the basis a `transfer_out` carries.
-async fn figures(
+/// The figures of each allocation of an attributed disposal, keyed by the opening allocated,
+/// both sides derived as [`crate::attribution`] derives the basis a `transfer_out` carries.
+/// Shared with the acquisition report, so the two reports sum the same per-allocation figures.
+pub(crate) async fn figures(
     connection: &mut SqliteConnection,
     disposal: &Disposal,
     attribution: AttributionId,
-) -> Result<Vec<Figures>, ReportError> {
+) -> Result<Vec<(TransactionId, Figures)>, ReportError> {
     let underivable = |source| ReportError::Underivable {
         closing: disposal.closing,
         source,
@@ -297,7 +304,7 @@ async fn figures(
             opening_side
                 .iter()
                 .find_map(|(of, shares)| {
-                    (*of == opening).then_some(Figures::new(*shares, closing_side))
+                    (*of == opening).then_some((opening, Figures::new(*shares, closing_side)))
                 })
                 .ok_or_else(|| underivable(unmeasurable.clone()))
         })

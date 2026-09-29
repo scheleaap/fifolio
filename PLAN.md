@@ -1124,11 +1124,13 @@ Revision 75: named next to build; FIF-015 is done and none of DOM-001, DOM-073, 
 Done in revision 75: `income_tax.rs` `overview` sums, per year of disposal and per account, the EUR shares and gains `allocation.rs` derives for every allocation of every attributed disposal, with the outstanding count as a column of the same row (DOM-117, DOM-121); a `transfer_out` adds neither figures nor a count (DOM-095); the account and tax year filters select rows without changing a figure (DOM-073). No new decisions. Integration tests in `crates/fifolio-core/tests/income_tax.rs`.
 
 ## FIF-031 Acquisition report
-Status: todo
+Status: done
 Requirements: DOM-076, DOM-077, DOM-079, DOM-096, DOM-118
 Depends on: FIF-015, FIF-061
 Acceptance: every opening transaction listed with date, account, security, effective quantity, remaining quantity, effective unit price, fees and realized gain/loss, the two quantity columns both **as of today** so they share one scale and compare to a broker statement; a `transfer_in` appears as an opening in its own right and names the opening it inherited from; the year filter selects openings having at least one allocation in that year; the account filter applies as in FIF-030.
 Notes: Renamed from "Buy report" in revision 2; the report covers both opening variants and the CLI token is `acquisitions` (DEC-034). Blocked in revision 2 on DOM-076 and DOM-078; DOM-076 is now decided and DOM-078, the per-disposal detail lines, moved to FIF-082 in revision 3. What is left is the opening-level table.
+Revision 76: named next to build; FIF-015 and FIF-061 are done and none of DOM-076, DOM-077, DOM-079, DOM-096, DOM-118 is on a `Blocks:` line. A domain-level report over storage, no HTTP (FIF-040 exposes it), alongside `income_tax.rs`. Effective quantity and unit price come from `effective_quantity.rs` as of the latest position in canonical order (DOM-118); remaining quantity is `unattributed_quantity` on the same 8-decimal view; realized gain/loss sums `allocation.rs`'s derived per-allocation gains, never pooled. DOM-096 needs a link storage does not yet hold: `emitted_transfer_in` (migration `0003`) records only the `transfer_out`, while `transfer.rs` `emit` already returns each record paired with its parcel's opening id; store that id (new migration) in `attribution.rs`'s approval transaction and name it in the report. An **imported** `transfer_in` (from another broker) inherits from no opening in the system and names none. A `transfer_out` is not an opening and has no row; the year filter keys on allocation years only (DOM-079), the account filter as in FIF-030. The per-disposal lines are FIF-082's.
+Done in revision 76: `acquisitions.rs` lists every opening, `buy` or `transfer_in`, in canonical order with date, account, security, effective and remaining quantity as of today (DOM-118), effective unit price, fees and realized gain/loss summed from `allocation.rs`'s per-allocation gains (DOM-076, DOM-077); an emitted `transfer_in` names its inherited opening, stored by migration `0009` on `emitted_transfer_in` and written in `attribution.rs`'s approval transaction (DOM-096); the account and year filters select rows without changing a figure (DOM-079). Provisional decisions DEC-107 (year filter) and DEC-108 (link nulled when the parent is deleted). Integration tests in `crates/fifolio-core/tests/acquisitions.rs`.
 
 ## FIF-082 Acquisition report: per-disposal detail lines
 Status: todo
@@ -1375,6 +1377,24 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 76.** A status reconciliation. `design/` did not change in `859a4c7`; no requirement id
+added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines (DOM-092, DOM-114,
+IMP-SAXO-013, ARC-008, DOM-038, DOM-104, IMP-SAXO-026), and the 5 items carrying one are exactly the
+5 `blocked`.
+
+* **Completed: FIF-030**, committed as `859a4c7` (`income_tax.rs`). Its item text already recorded
+  this; only the history lagged.
+* No item added, split, retired, blocked or unblocked. 101 items: **55 `done`, 41 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-031, 082, 035, 085, 070, 090, 036, 071, 086, 037, 072, 038, 087,
+  073, 039, 040, 041 remain `todo`; none carries a blocked requirement, so each waits only on
+  dependencies inside that list.
+* Found while naming FIF-031: DOM-096's inherited-opening link is not stored (`emitted_transfer_in`
+  holds only the `transfer_out`); recorded on FIF-031 as part of its work, not a spec change.
+* **Next to build: FIF-031.** Its dependencies FIF-015 and FIF-061 are `done`. Also ready in
+  scope: FIF-035, FIF-041.
 
 **Revision 75.** A status reconciliation. `design/` changed in `9ba55b3` only by adding the
 provisional DEC-105 and DEC-106 and listing them under "Provisionally answered"; no requirement id

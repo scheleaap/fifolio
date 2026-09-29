@@ -415,6 +415,42 @@ impl<'a> TransactionRepository<'a> {
         }))
     }
 
+    /// Every opening of `account`, or of every account when `None`, in canonical order, with the
+    /// pair it belongs to [DOM-013] and, for an emitted `transfer_in`, the opening it inherited
+    /// from [DOM-096].
+    pub(crate) async fn openings_in(
+        connection: &mut SqliteConnection,
+        account: Option<&Account>,
+    ) -> Result<Vec<StoredOpening>, StorageError> {
+        Ok(query(
+            "select t.id, p.account_broker, p.account_id, p.security_isin,
+                    e.inherited_opening_id
+             from transaction_record t
+                  join transaction_placement p on p.transaction_id = t.id
+                  left join emitted_transfer_in e on e.transfer_in_id = t.id
+             where t.kind in ('buy', 'transfer_in')
+               and (?1 is null or (p.account_broker = ?1 and p.account_id = ?2))
+             order by t.trade_date, t.ordering, t.batch_age, t.leg, t.id",
+        )
+        .bind(account.map(Account::broker))
+        .bind(account.map(Account::id))
+        .fetch_all(connection)
+        .await?
+        .iter()
+        .map(|row| StoredOpening {
+            id: TransactionId::new(row.get("id")),
+            account: Account::new(
+                row.get::<String, _>("account_broker"),
+                row.get::<String, _>("account_id"),
+            ),
+            security: Isin::new(row.get::<String, _>("security_isin")),
+            inherited_from: row
+                .get::<Option<i64>, _>("inherited_opening_id")
+                .map(TransactionId::new),
+        })
+        .collect())
+    }
+
     pub async fn find(&self, id: TransactionId) -> Result<Option<Transaction>, StorageError> {
         Self::find_in(&mut *self.pool.acquire().await?, id).await
     }
@@ -596,22 +632,27 @@ impl<'a> TransactionRepository<'a> {
     /// Both kinds are checked first: the link makes its `transfer_in` deletable only through its
     /// emitter, so recording it over a pair of any other kinds would freeze a transaction behind
     /// one it has nothing to do with. Check and write share one SQLite transaction.
+    ///
+    /// The link recorded here names no inherited opening [DOM-096]; approval, which knows the
+    /// parcel each record carries, records it through [`Self::record_emission_in`].
     pub async fn record_emission(
         &self,
         transfer_out: TransactionId,
         transfer_in: TransactionId,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
-        Self::record_emission_in(&mut tx, transfer_out, transfer_in).await?;
+        Self::record_emission_in(&mut tx, transfer_out, transfer_in, None).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    /// [`Self::record_emission`] inside the caller's SQLite transaction, which commits it.
+    /// [`Self::record_emission`] inside the caller's SQLite transaction, which commits it,
+    /// together with `inherited`, the opening whose parcel the `transfer_in` carries [DOM-096].
     pub(crate) async fn record_emission_in(
         tx: &mut SqliteConnection,
         transfer_out: TransactionId,
         transfer_in: TransactionId,
+        inherited: Option<TransactionId>,
     ) -> Result<(), StorageError> {
         for (transaction, expected) in [(transfer_out, TRANSFER_OUT), (transfer_in, TRANSFER_IN)] {
             let kind = kind_of(&mut *tx, transaction).await?;
@@ -624,11 +665,15 @@ impl<'a> TransactionRepository<'a> {
             }
         }
 
-        query("insert into emitted_transfer_in (transfer_in_id, transfer_out_id) values (?, ?)")
-            .bind(transfer_in.get())
-            .bind(transfer_out.get())
-            .execute(&mut *tx)
-            .await?;
+        query(
+            "insert into emitted_transfer_in (transfer_in_id, transfer_out_id, inherited_opening_id)
+             values (?, ?, ?)",
+        )
+        .bind(transfer_in.get())
+        .bind(transfer_out.get())
+        .bind(inherited.map(TransactionId::get))
+        .execute(&mut *tx)
+        .await?;
 
         Ok(())
     }
@@ -672,6 +717,17 @@ impl<'a> TransactionRepository<'a> {
                 value: id.get().to_string(),
             })
     }
+}
+
+/// A stored opening as a report reads it: where it belongs, and what it descends from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredOpening {
+    pub(crate) id: TransactionId,
+    pub(crate) account: Account,
+    pub(crate) security: Isin,
+    /// The opening an emitted `transfer_in` carries the parcel of; `None` for a buy, an imported
+    /// `transfer_in`, or one whose parent has since been deleted (DEC-108, provisional).
+    pub(crate) inherited_from: Option<TransactionId>,
 }
 
 /// The stored kind of `transaction`, or a refusal if no such transaction is stored.
