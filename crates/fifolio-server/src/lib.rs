@@ -15,6 +15,7 @@ pub mod accounts;
 pub mod imports;
 pub mod problem;
 pub mod securities;
+pub mod source_records;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -97,6 +98,7 @@ fn api() -> OpenApiRouter<AppState> {
         .merge(accounts::routes())
         .merge(imports::routes())
         .merge(securities::routes())
+        .merge(source_records::routes())
 }
 
 /// The server's OpenAPI document [SRV-005].

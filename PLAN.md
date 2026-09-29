@@ -1242,10 +1242,12 @@ Revision 82: named next to build. Its one dependency, FIF-036, is `done`, and SR
 Done in revision 82's build: migration `0010_record_supplier.sql` adds `record_supplier`, every batch that supplied a record, filled from each stored record's owner (provisional DEC-117). An import now supplies each stated record through `SourceRecordRepository::supply`/`supply_in`: it stores the record if absent, records the batch as a supplier and makes it the owner, leaving `first_batch_id` as stored; `suppliers` lists a record's batches oldest first. Transactions keep the batch that derived them (provisional DEC-116), so SRV-022 refuses deleting a re-import while the replaced batch's transactions cite its records. `re_importing_a_year_leaves_the_canonical_order_unchanged` now goes through `supply`. Tests in `crates/fifolio-core/tests/import_service.rs`, `invariants.rs` and `storage.rs`. The core removal still deletes every record the batch owns, re-supplied or not, and still removes the transactions a batch derived though it owns none of their records; FIF-086 replaces it.
 
 ## FIF-037 Source record endpoints
-Status: todo
+Status: done
 Requirements: SRV-023, SRV-024, SRV-027
 Depends on: FIF-035
 Acceptance: source records readable and listable with filters on account, batch, security and consumed-or-pending; the pending filter is the completion queue; there is no update endpoint, and a mistake is corrected by deleting the derived transaction and the manual entry.
+Notes: Revision 84: named next to build. Its one dependency, FIF-035, is `done`, and none of SRV-023, SRV-024, SRV-027 is on a `Blocks:` line. `SourceRecordRepository` in `fifolio-core/src/storage/entities.rs` has `insert`, `supply`, `suppliers`, `handle` and `find` but no list and no filtered query; the server has no source record routes (`accounts.rs`, `securities.rs`, `imports.rs` only). What remains: a list query filtering on account, batch (the owning batch, SRV-052), security and consumed-or-pending (DOM-045 classification), the read and list routes, no PUT/PATCH route (SRV-027, asserted over the routing table as FIF-087 will for SRV-034), and HTTP tests in `http_surface.rs`.
+Done in revision 84's build: `GET /source-records` lists records filtered on account, owning batch, security (an ISIN among the parsed values) and `status=consumed|pending`, all given filters holding, in import then file order; `status=pending` is the completion queue (SRV-023, SRV-024). A record is consumed while a stored transaction cites it (provisional DEC-119); an account, batch or security not stored is a 404 problem (provisional DEC-120). `GET /source-records/{identity}` reads one record, 404 when absent. No route edits a record, asserted over the routing table (SRV-027). `SourceRecordRepository` gains a filtered list (`RecordFilter`, `RecordStatus`, `StoredSourceRecord`). Tests in `crates/fifolio-core/tests/storage.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-072 Manual entry endpoints
 Status: todo
@@ -1391,6 +1393,23 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 84.** A status reconciliation after an interrupted session. `design/` changed since
+revision 83 only by adding the provisional DEC-118 (a transaction an undone batch derived from
+records that stay is kept and re-placed on the newest batch owning a record it cites), listed under
+"Provisionally answered" against FIF-086; no requirement id added or removed. `open-questions.md`
+names the same **7** ids on `Blocks:` lines, and the 5 items carrying one are exactly the 5
+`blocked`.
+
+* **Completed: FIF-086** (`f546f37`). Its item text already recorded this. DEC-118 invalidates no
+  completed work.
+* No item added, split, retired, blocked or unblocked. 101 items: **64 `done`, 32 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-037, 072, 038, 087, 073, 039, 040, 041 remain `todo`; none carries
+  a blocked requirement, so each waits only on dependencies inside that list.
+* **Next to build: FIF-037.** Its one dependency FIF-035 is `done`. FIF-041 is also ready but comes
+  later in document order.
 
 **Revision 83.** A status reconciliation after an interrupted session. `design/` changed since
 revision 82 only by adding the provisional DEC-116 (a re-import moves a record's ownership, not a
@@ -2854,6 +2873,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 84: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `f546f37`. One hundred and one items: 64 `done`, 32 `todo`, 5 `blocked`.
 
 Revision 83: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `17b3bb5`. One hundred and one items: 63 `done`, 33 `todo`, 5 `blocked`.

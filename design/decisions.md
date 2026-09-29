@@ -952,3 +952,34 @@ transactions with the batch, as the removal before FIF-086 did, which deletes wh
 ("exactly the source records it owns and anything derived from them"); and clearing the deriver,
 which makes them foreign to every batch, so the owning batch could never be undone.
 [DEC-118, SRV-021, SRV-022, DEC-116, DEC-092, DOM-119]
+
+**DEC-119 — Provisional: a source record is consumed while a stored transaction cites it, and
+pending otherwise.** SRV-023 filters on "consumed or pending", and a record's field is "consumed
+or not" (DOM-013's relation, DOM-070), but storage keeps no consumption relation yet: DOM-101's
+split of consuming from citing is FIF-058's, still to build. Until then a record counts as
+consumed exactly when some transaction cites it, which DEC-094 already takes as the consumed set
+for every transaction built so far; a decomposition's `transfer_out` and an emitted `transfer_in`
+cite only records their `sell` or `transfer_out` also cites, so no record is consumed under this
+reading that DOM-101 would leave pending. Pending is the complement, so the two filters partition
+the records. Because no transaction is derived on import yet, a row classified as derived
+automatically stays in the pending list until one is. Alternatives not taken: storing the
+import's classification (DOM-044, DOM-045) and listing only rows classified pending, which hides
+a derived-automatically row that no transaction answers, so the queue would read complete while a
+record affecting holdings is unaccounted for; and a third state for such a row, which "consumed
+or not" leaves no room for. [DEC-119, SRV-023, SRV-024, DOM-045, DOM-070, DOM-101, DEC-094]
+
+**DEC-120 — Provisional: what the source record filters match, and a filter naming nothing
+stored.** SRV-023 names the filters but not their reach. The account is the account of the batch
+owning the record, which every supplier shares since the identity is scoped to it (DOM-024). The
+batch is the owning batch, not every supplier, so a batch a re-import superseded lists nothing,
+as SRV-052 has it own nothing, and the list by batch is what that batch's deletion would remove
+(SRV-021). A record is of a security when one of its parsed values is that ISIN, the rule SRV-009's
+deletion refusal already reads, since a record stores no security column; a corporate action's
+record is therefore listed under its target as well. Given filters must all hold. An account,
+batch or security that is not stored is refused as not found rather than answered with an empty
+list, so a mistyped filter cannot pass for an empty completion queue. The list runs in import
+order, then file order, a record having no trade date of its own. Alternatives not taken: every
+supplying batch, which lists a superseded import's records under a batch whose undo would not
+touch them; a stored security column, which the importer does not fill for records already
+stored; and an empty list for an unknown filter, which reads as "nothing pending".
+[DEC-120, SRV-023, SRV-024, SRV-052, SRV-009, SRV-021, DOM-024]

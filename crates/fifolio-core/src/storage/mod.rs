@@ -72,7 +72,8 @@ use crate::ordering::RecordPosition;
 pub(crate) use attributions::Disposal;
 pub use attributions::{Allocation, Attribution, AttributionId, AttributionRepository};
 pub use entities::{
-    AccountRepository, BatchId, ImportBatchRepository, SecurityRepository, SourceRecordRepository,
+    AccountRepository, BatchId, ImportBatchRepository, RecordFilter, RecordStatus,
+    SecurityRepository, SourceRecordRepository, StoredSourceRecord,
 };
 pub use manual_entries::{ManualEntryId, ManualEntryRepository, ReconnectedEntry, WaitingEntry};
 pub use rates::{CachedRates, RateRepository};

@@ -388,7 +388,7 @@ impl<'a> SecurityRepository<'a> {
         .fetch_all(&mut *tx)
         .await?
         .iter()
-        .filter(|row| Isin::new(row.get::<String, _>("value")) == *isin)
+        .filter(|row| names(&row.get::<String, _>("value"), isin))
         .map(|row| row.get::<String, _>("identity"))
         .collect::<BTreeSet<_>>()
         .len();
@@ -433,9 +433,76 @@ fn security_from_row(row: &SqliteRow) -> Result<Security, StorageError> {
     ))
 }
 
+/// Whether a parsed value names `isin`: when `Isin::new` makes it the ISIN, since that is how
+/// the importer created the security from it. One rule for the deletion refusal [SRV-009] and
+/// the list filter [SRV-023], so the records holding a security are the records listed under it
+/// (DEC-120, provisional).
+fn names(value: &str, isin: &Isin) -> bool {
+    Isin::new(value) == *isin
+}
+
 fn unknown_security(isin: &Isin) -> StorageError {
     StorageError::UnknownSecurity {
         isin: isin.as_str().to_owned(),
+    }
+}
+
+/// Whether a source record has been answered by a transaction or still waits in the completion
+/// queue [DOM-045], [SRV-024].
+///
+/// Consumed while any stored transaction cites the record, pending otherwise: storage keeps no
+/// consumption relation apart from citation until DOM-101 (FIF-058), and every citation stored so
+/// far is of a record its transaction, or the `sell` or `transfer_out` it goes with, consumes
+/// (DEC-119, provisional).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordStatus {
+    Pending,
+    Consumed,
+}
+
+/// Which source records a list answers [SRV-023]. A filter left `None` admits every record; the
+/// ones given must all hold. What each reaches is DEC-120 (provisional).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecordFilter {
+    /// The account of the batch owning the record.
+    pub account: Option<Account>,
+    /// The batch owning the record, not every batch that supplied it [SRV-052].
+    pub batch: Option<BatchId>,
+    /// A security one of the record's parsed values names, as SRV-009 reads it.
+    pub security: Option<Isin>,
+    pub status: Option<RecordStatus>,
+}
+
+/// A stored source record, with the account and owning batch it is stored under and whether it
+/// is consumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSourceRecord {
+    record: SourceRecord,
+    account: Account,
+    owner: BatchId,
+    status: RecordStatus,
+}
+
+impl StoredSourceRecord {
+    #[must_use]
+    pub fn record(&self) -> &SourceRecord {
+        &self.record
+    }
+
+    #[must_use]
+    pub fn account(&self) -> &Account {
+        &self.account
+    }
+
+    /// The newest batch that supplied the record [SRV-052].
+    #[must_use]
+    pub fn owner(&self) -> BatchId {
+        self.owner
+    }
+
+    #[must_use]
+    pub fn status(&self) -> RecordStatus {
+        self.status
     }
 }
 
@@ -590,29 +657,143 @@ impl<'a> SourceRecordRepository<'a> {
         &self,
         identity: &RecordIdentity,
     ) -> Result<Option<SourceRecord>, StorageError> {
-        let Some(row) =
-            query("select identity, ordering, raw, parsed from source_record where identity = ?")
-                .bind(identity.as_str())
-                .fetch_optional(self.pool)
-                .await?
-        else {
-            return Ok(None);
-        };
-
-        let parsed = row.get::<String, _>("parsed");
-        let parsed: BTreeMap<String, String> =
-            serde_json::from_str(&parsed).map_err(|_| StorageError::CorruptValue {
-                field: "parsed",
-                value: parsed.clone(),
-            })?;
-
-        Ok(Some(SourceRecord::new(
-            RecordIdentity::new(row.get::<String, _>("identity")),
-            Order::new(count("ordering", row.get::<i64, _>("ordering"))?),
-            row.get::<String, _>("raw"),
-            parsed,
-        )))
+        query("select identity, ordering, raw, parsed from source_record where identity = ?")
+            .bind(identity.as_str())
+            .fetch_optional(self.pool)
+            .await?
+            .as_ref()
+            .map(record_from_row)
+            .transpose()
     }
+
+    /// The record stored under `identity` with its account, owner and status [SRV-023], if any.
+    ///
+    /// Text rather than a [`RecordIdentity`], which only `identity::identify` builds outside this
+    /// crate [DOM-024]: a caller holding an identity as a client sent it can look it up, and text
+    /// naming no stored record finds nothing.
+    pub async fn read(&self, identity: &str) -> Result<Option<StoredSourceRecord>, StorageError> {
+        let mut connection = self.pool.acquire().await?;
+        Ok(
+            stored_records(&mut connection, &RecordFilter::default(), Some(identity))
+                .await?
+                .into_iter()
+                .next(),
+        )
+    }
+
+    /// Every stored record `filter` admits, in import order and then file order (DEC-120,
+    /// provisional). With the status filter at pending it is the completion queue [SRV-024].
+    ///
+    /// An account, batch or security the filter names that is not stored is refused as
+    /// [`StorageError::UnknownAccount`], [`StorageError::UnknownBatch`] or
+    /// [`StorageError::UnknownSecurity`], so a mistyped filter does not answer as an empty queue.
+    pub async fn list(
+        &self,
+        filter: &RecordFilter,
+    ) -> Result<Vec<StoredSourceRecord>, StorageError> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(account) = &filter.account
+            && AccountRepository::find_in(&mut tx, account.broker(), account.id())
+                .await?
+                .is_none()
+        {
+            return Err(StorageError::UnknownAccount {
+                broker: account.broker().to_owned(),
+                id: account.id().to_owned(),
+            });
+        }
+        if let Some(batch) = filter.batch {
+            refuse_unknown(&mut tx, batch).await?;
+        }
+        if let Some(isin) = &filter.security {
+            query("select 1 from security where isin = ?")
+                .bind(isin.as_str())
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| unknown_security(isin))?;
+        }
+        // Read in the same transaction as the checks, so nothing is removed in between; nothing
+        // is written, so it is dropped rather than committed.
+        stored_records(&mut tx, filter, None).await
+    }
+}
+
+/// The stored records `filter` admits, and only the one `identity` names when given.
+///
+/// The security filter is narrowed in SQL and decided by [`names`] here, because SQLite's `trim`
+/// and `upper` are not `Isin::new`'s; normalizing only removes characters and uppercases ASCII,
+/// so a value it turns into the ISIN contains the ISIN once uppercased, and the narrowing loses
+/// none.
+async fn stored_records(
+    connection: &mut SqliteConnection,
+    filter: &RecordFilter,
+    identity: Option<&str>,
+) -> Result<Vec<StoredSourceRecord>, StorageError> {
+    // Every record is written with an owner, so the inner join drops none.
+    query(
+        "select r.identity, r.ordering, r.raw, r.parsed, r.batch_id,
+                b.account_broker, b.account_id,
+                exists (select 1 from transaction_citation c
+                         where c.record_identity = r.identity) as consumed
+           from source_record r join import_batch b on b.id = r.batch_id
+          where (?1 is null or r.identity = ?1)
+            and (?2 is null or (b.account_broker = ?2 and b.account_id = ?3))
+            and (?4 is null or r.batch_id = ?4)
+            and (?5 is null or exists (select 1 from json_each(r.parsed) j
+                                        where j.type = 'text' and instr(upper(j.value), ?5) > 0))
+            and (?6 is null or exists (select 1 from transaction_citation c
+                                        where c.record_identity = r.identity) = ?6)
+          order by r.first_batch_id, r.ordering, r.identity",
+    )
+    .bind(identity)
+    .bind(filter.account.as_ref().map(Account::broker))
+    .bind(filter.account.as_ref().map(Account::id))
+    .bind(filter.batch.map(BatchId::get))
+    .bind(filter.security.as_ref().map(Isin::as_str))
+    .bind(filter.status.map(|status| status == RecordStatus::Consumed))
+    .fetch_all(connection)
+    .await?
+    .iter()
+    .map(|row| {
+        Ok(StoredSourceRecord {
+            record: record_from_row(row)?,
+            account: account_from_row(row, "account_broker", "account_id"),
+            owner: BatchId::new(row.get("batch_id")),
+            status: if row.get::<bool, _>("consumed") {
+                RecordStatus::Consumed
+            } else {
+                RecordStatus::Pending
+            },
+        })
+    })
+    .filter(|stored: &Result<StoredSourceRecord, StorageError>| {
+        stored.as_ref().map_or(true, |stored| {
+            filter.security.as_ref().is_none_or(|isin| {
+                stored
+                    .record
+                    .parsed()
+                    .values()
+                    .any(|value| names(value, isin))
+            })
+        })
+    })
+    .collect()
+}
+
+fn record_from_row(row: &SqliteRow) -> Result<SourceRecord, StorageError> {
+    let parsed = row.get::<String, _>("parsed");
+    let parsed: BTreeMap<String, String> =
+        serde_json::from_str(&parsed).map_err(|_| StorageError::CorruptValue {
+            field: "parsed",
+            value: parsed.clone(),
+        })?;
+
+    Ok(SourceRecord::new(
+        RecordIdentity::new(row.get::<String, _>("identity")),
+        Order::new(count("ordering", row.get::<i64, _>("ordering"))?),
+        row.get::<String, _>("raw"),
+        parsed,
+    ))
 }
 
 /// Records that `batch` supplied the record `identity` names [SRV-052]. A batch stating the

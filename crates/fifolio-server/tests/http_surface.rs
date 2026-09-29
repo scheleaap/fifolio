@@ -719,6 +719,8 @@ async fn the_endpoints_are_documented() {
         "/securities/{isin}/reviewed",
         "/imports",
         "/imports/{batch}",
+        "/source-records",
+        "/source-records/{identity}",
     ] {
         assert!(spec["paths"].get(path).is_some(), "{path} is undocumented");
     }
@@ -1454,4 +1456,191 @@ async fn deleting_a_re_import_leaves_the_first_import_standing() {
             .collect::<Vec<_>>(),
         [first.body["batch"].clone()]
     );
+}
+
+/// The path of the Saxo account's record `reference`, its identity percent-encoded.
+fn saxo_record_uri(reference: &str) -> String {
+    let identity = identify(
+        &Account::new("Saxo", "69900/1000000"),
+        &IdentitySource::BrokerReference(reference),
+    );
+    format!("/source-records/{}", identity.as_str().replace('/', "%2F"))
+}
+
+/// The identities a list reply carries, in its order.
+fn listed_identities(reply: &Reply) -> Vec<String> {
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    reply
+        .body
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|record| record["identity"].as_str().expect("an identity").to_owned())
+        .collect()
+}
+
+/// Source records are read one at a time and listed, filtered on account, batch, security and
+/// consumed or pending, each record with its account, owning batch and status; the pending list
+/// is the completion queue, which a record leaves while a transaction cites it and returns to
+/// once that transaction is deleted, the way a mistake is corrected (DEC-119, DEC-120,
+/// provisional) [SRV-023], [SRV-024], [SRV-027], [TST-005].
+#[tokio::test]
+async fn source_records_are_read_and_listed_with_filters() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness.json(Method::POST, "/securities", &philips()).await;
+    let saxo_account = Account::new("Saxo", "69900/1000000");
+    harness
+        .import_record(&saxo_account, "r1", &[("Instrument ISIN", "NL0000009538")])
+        .await;
+    harness
+        .import_record(&saxo_account, "r2", &[("Acties", "Storting")])
+        .await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    let s1 = harness.owned_record(batch, "s1").await;
+    let buy = harness.derive(batch, &buy_of(s1)).await;
+    let id = |reference: &str| {
+        identify(&saxo_account, &IdentitySource::BrokerReference(reference))
+            .as_str()
+            .to_owned()
+    };
+    let list = |query: &'static str| {
+        let harness = &harness;
+        async move {
+            listed_identities(
+                &harness
+                    .request(Method::GET, &format!("/source-records{query}"))
+                    .await,
+            )
+        }
+    };
+
+    let all = harness.request(Method::GET, "/source-records").await;
+    assert_eq!(listed_identities(&all), [id("r1"), id("r2"), id("s1")]);
+    assert_eq!(
+        all.body[0],
+        json!({
+            "identity": id("r1"),
+            "account": {"broker": "Saxo", "id": "69900/1000000"},
+            "batch": 1,
+            "order": 1,
+            "raw": "raw",
+            "fields": {"Instrument ISIN": "NL0000009538"},
+            "status": "pending",
+        })
+    );
+    assert_eq!(all.body[2]["status"], "consumed");
+    assert_eq!(all.body[2]["batch"], batch.get());
+    assert_eq!(
+        list("?broker=Saxo&account=69900%2F1000000").await,
+        [id("r1"), id("r2"), id("s1")]
+    );
+    assert_eq!(list("?batch=2").await, [id("r2")]);
+    assert_eq!(list("?security=NL0000009538").await, [id("r1")]);
+    assert_eq!(list("?status=consumed").await, [id("s1")]);
+    assert_eq!(
+        list("?status=pending&security=NL0000009538").await,
+        [id("r1")]
+    );
+
+    let read = harness.request(Method::GET, &saxo_record_uri("r1")).await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    assert_eq!(read.body, all.body[0]);
+
+    assert_eq!(list("?status=pending").await, [id("r1"), id("r2")]);
+    harness
+        .database
+        .transactions()
+        .delete(buy)
+        .await
+        .expect("delete the derived transaction");
+    assert_eq!(
+        list("?status=pending").await,
+        [id("r1"), id("r2"), id("s1")],
+        "deleting the transaction returns its record to the queue"
+    );
+}
+
+/// An absent record is a 404; a filter naming half an account or an unknown status is a 400,
+/// and one naming an account, batch or security that is not stored is a 404 rather than an
+/// empty queue (DEC-120, provisional) [SRV-023], [ARC-020], [TST-005].
+#[tokio::test]
+async fn an_absent_record_or_filter_is_refused() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+
+    harness
+        .request(Method::GET, &saxo_record_uri("absent"))
+        .await
+        .assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-record");
+    for (query, status, problem_type) in [
+        ("broker=Saxo", StatusCode::BAD_REQUEST, ABOUT_BLANK),
+        (
+            "account=69900%2F1000000",
+            StatusCode::BAD_REQUEST,
+            ABOUT_BLANK,
+        ),
+        ("status=answered", StatusCode::BAD_REQUEST, ABOUT_BLANK),
+        (
+            "broker=Saxo&account=nobody",
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-account",
+        ),
+        (
+            "batch=7",
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-batch",
+        ),
+        (
+            "security=US0378331005",
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-security",
+        ),
+    ] {
+        harness
+            .request(Method::GET, &format!("/source-records?{query}"))
+            .await
+            .assert_problem(status, problem_type);
+    }
+}
+
+/// Source records are never edited: the routing table serves only reads under
+/// `/source-records`, asserted over the table itself rather than by convention, and a write
+/// method there is a 405 [SRV-027], [TST-005].
+#[tokio::test]
+async fn no_route_edits_a_source_record() {
+    let spec = serde_json::to_value(fifolio_server::openapi()).expect("the spec serializes");
+    let paths = spec["paths"].as_object().expect("paths");
+    let record_paths: Vec<&String> = paths
+        .keys()
+        .filter(|path| path.starts_with("/source-records"))
+        .collect();
+    assert_eq!(
+        record_paths,
+        ["/source-records", "/source-records/{identity}"]
+    );
+    for path in record_paths {
+        let methods: Vec<&String> = paths[path]
+            .as_object()
+            .expect("a path item")
+            .keys()
+            .filter(|key| {
+                [
+                    "get", "put", "post", "delete", "options", "head", "patch", "trace",
+                ]
+                .contains(&key.as_str())
+            })
+            .collect();
+        assert_eq!(methods, ["get"], "{path} serves only reads");
+    }
+
+    let harness = Harness::new().await;
+    for uri in ["/source-records".to_owned(), saxo_record_uri("r1")] {
+        for method in [Method::PUT, Method::PATCH, Method::POST, Method::DELETE] {
+            harness
+                .request(method.clone(), &uri)
+                .await
+                .assert_problem(StatusCode::METHOD_NOT_ALLOWED, ABOUT_BLANK);
+        }
+    }
 }

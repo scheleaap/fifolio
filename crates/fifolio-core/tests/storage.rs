@@ -17,8 +17,8 @@ use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use fifolio_core::ordering::{BatchAge, Leg, OrderKey, RecordPosition};
 use fifolio_core::storage::{
-    BatchId, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, RecordHandle, StorageError,
-    TransactionId,
+    BatchId, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, RecordFilter, RecordHandle,
+    RecordStatus, StorageError, TransactionId,
 };
 use fifolio_core::transaction::{
     Buy, BuyOrigin, DateProvenance, Derivation, Expiration, Sell, Split, Transaction, TransferIn,
@@ -1513,9 +1513,20 @@ async fn store_record(
     reference: &str,
     fields: &[(&str, &str)],
 ) -> RecordHandle {
+    store_record_at(database, batch, reference, 1, fields).await
+}
+
+/// [`store_record`] at position `order` in its file.
+async fn store_record_at(
+    database: &Database,
+    batch: BatchId,
+    reference: &str,
+    order: u32,
+    fields: &[(&str, &str)],
+) -> RecordHandle {
     let record = SourceRecord::new(
         cite(reference),
-        Order::new(1),
+        Order::new(order),
         "raw",
         fields
             .iter()
@@ -2627,4 +2638,400 @@ async fn deleting_a_supplier_that_does_not_own_a_record_leaves_its_owner() {
             .expect("read back"),
         None
     );
+}
+
+/// A buy derived from `record` alone.
+fn buy_citing(record: RecordHandle) -> Transaction {
+    Buy::new(
+        Derivation::new(date(), vec1![record]),
+        Quantity::new(dec!(55)),
+        price(dec!(4.18), dec!(3.89)),
+        money(dec!(230.00), dec!(214.05)),
+        money(dec!(8.00), dec!(7.45)),
+        BuyOrigin::Purchase,
+        conversion(),
+    )
+    .into()
+}
+
+/// The identities of `listed`, in the order they were answered.
+fn identities(listed: &[fifolio_core::storage::StoredSourceRecord]) -> Vec<RecordIdentity> {
+    listed
+        .iter()
+        .map(|stored| stored.record().identity().clone())
+        .collect()
+}
+
+/// Records are listed with their account and owning batch, filtered on account, batch, security
+/// and status, the filters given all holding at once, and read one at a time; a record a
+/// transaction cites is consumed and the rest pending (DEC-119, DEC-120, provisional) [SRV-023],
+/// [TST-004].
+#[tokio::test]
+async fn source_records_are_read_and_listed_by_account_batch_security_and_status() {
+    let (_db, database) = open().await;
+    let (placement, first) = place(&database).await;
+    // Each account shares one half of the filtered account's key, so the filter must match on
+    // both: Saxo gives every currency an account of its own under one broker.
+    let other_account = Account::new("Trade Republic", "69900/1000000");
+    let sibling = Account::new("Saxo", "69900/1000001");
+    for other in [&other_account, &sibling] {
+        database
+            .accounts()
+            .insert(other)
+            .await
+            .expect("another account");
+    }
+    let second = database
+        .import_batches()
+        .insert(&batch(SourceFormat::SaxoNlXlsx))
+        .await
+        .expect("the second batch");
+    let elsewhere = database
+        .import_batches()
+        .insert(&ImportBatch::new(
+            other_account.clone(),
+            "transactions.csv",
+            SourceFormat::TradeRepublicDeCsv,
+            imported_at(),
+            ImportCounts::default(),
+        ))
+        .await
+        .expect("the other account's batch");
+    let sibling_batch = database
+        .import_batches()
+        .insert(&ImportBatch::new(
+            sibling.clone(),
+            "Transactions_2024_USD.xlsx",
+            SourceFormat::SaxoNlXlsx,
+            imported_at(),
+            ImportCounts::default(),
+        ))
+        .await
+        .expect("the sibling account's batch");
+    // b1's identity sorts before cash's, so file order the other way round shows which decides.
+    let bought = store_record_at(
+        &database,
+        first,
+        "b1",
+        2,
+        &[("Instrument ISIN", "NL0000009538")],
+    )
+    .await;
+    // Mentions the ISIN inside a longer value, which names no security.
+    store_record_at(
+        &database,
+        first,
+        "cash",
+        1,
+        &[("Acties", "Storting NL0000009538")],
+    )
+    .await;
+    store_record(
+        &database,
+        second,
+        "b2",
+        &[("Instrument ISIN", "nl0000009538 ")],
+    )
+    .await;
+    let tr = SourceRecord::new(
+        identify(&other_account, &IdentitySource::BrokerReference("t1")),
+        Order::new(1),
+        "raw",
+        BTreeMap::from([("symbol".to_owned(), "NL0000009538".to_owned())]),
+    );
+    database
+        .source_records()
+        .insert(elsewhere, &tr)
+        .await
+        .expect("the other account's record");
+    let usd = SourceRecord::new(
+        identify(&sibling, &IdentitySource::BrokerReference("u1")),
+        Order::new(1),
+        "raw",
+        BTreeMap::new(),
+    );
+    database
+        .source_records()
+        .insert(sibling_batch, &usd)
+        .await
+        .expect("the sibling account's record");
+    database
+        .transactions()
+        .insert(&placement, &buy_citing(bought))
+        .await
+        .expect("the buy");
+    let records = database.source_records();
+    let list = |filter: RecordFilter| {
+        let records = &records;
+        async move { identities(&records.list(&filter).await.expect("the list")) }
+    };
+
+    assert_eq!(
+        list(RecordFilter::default()).await,
+        [
+            cite("cash"),
+            cite("b1"),
+            cite("b2"),
+            tr.identity().clone(),
+            usd.identity().clone()
+        ],
+        "every record, in import order and then file order"
+    );
+    assert_eq!(
+        list(RecordFilter {
+            account: Some(account()),
+            ..RecordFilter::default()
+        })
+        .await,
+        [cite("cash"), cite("b1"), cite("b2")],
+        "neither the same broker nor the same id alone is the account"
+    );
+    assert_eq!(
+        list(RecordFilter {
+            batch: Some(second),
+            ..RecordFilter::default()
+        })
+        .await,
+        [cite("b2")]
+    );
+    assert_eq!(
+        list(RecordFilter {
+            security: Some(isin()),
+            ..RecordFilter::default()
+        })
+        .await,
+        [cite("b1"), cite("b2"), tr.identity().clone()],
+        "a padded or lowercase ISIN names the security, as SRV-009 reads it"
+    );
+    assert_eq!(
+        list(RecordFilter {
+            status: Some(RecordStatus::Consumed),
+            ..RecordFilter::default()
+        })
+        .await,
+        [cite("b1")]
+    );
+    assert_eq!(
+        list(RecordFilter {
+            account: Some(account()),
+            security: Some(isin()),
+            status: Some(RecordStatus::Pending),
+            ..RecordFilter::default()
+        })
+        .await,
+        [cite("b2")],
+        "the filters given all hold"
+    );
+
+    let read = records
+        .read(tr.identity().as_str())
+        .await
+        .expect("read")
+        .expect("the record is stored");
+    assert_eq!(read.record(), &tr);
+    assert_eq!(read.account(), &other_account);
+    assert_eq!(read.owner(), elsewhere);
+    assert_eq!(read.status(), RecordStatus::Pending);
+    assert_eq!(
+        records
+            .read(cite("b1").as_str())
+            .await
+            .expect("read")
+            .map(|stored| stored.status()),
+        Some(RecordStatus::Consumed)
+    );
+    assert_eq!(records.read("absent").await.expect("read"), None);
+}
+
+/// The pending list is the completion queue: a record leaves it when a transaction citing it is
+/// stored, and deleting that transaction, which is how a mistake is corrected since a record is
+/// never edited, returns it (DEC-119, provisional) [SRV-024], [SRV-027], [TST-004].
+#[tokio::test]
+async fn a_record_leaves_the_pending_list_while_a_transaction_cites_it() {
+    let (_db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let handle = store_record(&database, batch, "b1", &[]).await;
+    let pending = RecordFilter {
+        status: Some(RecordStatus::Pending),
+        ..RecordFilter::default()
+    };
+    let queue = || async {
+        identities(
+            &database
+                .source_records()
+                .list(&pending)
+                .await
+                .expect("the queue"),
+        )
+    };
+    assert_eq!(queue().await, [cite("b1")]);
+
+    let buy = database
+        .transactions()
+        .insert(&placement, &buy_citing(handle.clone()))
+        .await
+        .expect("the buy");
+    assert_eq!(queue().await, Vec::<RecordIdentity>::new());
+    let second_buy = database
+        .transactions()
+        .insert(&placement, &buy_citing(handle))
+        .await
+        .expect("the second buy");
+
+    database
+        .transactions()
+        .delete(buy)
+        .await
+        .expect("delete the buy");
+    assert_eq!(
+        queue().await,
+        Vec::<RecordIdentity>::new(),
+        "still consumed while another transaction cites it"
+    );
+    database
+        .transactions()
+        .delete(second_buy)
+        .await
+        .expect("delete the second buy");
+    assert_eq!(queue().await, [cite("b1")]);
+}
+
+/// The batch filter reaches the owning batch only: once a re-import supplies a record, it is
+/// listed under the re-import and the superseded batch lists nothing (DEC-120, provisional)
+/// [SRV-023], [SRV-052], [TST-004].
+#[tokio::test]
+async fn a_record_is_listed_under_the_batch_that_owns_it() {
+    let (_db, database) = open().await;
+    let (_, first) = place(&database).await;
+    let second = database
+        .import_batches()
+        .insert(&batch(SourceFormat::SaxoNlXlsx))
+        .await
+        .expect("the re-import");
+    let record = SourceRecord::new(cite("r1"), Order::new(2), "raw", BTreeMap::new());
+    for supplier in [first, second] {
+        database
+            .source_records()
+            .supply(supplier, &record)
+            .await
+            .expect("supply the record");
+    }
+    // Earlier in the re-import's file than r1, so listing by owner would put it first.
+    store_record_at(&database, second, "r2", 1, &[]).await;
+    let by_batch = |batch| {
+        let database = &database;
+        async move {
+            identities(
+                &database
+                    .source_records()
+                    .list(&RecordFilter {
+                        batch: Some(batch),
+                        ..RecordFilter::default()
+                    })
+                    .await
+                    .expect("the list"),
+            )
+        }
+    };
+
+    assert_eq!(by_batch(first).await, Vec::<RecordIdentity>::new());
+    assert_eq!(by_batch(second).await, [cite("r1"), cite("r2")]);
+    assert_eq!(
+        identities(
+            &database
+                .source_records()
+                .list(&RecordFilter::default())
+                .await
+                .expect("the list")
+        ),
+        [cite("r1"), cite("r2")],
+        "a re-supplied record keeps the position its first import gave it"
+    );
+    assert_eq!(
+        database
+            .source_records()
+            .read(cite("r1").as_str())
+            .await
+            .expect("read")
+            .map(|stored| stored.owner()),
+        Some(second)
+    );
+}
+
+/// A filter naming an account, batch or security that is not stored is refused by name rather
+/// than answered with an empty list, which would read as an empty queue (DEC-120, provisional)
+/// [SRV-023], [TST-004].
+#[tokio::test]
+async fn a_filter_naming_nothing_stored_is_refused() {
+    let (_db, database) = open().await;
+    place(&database).await;
+    let records = database.source_records();
+
+    let account = records
+        .list(&RecordFilter {
+            account: Some(Account::new("Saxo", "nobody")),
+            ..RecordFilter::default()
+        })
+        .await;
+    let batch = records
+        .list(&RecordFilter {
+            batch: Some(BatchId::new(99)),
+            ..RecordFilter::default()
+        })
+        .await;
+    let security = records
+        .list(&RecordFilter {
+            security: Some(Isin::new("US0378331005")),
+            ..RecordFilter::default()
+        })
+        .await;
+
+    assert!(
+        matches!(&account, Err(StorageError::UnknownAccount { id, .. }) if id == "nobody"),
+        "{account:?}"
+    );
+    assert!(
+        matches!(batch, Err(StorageError::UnknownBatch { batch }) if batch == BatchId::new(99)),
+        "{batch:?}"
+    );
+    assert!(
+        matches!(&security, Err(StorageError::UnknownSecurity { isin }) if isin == "US0378331005"),
+        "{security:?}"
+    );
+}
+
+/// Supplying a stored identity again, even with other content, leaves the record as first stored
+/// and moves only its ownership: a record is never edited [SRV-027], [SRV-052], [TST-004].
+#[tokio::test]
+async fn re_supplying_a_record_leaves_its_content_as_first_stored() {
+    let (_db, database) = open().await;
+    let (_, first) = place(&database).await;
+    let second = database
+        .import_batches()
+        .insert(&batch(SourceFormat::SaxoNlXlsx))
+        .await
+        .expect("the re-import");
+    let original = SourceRecord::new(
+        cite("r1"),
+        Order::new(1),
+        "original raw",
+        BTreeMap::from([("Aantal".to_owned(), "55".to_owned())]),
+    );
+    let altered = SourceRecord::new(
+        cite("r1"),
+        Order::new(3),
+        "altered raw",
+        BTreeMap::from([("Aantal".to_owned(), "56".to_owned())]),
+    );
+    let records = database.source_records();
+    assert!(records.supply(first, &original).await.expect("supply"));
+    assert!(!records.supply(second, &altered).await.expect("re-supply"));
+
+    let read = records
+        .read(cite("r1").as_str())
+        .await
+        .expect("read")
+        .expect("the record is stored");
+    assert_eq!(read.record(), &original);
+    assert_eq!(read.owner(), second);
 }

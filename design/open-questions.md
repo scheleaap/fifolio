@@ -103,3 +103,5 @@ built on it.
 * **FIF-071** (whether a re-import also moves a transaction's deriving batch) → DEC-116
 * **FIF-071** (the suppliers of records stored before the supplier relation) → DEC-117
 * **FIF-086** (the deriver of a kept transaction whose deriving batch is undone) → DEC-118
+* **FIF-037** (what consumed and pending mean before DOM-101's consumption relation) → DEC-119
+* **FIF-037** (the reach of the account, batch and security filters; unknown filters) → DEC-120
