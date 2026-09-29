@@ -935,3 +935,20 @@ was always the first supplier. A batch that re-imported them then keeps owning n
 later re-import joins the owner as a second supplier. Alternative not taken: inferring earlier
 re-imports' suppliers from batches with a matching filename, format or account, which would
 guess at rows a file held and store the guess as fact. [DEC-117, SRV-052, DEC-111, DEC-092]
+
+**DEC-118 — Provisional: a transaction an undone batch derived from records that stay is kept,
+derived by the newest batch owning a record it cites.** SRV-021 removes the records a batch owns
+and what is derived from them. Under DEC-116 a batch can have derived transactions from records it
+no longer owns: the import a re-import replaced, or a batch that derived a multi-file event from
+another import's records. Deleting that batch removes none of those records, so SRV-021 keeps the
+transactions, but they still name the deleted batch as their deriver, which nothing defines. They
+are re-placed on the newest batch that now owns a record they cite, the owner DEC-092 would hand
+the records to, so that batch's own undo removes them with the records instead of SRV-022 refusing
+it over them as a foreign citation forever. While such a transaction is attributed, the deletion
+is still refused, as DEC-116 has the replaced batch held by its own attributed transactions; a
+record's first supplier stays as stored even when that batch is the one deleted, since DEC-092
+has the canonical order read an age that never changes. Alternatives not taken: removing the
+transactions with the batch, as the removal before FIF-086 did, which deletes what SRV-021 keeps
+("exactly the source records it owns and anything derived from them"); and clearing the deriver,
+which makes them foreign to every batch, so the owning batch could never be undone.
+[DEC-118, SRV-021, SRV-022, DEC-116, DEC-092, DOM-119]

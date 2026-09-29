@@ -2557,3 +2557,74 @@ async fn the_migration_fills_each_records_supplier_from_its_owner() {
     );
     database.close().await;
 }
+
+/// Deleting a batch that supplied a record it did not own leaves the record with its owner and
+/// drops only that batch from its suppliers: a deletion removes what the batch owns and nothing
+/// else [SRV-021], [SRV-052], [TST-004].
+#[tokio::test]
+async fn deleting_a_supplier_that_does_not_own_a_record_leaves_its_owner() {
+    let (_db, database) = open().await;
+    let (_, first) = place(&database).await;
+    let [second, third] = [
+        database
+            .import_batches()
+            .insert(&batch(SourceFormat::SaxoNlXlsx))
+            .await
+            .expect("the second batch"),
+        database
+            .import_batches()
+            .insert(&batch(SourceFormat::SaxoNlXlsx))
+            .await
+            .expect("the third batch"),
+    ];
+    let record = SourceRecord::new(cite("r1"), Order::new(1), "raw", BTreeMap::new());
+    for supplier in [first, second, third] {
+        database
+            .source_records()
+            .supply(supplier, &record)
+            .await
+            .expect("supply the record");
+    }
+
+    database
+        .import_batches()
+        .delete(second)
+        .await
+        .expect("the middle supplier owns nothing");
+
+    assert_eq!(
+        database
+            .source_records()
+            .suppliers(&cite("r1"))
+            .await
+            .expect("the suppliers"),
+        vec![first, third]
+    );
+    database
+        .import_batches()
+        .delete(first)
+        .await
+        .expect("the first supplier owns nothing either");
+    assert_eq!(
+        database
+            .source_records()
+            .find(&cite("r1"))
+            .await
+            .expect("read back"),
+        Some(record.clone()),
+        "the owner still holds the record"
+    );
+    database
+        .import_batches()
+        .delete(third)
+        .await
+        .expect("the owner, now the only supplier");
+    assert_eq!(
+        database
+            .source_records()
+            .find(&cite("r1"))
+            .await
+            .expect("read back"),
+        None
+    );
+}

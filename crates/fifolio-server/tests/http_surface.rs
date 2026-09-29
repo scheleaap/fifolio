@@ -1337,9 +1337,9 @@ impl Harness {
 
 /// Deleting a batch is refused while a transaction derived from it takes part in an attribution,
 /// then while a record it owns is cited by a transaction it did not derive, each refusal a 409
-/// problem naming the transactions that hold it; once neither holds, the deletion is answered as
-/// not supported yet and nothing is removed, the removal being FIF-086's (DEC-115, provisional)
-/// [SRV-022], [DOM-072], [DOM-119], [ARC-020], [TST-005].
+/// problem naming the transactions that hold it and removing nothing; once neither holds, the
+/// deletion is a 204 that removes the batch, its records and what was derived from them [SRV-022],
+/// [SRV-021], [DOM-072], [DOM-119], [ARC-020], [TST-005].
 #[tokio::test]
 async fn deleting_a_batch_is_refused_naming_what_holds_it() {
     let harness = Harness::new().await;
@@ -1404,21 +1404,54 @@ async fn deleting_a_batch_is_refused_naming_what_holds_it() {
         .delete(citing)
         .await
         .expect("delete the citing transaction");
-    let detail = harness
-        .request(Method::DELETE, &uri)
-        .await
-        .assert_problem(
-            StatusCode::NOT_IMPLEMENTED,
-            "urn:fifolio:problem:batch-removal-not-supported",
-        )
-        .expect("a detail")
-        .to_owned();
-    assert!(detail.contains("FIF-086"), "{detail}");
     assert_eq!(
         harness.request(Method::GET, &uri).await.status,
         StatusCode::OK,
-        "no refused or unsupported deletion removes the batch"
+        "no refused deletion removes the batch"
     );
     assert_eq!(harness.count("source_record").await, 2);
     assert_eq!(harness.count("transaction_record").await, 2);
+
+    let deleted = harness.request(Method::DELETE, &uri).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    harness
+        .request(Method::GET, &uri)
+        .await
+        .assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-batch");
+    assert_eq!(harness.count("source_record").await, 0);
+    assert_eq!(harness.count("transaction_record").await, 0);
+}
+
+/// Deleting the batch of a file posted again undoes that import only: every record the file
+/// stated survives, back with the first import, which is left as the one batch [SRV-021],
+/// (DEC-092, provisional), [SRV-052], [TST-005].
+#[tokio::test]
+async fn deleting_a_re_import_leaves_the_first_import_standing() {
+    let harness = with_trade_republic_account().await;
+    let query = format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv&filename=a.csv");
+    let file = trade_republic_fixture("transactions_2022-01-01_2022-12-31.csv");
+    let first = harness.post_file(&query, file.clone()).await;
+    let records = harness.count("source_record").await;
+    let second = harness.post_file(&query, file).await;
+
+    let deleted = harness
+        .request(
+            Method::DELETE,
+            &format!("/imports/{}", second.body["batch"]),
+        )
+        .await;
+
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    assert!(records > 0, "the fixture stores records");
+    assert_eq!(harness.count("source_record").await, records);
+    let listed = harness.request(Method::GET, "/imports").await.body;
+    assert_eq!(
+        listed
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|batch| batch["id"].clone())
+            .collect::<Vec<_>>(),
+        [first.body["batch"].clone()]
+    );
 }

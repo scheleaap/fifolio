@@ -455,6 +455,53 @@ async fn ownership_moves_to_the_newest_supplier_and_the_oldest_stays() {
     );
 }
 
+/// Undoing a re-import restores the import it replaced: every record the year stated survives,
+/// the older import alone supplies and owns each again, and the record only the later export
+/// added goes with it [SRV-021], (DEC-092, provisional), [SRV-052]. No transaction is derived on
+/// import yet, so nothing refuses the undo [SRV-022].
+#[tokio::test]
+async fn undoing_a_re_import_restores_the_import_it_replaced() {
+    let f = Fixture::new().await;
+    let a = buy("a", "XF0000000152", "2024-05-02T06:01:14.891Z");
+    let b = buy("b", "XF0000000079", "2024-05-03T06:01:14.891Z");
+    let c = buy("c", "XF0000000999", "2024-05-04T06:01:14.891Z");
+    let first = f
+        .import_as("2024.csv", &export(&[&a, &b]))
+        .await
+        .expect("the year")
+        .batch();
+    let before = f.records().await;
+    let later = f
+        .import_as("later.csv", &export(&[&a, &b, &c]))
+        .await
+        .expect("the later export")
+        .batch();
+
+    f.database
+        .import_batches()
+        .delete(later)
+        .await
+        .expect("nothing holds the later export");
+
+    assert_eq!(
+        f.records().await,
+        before,
+        "every record the year stated is back with the year's import, and c is gone"
+    );
+    for transaction_id in ["a", "b"] {
+        assert_eq!(
+            f.database
+                .source_records()
+                .suppliers(&identity(transaction_id))
+                .await
+                .expect("the suppliers"),
+            vec![first]
+        );
+    }
+    assert_eq!(f.count("import_batch").await, 1);
+    assert_eq!(f.count("record_supplier").await, 2);
+}
+
 /// Idempotence is scoped to the account [DOM-024]: the same file posted into a second account
 /// stores every record again, owned by that account's batch, beside the first account's. The
 /// securities, keyed by ISIN alone [DOM-071], already exist and are not created again

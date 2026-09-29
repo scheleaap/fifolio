@@ -14,9 +14,8 @@
 //! [SRV-058], [SRV-059]; a sell exceeding the holdings is not a refusal [SRV-018].
 //!
 //! Every import creates a batch [SRV-019], and `/imports` is also where batches are read and
-//! listed [SRV-020]. Deleting one answers SRV-022's two refusals; a deletion neither refuses is
-//! answered as not supported yet, because removing what the batch owns is FIF-086's and needs
-//! the supplier relation FIF-071 stores (DEC-115, provisional).
+//! listed [SRV-020]. Deleting one is the undo: it removes what the batch owns [SRV-021], or is
+//! refused on one of SRV-022's two grounds.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -281,43 +280,34 @@ async fn get_batch(
         .ok_or_else(|| StorageError::UnknownBatch { batch }.into())
 }
 
-/// Deletes an import batch, refused while a transaction derived from it participates in an
-/// attribution or while a record it owns is cited by a transaction it did not derive, the
-/// refusal naming those transactions [SRV-022].
-///
-/// A deletion neither ground refuses is not carried out: removing what the batch owns is
-/// SRV-021's (FIF-086), and removing it before ownership can return to a remaining supplier
-/// (FIF-071) would delete records a re-import also supplied (DEC-115, provisional).
+/// Deletes an import batch with the records it owns and the transactions derived from them; a
+/// record a remaining batch also supplied stays, owned again by the newest of those (DEC-092,
+/// provisional), and no manual entry is removed [SRV-021]. Refused while a transaction derived
+/// from it participates in an attribution or while a record it owns is cited by a transaction it
+/// did not derive, the refusal naming those transactions [SRV-022].
 #[utoipa::path(
     delete,
     path = "/imports/{batch}",
     tag = "imports",
     params(("batch" = i64, Path, description = "The batch id an import answered with")),
     responses(
+        (status = 204, description = "The batch is deleted with what it owns"),
         (status = 404, description = "No such import batch", body = Problem,
          content_type = "application/problem+json"),
         (status = 409, description = "The batch derived attributed transactions, or owns \
          records transactions it did not derive cite; the detail names them", body = Problem,
          content_type = "application/problem+json"),
-        (status = 501, description = "Nothing refuses the deletion, but removing a batch is \
-         not supported yet", body = Problem, content_type = "application/problem+json"),
     )
 )]
-async fn delete_batch(State(database): State<Database>, Path(batch): Path<i64>) -> Problem {
-    let batch = BatchId::new(batch);
+async fn delete_batch(
+    State(database): State<Database>,
+    Path(batch): Path<i64>,
+) -> Result<StatusCode, Problem> {
     database
         .import_batches()
-        .check_deletable(batch)
-        .await
-        .map_or_else(Problem::from, |()| {
-            Problem::new(
-                ProblemType::BatchRemovalNotSupported,
-                format!(
-                    "nothing refuses deleting batch {batch}, but removing its records is not \
-                     supported until FIF-086"
-                ),
-            )
-        })
+        .delete(BatchId::new(batch))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

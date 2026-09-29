@@ -78,7 +78,6 @@ pub enum ProblemType {
     EmittedTransferIn,
     BatchTransactionAttributed,
     BatchRecordsCited,
-    BatchRemovalNotSupported,
     StorageFailure,
     UnreadableFile,
     MultipleCalendarYears,
@@ -101,8 +100,7 @@ impl ProblemType {
     ///
     /// Statuses: 409 for a refusal that depends on what is stored, 422 for a request whose
     /// content cannot be acted on, 404 for a row that is not there, 502 for the ECB feed
-    /// failing us, 501 for an operation this server does not carry out yet, and 500 for what
-    /// no request could have caused.
+    /// failing us, and 500 for what no request could have caused.
     fn spec(self) -> (&'static str, StatusCode, &'static str) {
         use StatusCode as S;
         match self {
@@ -187,11 +185,6 @@ impl ProblemType {
                 "batch-records-cited",
                 S::CONFLICT,
                 "The batch owns records other transactions cite",
-            ),
-            Self::BatchRemovalNotSupported => (
-                "batch-removal-not-supported",
-                S::NOT_IMPLEMENTED,
-                "Removing an import batch is not supported yet",
             ),
             Self::StorageFailure => (
                 "storage-failure",
@@ -610,11 +603,6 @@ mod tests {
             ProblemType::BatchRecordsCited,
             "urn:fifolio:problem:batch-records-cited",
             409,
-        ),
-        (
-            ProblemType::BatchRemovalNotSupported,
-            "urn:fifolio:problem:batch-removal-not-supported",
-            501,
         ),
         (
             ProblemType::StorageFailure,

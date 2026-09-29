@@ -102,3 +102,4 @@ built on it.
 * **FIF-036** (what deleting a batch answers while batch removal is not built) → DEC-115
 * **FIF-071** (whether a re-import also moves a transaction's deriving batch) → DEC-116
 * **FIF-071** (the suppliers of records stored before the supplier relation) → DEC-117
+* **FIF-086** (the deriver of a kept transaction whose deriving batch is undone) → DEC-118

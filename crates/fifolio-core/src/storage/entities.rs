@@ -674,13 +674,22 @@ impl<'a> ImportBatchRepository<'a> {
         Ok(BatchId::new(inserted.last_insert_rowid()))
     }
 
-    /// Deletes a batch with the records it owns, the transactions derived from them and the
-    /// transactions it derived, refusing it in two cases.
+    /// Deletes a batch with the records it owns and the transactions derived from them, refusing
+    /// it in two cases [SRV-021].
     ///
-    /// Refused while any of those transactions participates in an attribution [DOM-072],
-    /// and while any record it owns is cited by a transaction it did not derive, the refusal
-    /// naming those transactions so that the user can see what holds the batch in place
-    /// [DOM-119].
+    /// A record it owns that a remaining batch also supplied is not removed: ownership returns to
+    /// the newest remaining supplier, so undoing a re-import restores the import it replaced
+    /// (DEC-092, provisional) [SRV-052]. Its first supplier stays as stored even when that was
+    /// this batch, so the canonical order does not move [DOM-111]. A transaction goes only when a
+    /// record it cites goes, taking the records it emitted [DOM-094]; one the batch derived from
+    /// records that stay is kept, derived now by the newest batch owning a record it cites
+    /// (DEC-118, provisional).
+    ///
+    /// Refused while any transaction derived from a record it owns, or that it derived, participates
+    /// in an attribution [DOM-072], and while any record it owns is cited by a transaction it did
+    /// not derive, the refusal naming those transactions so that the user can see what holds the
+    /// batch in place [DOM-119]. A batch that is not stored is refused as
+    /// [`StorageError::UnknownBatch`].
     ///
     /// What it does **not** touch is a manual entry: none belongs to a batch, and the records an
     /// entry answers are broker identities rather than foreign keys, so an undo has nothing of it
@@ -688,13 +697,47 @@ impl<'a> ImportBatchRepository<'a> {
     pub async fn delete(&self, batch: BatchId) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
 
-        let derived = refuse_deletion(&mut tx, batch).await?;
+        refuse_unknown(&mut tx, batch).await?;
+        refuse_deletion(&mut tx, batch).await?;
 
-        delete_transactions(&mut tx, &derived).await?;
-        query("delete from source_record where batch_id = ?")
-            .bind(batch.get())
-            .execute(&mut *tx)
-            .await?;
+        // Every transaction citing a removed record is one the batch derived or emitted: any
+        // other would have been refused above as a foreign citation.
+        let removed = citing_removed_records(&mut tx, batch).await?;
+        delete_transactions(&mut tx, &removed).await?;
+        query(
+            "delete from source_record
+             where batch_id = ?
+               and not exists (select 1 from record_supplier s
+                            where s.record_identity = source_record.identity and s.batch_id <> ?)",
+        )
+        .bind(batch.get())
+        .bind(batch.get())
+        .execute(&mut *tx)
+        .await?;
+        // Every record the batch still owns was supplied by another batch too; the newest of
+        // those, the highest id (DEC-095), owns it again. This batch leaves the suppliers when its
+        // row goes below, by cascade.
+        query(
+            "update source_record set batch_id =
+                 (select max(s.batch_id) from record_supplier s
+                   where s.record_identity = source_record.identity and s.batch_id <> ?)
+             where batch_id = ?",
+        )
+        .bind(batch.get())
+        .bind(batch.get())
+        .execute(&mut *tx)
+        .await?;
+        // What is left placed on the batch was derived from records that stay (DEC-118).
+        query(
+            "update transaction_placement set derived_by_batch =
+                 (select max(r.batch_id) from transaction_citation c
+                       join source_record r on r.identity = c.record_identity
+                   where c.transaction_id = transaction_placement.transaction_id)
+             where derived_by_batch = ?",
+        )
+        .bind(batch.get())
+        .execute(&mut *tx)
+        .await?;
         query("delete from import_batch where id = ?")
             .bind(batch.get())
             .execute(&mut *tx)
@@ -705,20 +748,10 @@ impl<'a> ImportBatchRepository<'a> {
     }
 
     /// Answers whether deleting `batch` would be refused, and on which ground, without deleting
-    /// anything: the two refusals of [`Self::delete`], checked the same way [SRV-022].
-    ///
-    /// A batch that is not stored is refused as [`StorageError::UnknownBatch`], where
-    /// [`Self::delete`] would find nothing to remove.
+    /// anything: the refusals of [`Self::delete`], checked the same way [SRV-022].
     pub async fn check_deletable(&self, batch: BatchId) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
-        let stored = query("select count(*) as stored from import_batch where id = ?")
-            .bind(batch.get())
-            .fetch_one(&mut *tx)
-            .await?
-            .get::<i64, _>("stored");
-        if stored == 0 {
-            return Err(StorageError::UnknownBatch { batch });
-        }
+        refuse_unknown(&mut tx, batch).await?;
         refuse_deletion(&mut tx, batch).await?;
         // Nothing was written, so the transaction is dropped rather than committed.
         Ok(())
@@ -769,8 +802,7 @@ fn batch_from_row(row: &SqliteRow) -> Result<ImportBatch, StorageError> {
     ))
 }
 
-/// The two grounds a batch deletion is refused on, checked in the caller's SQLite transaction,
-/// answering the transactions a deletion would take with it when neither holds.
+/// The two grounds a batch deletion is refused on, checked in the caller's SQLite transaction.
 ///
 /// Refused while any of those transactions participates in an attribution [DOM-072], and while
 /// any record the batch owns is cited by a transaction it did not derive [DOM-119], each refusal
@@ -779,7 +811,7 @@ fn batch_from_row(row: &SqliteRow) -> Result<ImportBatch, StorageError> {
 async fn refuse_deletion(
     connection: &mut SqliteConnection,
     batch: BatchId,
-) -> Result<Vec<TransactionId>, StorageError> {
+) -> Result<(), StorageError> {
     let derived = derived_transactions(connection, batch).await?;
 
     let attributed = attributed_of(connection, &derived).await?;
@@ -798,7 +830,47 @@ async fn refuse_deletion(
         });
     }
 
-    Ok(derived)
+    Ok(())
+}
+
+/// Refuses a batch that is not stored as [`StorageError::UnknownBatch`].
+async fn refuse_unknown(
+    connection: &mut SqliteConnection,
+    batch: BatchId,
+) -> Result<(), StorageError> {
+    let stored = query("select count(*) as stored from import_batch where id = ?")
+        .bind(batch.get())
+        .fetch_one(connection)
+        .await?
+        .get::<i64, _>("stored");
+    if stored == 0 {
+        return Err(StorageError::UnknownBatch { batch });
+    }
+    Ok(())
+}
+
+/// The transactions citing a record `batch` owns and no other batch supplied, which a deletion
+/// of `batch` removes with the record rather than returning it to a remaining supplier
+/// [SRV-021].
+async fn citing_removed_records(
+    connection: &mut SqliteConnection,
+    batch: BatchId,
+) -> Result<Vec<TransactionId>, StorageError> {
+    Ok(query(
+        "select distinct c.transaction_id from transaction_citation c
+              join source_record on source_record.identity = c.record_identity
+         where source_record.batch_id = ?
+           and not exists (select 1 from record_supplier s
+                            where s.record_identity = source_record.identity and s.batch_id <> ?)
+         order by c.transaction_id",
+    )
+    .bind(batch.get())
+    .bind(batch.get())
+    .fetch_all(connection)
+    .await?
+    .iter()
+    .map(|row| TransactionId::new(row.get("transaction_id")))
+    .collect())
 }
 
 /// The transactions derived from a record `batch` owns [DOM-072], read through the relation from
@@ -810,8 +882,10 @@ async fn refuse_deletion(
 /// owning those (DEC-086).
 ///
 /// A transaction placed on `batch` answers to it as well, whatever records it cites: the batch
-/// derived it, so DOM-119 does not count it as foreign, and leaving it behind would leave a
-/// placement pointing at a deleted batch.
+/// derived it, so DOM-119 does not count it as foreign, and while it is attributed the deletion
+/// is refused, as DEC-116 has a replaced batch held by its own attributed transactions. Whether
+/// the deletion then removes it is a separate question, answered by the records it cites
+/// [SRV-021].
 async fn derived_transactions(
     connection: &mut SqliteConnection,
     batch: BatchId,

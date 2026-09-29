@@ -18,7 +18,7 @@ use fifolio_core::entities::{
 };
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
-use fifolio_core::ordering::Leg;
+use fifolio_core::ordering::{BatchAge, Leg};
 use fifolio_core::storage::{
     Allocation, AttributionId, BatchId, Database, Placement, RecordHandle, StorageError,
     TransactionId,
@@ -31,7 +31,7 @@ use fifolio_core::transaction::{
 use fifolio_core::valuation::{Conversion, Valued};
 use fifolio_test_support::TempDb;
 use rust_decimal_macros::dec;
-use vec1::vec1;
+use vec1::{Vec1, vec1};
 
 fn account() -> Account {
     Account::new("Saxo", "69900/1000000")
@@ -1880,12 +1880,11 @@ async fn a_batch_whose_records_a_foreign_transaction_cites_is_not_deleted() {
 }
 
 /// A transaction a batch derived answers to that batch even when it cites none of the records the
-/// batch owns: undoing the batch takes it, and while it is attributed the undo is refused naming
-/// it [DOM-072], [DOM-119], [DOM-013], [TST-004].
-///
-/// Read through the citations alone, such a transaction would be neither derived from the batch's
-/// records nor a foreign citer of them, and the undo would reach the batch row with a placement
-/// still pointing at it.
+/// batch owns: while it is attributed the undo is refused naming it [DOM-072], [DOM-119],
+/// [DOM-013], [TST-004]. The undo does not remove it, since it removes only what is derived from
+/// the records it removes [SRV-021]; the transaction stays, derived now by the batch owning the
+/// record it cites (DEC-118, provisional), so that batch's own undo takes it rather than being
+/// refused over it as a foreign citation.
 #[tokio::test]
 async fn a_batch_answers_for_a_transaction_it_derived_from_another_imports_records() {
     let (_db, database, batch) = open().await;
@@ -1935,14 +1934,14 @@ async fn a_batch_answers_for_a_transaction_it_derived_from_another_imports_recor
         .delete(second)
         .await
         .expect("the batch's own transaction no longer holds it");
-    assert_eq!(
+    assert!(
         database
             .transactions()
             .find(opening)
             .await
-            .expect("read back"),
-        None,
-        "the undo takes the transaction the batch derived"
+            .expect("read back")
+            .is_some(),
+        "the undo removed no record the transaction cites, so the transaction stays"
     );
     assert!(
         database
@@ -1953,6 +1952,19 @@ async fn a_batch_answers_for_a_transaction_it_derived_from_another_imports_recor
             .is_some(),
         "the record another import owns stays"
     );
+
+    database
+        .import_batches()
+        .delete(batch)
+        .await
+        .expect("the transaction is the owning batch's now, not a foreign citation of it");
+    for gone in [opening, closing] {
+        assert_eq!(
+            database.transactions().find(gone).await.expect("read back"),
+            None,
+            "the owning batch's undo takes what was derived from its records"
+        );
+    }
 }
 
 /// A `transfer_in` a batch's `transfer_out` emitted counts as derived by that batch, so its
@@ -2247,4 +2259,506 @@ async fn a_re_import_owns_the_record_but_not_the_transaction_derived_from_it() {
         .check_deletable(first)
         .await
         .expect("the first import owns nothing another batch derived from");
+}
+
+/// Undoing a re-import of a year that derived a transaction is refused: the re-import owns the
+/// record, the first import derived the transaction citing it (DEC-116, provisional), and the
+/// deletion names that transaction and removes nothing [SRV-022], [SRV-021], [DOM-119],
+/// [TST-004]. This is FIF-086's revision-69 scenario, which DEC-116 turns into a refusal.
+#[tokio::test]
+async fn undoing_a_re_import_whose_records_the_older_batch_derived_from_is_refused() {
+    let (_db, database, first) = open().await;
+    let opening = store(
+        &database,
+        first,
+        isin(),
+        &buy(day(1), stored_record(&database, first, "r1").await),
+    )
+    .await;
+    let re_import = database
+        .import_batches()
+        .insert(&import("2024.xlsx"))
+        .await
+        .expect("the re-import");
+    database
+        .source_records()
+        .supply(re_import, &record("r1"))
+        .await
+        .expect("the re-import supplies the record again");
+
+    match database.import_batches().delete(re_import).await {
+        Err(StorageError::BatchRecordsCited {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, re_import);
+            assert_eq!(transactions, vec![opening]);
+        }
+        other => panic!("undoing the re-import must be refused, got {other:?}"),
+    }
+    assert_eq!(
+        database
+            .source_records()
+            .suppliers(&cite("r1"))
+            .await
+            .expect("the suppliers"),
+        vec![first, re_import],
+        "the refused deletion removes nothing"
+    );
+    assert!(
+        database
+            .transactions()
+            .find(opening)
+            .await
+            .expect("read back")
+            .is_some()
+    );
+}
+
+/// Undoing a re-import removes what only it supplied, with the transactions derived from that,
+/// and hands each record the older import also supplied back to it, so the older import is
+/// restored; the first supplier, which the canonical order reads, stays; a record the re-import
+/// never touched and a manual entry stay [SRV-021], (DEC-092, provisional), [SRV-052], [DOM-111],
+/// [DOM-110], [TST-004].
+///
+/// The re-supplied records are ones no transaction cites, as a pending row's is: a cited one
+/// would refuse the undo (DEC-116, provisional).
+#[tokio::test]
+async fn undoing_a_re_import_returns_its_re_supplied_records_to_the_older_import() {
+    let (_db, database, first) = open().await;
+    for reference in ["p1", "p2"] {
+        stored_record(&database, first, reference).await;
+    }
+    let re_import = database
+        .import_batches()
+        .insert(&import("2024-and-later.xlsx"))
+        .await
+        .expect("the re-import");
+    database
+        .source_records()
+        .supply(re_import, &record("p1"))
+        .await
+        .expect("the re-import supplies p1 again");
+    database
+        .source_records()
+        .supply(re_import, &record("n1"))
+        .await
+        .expect("the re-import supplies a row of its own");
+    let n1 = database
+        .source_records()
+        .handle(&cite("n1"))
+        .await
+        .expect("the handle")
+        .expect("n1 is stored");
+    let own = store(&database, re_import, isin(), &buy(day(1), n1)).await;
+    let entry = ManualEntry::new(
+        account(),
+        isin(),
+        Supplied::Election(Election::Stock {
+            shares: Quantity::new(dec!(3.00000000)),
+        }),
+        [cite("n1")],
+    );
+    let stored_entry = database
+        .manual_entries()
+        .insert(&entry)
+        .await
+        .expect("the manual entry");
+
+    database
+        .import_batches()
+        .delete(re_import)
+        .await
+        .expect("nothing holds the re-import");
+
+    let records = database.source_records();
+    assert_eq!(
+        records.find(&cite("n1")).await.expect("read back"),
+        None,
+        "the record only the re-import supplied goes"
+    );
+    assert_eq!(
+        database.transactions().find(own).await.expect("read back"),
+        None,
+        "and the transaction derived from it"
+    );
+    for reference in ["p1", "p2"] {
+        assert_eq!(
+            records
+                .suppliers(&cite(reference))
+                .await
+                .expect("suppliers"),
+            vec![first],
+            "{reference} is the older import's alone again"
+        );
+        assert_eq!(
+            records
+                .handle(&cite(reference))
+                .await
+                .expect("the handle")
+                .expect("the record stays")
+                .position()
+                .batch_age(),
+            BatchAge::new(first.get()),
+            "{reference}'s place in the canonical order does not move"
+        );
+    }
+    assert_eq!(
+        database
+            .manual_entries()
+            .find(stored_entry)
+            .await
+            .expect("read back"),
+        Some(entry),
+        "no undo removes a manual entry"
+    );
+    assert!(
+        database
+            .import_batches()
+            .find(re_import)
+            .await
+            .expect("read back")
+            .is_none()
+    );
+
+    // The older import owns p1 again, so its own undo removes it.
+    database
+        .import_batches()
+        .delete(first)
+        .await
+        .expect("undo the older import");
+    assert_eq!(records.find(&cite("p1")).await.expect("read back"), None);
+}
+
+/// Undoing the import a re-import replaced removes nothing: it owns no record, so nothing is
+/// derived from what it owns [SRV-021]. Its transaction stays, derived now by the re-import that
+/// owns the record it cites (DEC-118, provisional), so the re-import's undo takes it with the
+/// record instead of being refused over it as a foreign citation [DOM-119]; the record keeps its
+/// first supplier's age though that batch is gone (DEC-092, provisional) [DOM-111], [TST-004].
+#[tokio::test]
+async fn undoing_the_replaced_import_keeps_what_its_re_import_owns() {
+    let (_db, database, first) = open().await;
+    let opening = store(
+        &database,
+        first,
+        isin(),
+        &buy(day(1), stored_record(&database, first, "r1").await),
+    )
+    .await;
+    let re_import = database
+        .import_batches()
+        .insert(&import("2024.xlsx"))
+        .await
+        .expect("the re-import");
+    database
+        .source_records()
+        .supply(re_import, &record("r1"))
+        .await
+        .expect("the re-import supplies the record again");
+
+    database
+        .import_batches()
+        .delete(first)
+        .await
+        .expect("the replaced import owns nothing another batch derived from");
+
+    let records = database.source_records();
+    assert_eq!(
+        records.suppliers(&cite("r1")).await.expect("suppliers"),
+        vec![re_import]
+    );
+    assert_eq!(
+        records
+            .handle(&cite("r1"))
+            .await
+            .expect("the handle")
+            .expect("the record stays")
+            .position()
+            .batch_age(),
+        BatchAge::new(first.get())
+    );
+    assert!(
+        database
+            .transactions()
+            .find(opening)
+            .await
+            .expect("read back")
+            .is_some(),
+        "no record it cites was removed"
+    );
+
+    database
+        .import_batches()
+        .delete(re_import)
+        .await
+        .expect("the transaction is the re-import's now");
+    assert_eq!(records.find(&cite("r1")).await.expect("read back"), None);
+    assert_eq!(
+        database
+            .transactions()
+            .find(opening)
+            .await
+            .expect("read back"),
+        None
+    );
+}
+
+/// Deleting a batch that is not stored is refused as unknown, as checking it is [SRV-022],
+/// [TST-004].
+#[tokio::test]
+async fn deleting_an_unstored_batch_is_refused_as_unknown() {
+    let (_db, database, batch) = open().await;
+    let absent = BatchId::new(batch.get() + 1);
+
+    assert!(matches!(
+        database.import_batches().delete(absent).await,
+        Err(StorageError::UnknownBatch { batch }) if batch == absent
+    ));
+}
+
+/// A buy derived from several records, as a multi-file event is [DOM-013].
+fn buy_citing(on: NaiveDate, records: Vec1<RecordHandle>) -> Transaction {
+    Buy::new(
+        Derivation::new(on, records),
+        Quantity::new(dec!(100.00000000)),
+        price(dec!(10.000000)),
+        money(dec!(1000.00)),
+        money(dec!(8.00)),
+        BuyOrigin::Purchase,
+        conversion(),
+    )
+    .into()
+}
+
+/// Deleting the owner of a record that two older batches also supplied hands it to the newer of
+/// them, not the older: the newest remaining supplier owns it (DEC-092, provisional), [SRV-021],
+/// [SRV-052], [TST-004].
+///
+/// Ownership is read through DOM-119: once the older supplier derives a transaction from the
+/// record, only its owner's undo is refused over that transaction as a foreign citation.
+#[tokio::test]
+async fn undoing_a_records_owner_hands_it_to_the_newest_remaining_supplier() {
+    let (_db, database, oldest) = open().await;
+    let r1 = stored_record(&database, oldest, "r1").await;
+    let [middle, newest] = [
+        database
+            .import_batches()
+            .insert(&import("2024-again.xlsx"))
+            .await
+            .expect("the middle supplier"),
+        database
+            .import_batches()
+            .insert(&import("2024-and-later.xlsx"))
+            .await
+            .expect("the newest supplier"),
+    ];
+    for supplier in [middle, newest] {
+        database
+            .source_records()
+            .supply(supplier, &record("r1"))
+            .await
+            .expect("supply the record again");
+    }
+
+    database
+        .import_batches()
+        .delete(newest)
+        .await
+        .expect("nothing holds the owner");
+    let opening = store(&database, oldest, isin(), &buy(day(1), r1)).await;
+
+    match database.import_batches().delete(middle).await {
+        Err(StorageError::BatchRecordsCited {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, middle);
+            assert_eq!(transactions, vec![opening]);
+        }
+        other => panic!("the middle supplier owns the record now, got {other:?}"),
+    }
+}
+
+/// A transaction citing a record the undo removes and one it keeps goes with the removed one: it
+/// is derived from what the undo removes [SRV-021], [TST-004]. The kept record returns to the
+/// older import (DEC-092, provisional).
+///
+/// Citations are not foreign keys, so keeping such a transaction would leave it citing a record
+/// that is gone with nothing to refuse it.
+#[tokio::test]
+async fn undoing_a_re_import_removes_a_transaction_citing_a_removed_and_a_kept_record() {
+    let (_db, database, first) = open().await;
+    stored_record(&database, first, "p1").await;
+    let re_import = database
+        .import_batches()
+        .insert(&import("2024-and-later.xlsx"))
+        .await
+        .expect("the re-import");
+    for reference in ["p1", "n1"] {
+        database
+            .source_records()
+            .supply(re_import, &record(reference))
+            .await
+            .expect("the re-import supplies the record");
+    }
+    let records = database.source_records();
+    let [p1, n1] = [
+        records.handle(&cite("p1")).await,
+        records.handle(&cite("n1")).await,
+    ]
+    .map(|handle| handle.expect("the handle").expect("the record is stored"));
+    let both = buy_citing(day(1), vec1![n1, p1]);
+    let citing_both = store(&database, re_import, isin(), &both).await;
+
+    database
+        .import_batches()
+        .delete(re_import)
+        .await
+        .expect("nothing holds the re-import");
+
+    assert_eq!(
+        database
+            .transactions()
+            .find(citing_both)
+            .await
+            .expect("read back"),
+        None,
+        "a transaction citing a removed record goes, whatever else it cites"
+    );
+    assert_eq!(records.find(&cite("n1")).await.expect("read back"), None);
+    assert_eq!(
+        records.suppliers(&cite("p1")).await.expect("suppliers"),
+        vec![first],
+        "the re-supplied record stays, the older import's alone"
+    );
+    database
+        .import_batches()
+        .delete(first)
+        .await
+        .expect("undo the older import");
+    assert_eq!(
+        records.find(&cite("p1")).await.expect("read back"),
+        None,
+        "the older import owns the record again"
+    );
+}
+
+/// A transaction left behind by the undo of the batch that derived it, citing records two other
+/// batches own, is derived now by the newer of them (DEC-118, provisional): the older owner's undo
+/// is refused over it as a foreign citation, and the newer owner's takes it [SRV-021], [DOM-119],
+/// [TST-004].
+#[tokio::test]
+async fn a_transaction_left_by_an_undo_is_derived_by_the_newest_batch_owning_a_record_it_cites() {
+    let (_db, database, older) = open().await;
+    let y1 = stored_record(&database, older, "y1").await;
+    let newer = database
+        .import_batches()
+        .insert(&import("2025.xlsx"))
+        .await
+        .expect("the newer owner");
+    let z1 = stored_record(&database, newer, "z1").await;
+    let deriver = database
+        .import_batches()
+        .insert(&import("2026.xlsx"))
+        .await
+        .expect("the deriving batch");
+    let multi_file = buy_citing(day(1), vec1![y1, z1]);
+    let event = store(&database, deriver, isin(), &multi_file).await;
+
+    database
+        .import_batches()
+        .delete(deriver)
+        .await
+        .expect("the deriving batch owns no record");
+
+    match database.import_batches().delete(older).await {
+        Err(StorageError::BatchRecordsCited {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, older);
+            assert_eq!(transactions, vec![event]);
+        }
+        other => panic!("the newer owner derives the transaction now, got {other:?}"),
+    }
+    database
+        .import_batches()
+        .delete(newer)
+        .await
+        .expect("the transaction is the newer owner's own");
+    assert_eq!(
+        database
+            .transactions()
+            .find(event)
+            .await
+            .expect("read back"),
+        None
+    );
+    assert!(
+        database
+            .source_records()
+            .find(&cite("y1"))
+            .await
+            .expect("read back")
+            .is_some(),
+        "the older owner's record stays"
+    );
+}
+
+/// Undoing a re-import that derived a transaction from a record it re-supplied hands the record
+/// back to the older import and the transaction with it: the transaction stays, derived now by the
+/// older import (DEC-092, DEC-118, provisional), whose own undo then takes both [SRV-021],
+/// [TST-004].
+#[tokio::test]
+async fn undoing_a_re_import_hands_its_transaction_on_a_re_supplied_record_to_the_older_import() {
+    let (_db, database, first) = open().await;
+    let r1 = stored_record(&database, first, "r1").await;
+    let re_import = database
+        .import_batches()
+        .insert(&import("2024.xlsx"))
+        .await
+        .expect("the re-import");
+    database
+        .source_records()
+        .supply(re_import, &record("r1"))
+        .await
+        .expect("the re-import supplies the record again");
+    let opening = store(&database, re_import, isin(), &buy(day(1), r1)).await;
+
+    database
+        .import_batches()
+        .delete(re_import)
+        .await
+        .expect("the re-import derived the transaction itself");
+
+    assert!(
+        database
+            .transactions()
+            .find(opening)
+            .await
+            .expect("read back")
+            .is_some(),
+        "no record the transaction cites was removed"
+    );
+    database
+        .import_batches()
+        .delete(first)
+        .await
+        .expect("the transaction is the older import's now, not a foreign citation");
+    assert_eq!(
+        database
+            .transactions()
+            .find(opening)
+            .await
+            .expect("read back"),
+        None
+    );
+    assert_eq!(
+        database
+            .source_records()
+            .find(&cite("r1"))
+            .await
+            .expect("read back"),
+        None
+    );
 }
