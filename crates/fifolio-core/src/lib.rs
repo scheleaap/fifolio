@@ -18,4 +18,5 @@ pub mod precision;
 pub mod quotation;
 pub mod storage;
 pub mod transaction;
+pub mod transfer;
 pub mod valuation;

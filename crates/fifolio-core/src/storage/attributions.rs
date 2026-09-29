@@ -24,8 +24,9 @@ use sqlx::sqlite::{SqliteArguments, SqliteConnection, SqlitePool};
 use sqlx::{Row, Sqlite, query};
 
 use crate::decimal::Quantity;
+use crate::ordering::OrderKey;
 use crate::storage::codec::{at_scale, quantity as read_quantity};
-use crate::storage::transactions::{TransactionId, is_closing};
+use crate::storage::transactions::{TransactionId, is_closing, order_key};
 use crate::storage::{StorageError, row_id};
 
 row_id!(
@@ -211,6 +212,35 @@ impl<'a> AttributionRepository<'a> {
         }
 
         Ok(AttributionId::new(id))
+    }
+
+    /// Every allocation stored against `opening`: the closing it belongs to, that closing's place
+    /// in the canonical order, and the quantity, in the units current there [DOM-103]. What an
+    /// allocation's opening side is derived from, since which allocation exhausts the parcel is
+    /// only known from all of them [DOM-062].
+    pub(crate) async fn against_opening_in(
+        connection: &mut SqliteConnection,
+        opening: TransactionId,
+    ) -> Result<Vec<(TransactionId, OrderKey, Quantity)>, StorageError> {
+        query(
+            "select t.id, t.trade_date, t.ordering, t.batch_age, t.leg, al.quantity
+             from attribution_allocation al
+                  join attribution a on a.id = al.attribution_id
+                  join transaction_record t on t.id = a.closing_transaction_id
+             where al.opening_transaction_id = ?",
+        )
+        .bind(opening.get())
+        .fetch_all(connection)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok((
+                TransactionId::new(row.get("id")),
+                order_key(row)?,
+                read_quantity("quantity", &row.get::<String, _>("quantity"))?,
+            ))
+        })
+        .collect()
     }
 
     /// Deletes an attribution, refusing while a later attribution exists for the same account and

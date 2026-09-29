@@ -119,7 +119,9 @@ fn transfer_out_at(on: NaiveDate, record: RecordHandle, conversion: Conversion) 
         Derivation::new(on, vec1![record]),
         Quantity::new(dec!(10.00000000)),
         money(dec!(0.00)),
+        Ratio::new(NonZeroU32::MIN, NonZeroU32::MIN),
         conversion,
+        other_isin(),
     )
     .into()
 }
@@ -764,7 +766,9 @@ async fn a_trailing_leg_sorts_immediately_after_its_sell() {
         Derivation::new(day(2), vec1![merger_row.clone()]).trailing(),
         Quantity::new(dec!(10.00000000)),
         money(dec!(0.00)),
+        Ratio::new(NonZeroU32::MIN, NonZeroU32::MIN),
         conversion(),
+        other_isin(),
     )
     .into();
     let transfer_leg = store(&database, batch, isin(), &transfer_leg).await;

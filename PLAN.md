@@ -450,12 +450,13 @@ Revision 73: named next to build; FIF-014 and FIF-012 are done. `storage/attribu
 Done in revision 73: `attribution.rs` `approve` checks, in the same SQLite transaction as storage's own refusals and the write, that every allocation names an opening of the closing's account and security (DOM-019) strictly before it in canonical order (DOM-020, DEC-095), with a positive quantity and each opening once (provisional DEC-103), and that the quantities sum to the closing's at the 8-decimal scale through `allocation::covered`, the one check DOM-065 shares; it then stores the allocations unchanged (DOM-054). An `expiration` is refused until FIF-079 decides its quantity (provisional DEC-102). Declining has no function (DOM-055). The proposal-equals-display guarantee is FIF-039's fingerprint (provisional DEC-104). Integration tests in `crates/fifolio-core/tests/attribution.rs`.
 
 ## FIF-063 Transfer out: emission and basis
-Status: todo
+Status: done
 Requirements: DOM-090, DOM-106, DOM-107, DOM-115
 Depends on: FIF-015, FIF-061
 Acceptance: approving a `transfer_out` emits **one `transfer_in` per consumed parcel**. Each carries that parcel's acquisition date, date provenance `inherited`, **its own allocated cost** rather than a share of a pooled total, and its own allocated buy fee as fees, separate from the cost (DOM-106). Each cites the `transfer_out`'s source records and takes the `order` of the parcel it carries, so the parcels sort in the receiving account as they did before (DOM-090). Each emitted quantity is the consumed quantity times the transfer's ratio at the quantity scale. The last record absorbs the remainder, so the emitted quantities sum exactly to the transferred quantity times the ratio, rounded once to the quantity scale, half away from zero (DOM-115). A transfer carrying a fee of its own is refused, naming the row, and never divided (DOM-107).
 Notes: New in revision 2, replacing the "lot transfer" half of the retired FIF-018. DEC-046 is explicit that pooling would give two equal parcels bought at 100 and 200 the same unit cost of 150 — a total that is right with every individual figure wrong — so the per-parcel rule is the point of the item, not a detail of it.
 Revision 47 splits and unblocks this item. DEC-079 to DEC-083 closed OQ-002, OQ-003, OQ-016, OQ-017 and OQ-018, and DOM-090, DOM-106, DOM-107 and DOM-115 were rewritten accordingly. DOM-091 (OQ-001) is still undecided, so the decomposition moves to the new **FIF-100** with DOM-116, which divides that decomposition's money and cannot be reviewed without it. Revision 3's objection to splitting was that DOM-115 and DOM-116 each qualify an open rule. That now holds only for DOM-116. The emission is a complete increment: it is reviewable against DOM-090 alone. DOM-107 reaches the importers: FIF-067 and FIF-068 surface the refusal on a row, and this item owns the rule that a transfer's fee is never divided. It is still not startable, because FIF-015 waits on FIF-013 and FIF-061 is blocked.
+Revision 74: named next to build; FIF-015 and FIF-061 are done, and none of DOM-090, DOM-106, DOM-107, DOM-115 is on a `Blocks:` line. Emit from `attribution.rs` `approve` in the same SQLite transaction as the allocations, so approval and emission commit or fail together (SRV-030's "same operation" is FIF-073's to expose, not a second write path). Per-parcel cost and buy fee come from `allocation.rs`'s derived figures, never pooled (DOM-106, DEC-081); order is the carried parcel's stored `OrderKey` (DOM-090); quantities follow DOM-115 (DEC-083), the "last" record taken in the same canonical order `fifo.rs` uses (DEC-095). Storage already knows an emitted `transfer_in` (`StorageError::EmittedTransferIn`, FIF-102) and `DateProvenance::Inherited`. The DOM-107 fee refusal is a domain check here; the importers' row-level surfacing stays with FIF-067 and FIF-068. The decomposition of cash-and-exchange (DOM-091, DOM-116) is FIF-100's, out of this run's scope.
 
 ## FIF-100 Cash-and-exchange decomposition
 Status: todo
@@ -1372,6 +1373,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 74.** A status reconciliation. `design/` changed in `07f2433` only by adding the
+provisional DEC-102 to DEC-104 and listing them under "Provisionally answered"; no requirement id
+added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines, and the 5 items
+carrying one are exactly the 5 `blocked` (checked by script).
+
+* **Completed: FIF-015**, committed as `07f2433` (`attribution.rs`), on the provisional DEC-102 to
+  DEC-104. Its item text already recorded this; only the history lagged.
+* No item added, split, retired, blocked or unblocked. 101 items: **53 `done`, 43 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-063.** Its dependencies FIF-015 and FIF-061 are `done`, and none of DOM-090,
+  DOM-106, DOM-107, DOM-115 is blocked. Also ready in scope: FIF-030, FIF-031, FIF-035, FIF-041.
 
 **Revision 73.** A status reconciliation. `design/` changed in `6d9916e` only by adding the
 provisional DEC-100 and DEC-101 and listing them under "Provisionally answered"; no requirement id

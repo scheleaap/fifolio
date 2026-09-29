@@ -197,7 +197,7 @@ mod tests {
     use vec1::vec1;
 
     use crate::decimal::{Money, QuotedPrice};
-    use crate::entities::{Account, Order};
+    use crate::entities::{Account, Isin, Order};
     use crate::identity::{IdentitySource, identify};
     use crate::manual_entry::Ratio;
     use crate::ordering::{BatchAge, RecordPosition};
@@ -611,7 +611,9 @@ mod tests {
             on(10, 0),
             Quantity::new(dec!(3)),
             Valued::in_eur(Money::zero()),
+            Ratio::new(NonZeroU32::MIN, NonZeroU32::MIN),
             Conversion::native(date(10)),
+            Isin::new("IE000Y77LGG9"),
         ));
 
         let proposal = propose(&transfer_out, numbered(&openings), &[], &[]);

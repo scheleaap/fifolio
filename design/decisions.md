@@ -784,3 +784,29 @@ taken: recomputing the proposal inside `approve`, which gathers every opening, a
 of the account and security again and duplicates what the proposal endpoint already does; any
 later caller outside the server (the CLI) must then hold the same guarantee itself. [DEC-104,
 DOM-054, DOM-056, SRV-040]
+
+**DEC-105 — Provisional: an emitted `transfer_in` takes its parcel's whole place, and may not
+reach back past the target's history.** DOM-090 and DEC-079 give each emitted record "the `order`
+of the parcel it carries" so the parcels sort in the target as they did before. Only the parcel's
+whole order key (trade date, `order`, batch age, leg) does that, so the record takes it, and with
+it the parcel's trade date as its own; its EUR half is the parcel's, so it keeps the parcel's
+conversion, the rate relating the two halves it carries (DOM-028). It is placed in the
+`transfer_out`'s account under its target security with source `corporate_action`, the only
+`transfer_out` the model has being an exchange. A record so placed sorts before the transfer in the
+target, so approval refuses, naming the transaction, when the target already holds a split or
+closing sorting between the earliest carried parcel and the transfer, or an attributed closing
+after that parcel: the split would rescale units that did not yet exist there and the closing
+could be attributed to them, a plausible figure that is wrong. Such a split or closing imported
+after the approval is not caught. Alternative not taken: the `transfer_out`'s trade date with the
+parcel's `order` and batch age, which sorts a 2021 parcel of `order` 3 before a 2019 parcel of
+`order` 7, reversing FIFO in the target. [DEC-105, DOM-090, DEC-079, DOM-066, DOM-089]
+
+**DEC-106 — Provisional: an emitted record of zero or fewer units is refused.** DOM-115 has the
+last record absorb the rounding remainder and sets no bound on it. When the earlier products round
+up past the rounded total, the last is zero or negative: five parcels of 0.00000001 at one for two
+round to 0.00000001 each while the total 0.000000025 rounds to 0.00000003, leaving -0.00000001; a
+tiny parcel at a small ratio can likewise round to zero on its own. Approval refuses, naming the
+opening, rather than store a parcel of no units that carries a cost, whose effective unit price
+divides by zero. It arises only below 1e-7 of a unit. Alternative not taken: storing it, as DEC-101
+lets a money share go negative; a negative quantity is not a parcel at all. [DEC-106, DOM-115,
+DEC-083, DEC-101]

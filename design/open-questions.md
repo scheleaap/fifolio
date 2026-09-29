@@ -89,3 +89,5 @@ built on it.
 * **FIF-015** (approving an `expiration`, whose quantity is undecided) → DEC-102
 * **FIF-015** (allocations of zero or less; one opening allocated twice in one attribution) → DEC-103
 * **FIF-015** (which layer holds DOM-054's "proposal written unchanged") → DEC-104
+* **FIF-063** (an emitted record's trade date, conversion, placement; reaching back) → DEC-105
+* **FIF-063** (an emitted record of zero or fewer units) → DEC-106

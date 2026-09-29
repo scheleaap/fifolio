@@ -108,7 +108,19 @@ impl<'a> TransactionRepository<'a> {
         transaction: &Transaction,
     ) -> Result<TransactionId, StorageError> {
         let mut tx = self.pool.begin().await?;
+        let id = Self::insert_in(&mut tx, placement, transaction).await?;
+        tx.commit().await?;
+        Ok(id)
+    }
 
+    /// [`Self::insert`] inside the caller's SQLite transaction, which commits it: approving a
+    /// `transfer_out` writes the records it emits in the transaction that stores its attribution,
+    /// so the two commit or fail together [DOM-090].
+    pub(crate) async fn insert_in(
+        tx: &mut SqliteConnection,
+        placement: &Placement,
+        transaction: &Transaction,
+    ) -> Result<TransactionId, StorageError> {
         let kind = match transaction {
             Transaction::Opening(Opening::Buy(_)) => BUY,
             Transaction::Opening(Opening::TransferIn(_)) => TRANSFER_IN,
@@ -241,6 +253,18 @@ impl<'a> TransactionRepository<'a> {
                 .bind_conversion(transfer_out.conversion())?
                 .execute(&mut *tx)
                 .await?;
+                query(
+                    "insert into transaction_transfer_out_target
+                         (transaction_id, target_security_isin, ratio_numerator,
+                          ratio_denominator)
+                     values (?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(transfer_out.target().as_str())
+                .bind(i64::from(transfer_out.ratio().numerator().get()))
+                .bind(i64::from(transfer_out.ratio().denominator().get()))
+                .execute(&mut *tx)
+                .await?;
             }
             Transaction::Split(split) => {
                 query(
@@ -291,8 +315,79 @@ impl<'a> TransactionRepository<'a> {
         .execute(&mut *tx)
         .await?;
 
-        tx.commit().await?;
         Ok(TransactionId::new(id))
+    }
+
+    /// The splits of `security` in `account`, in no particular order: the ones an effective
+    /// quantity of that pair is taken through [DOM-089].
+    pub(crate) async fn splits_in(
+        connection: &mut SqliteConnection,
+        account: &Account,
+        security: &Isin,
+    ) -> Result<Vec<Split>, StorageError> {
+        let ids = query(
+            "select t.id from transaction_record t
+                  join transaction_placement p on p.transaction_id = t.id
+             where t.kind = 'split'
+               and p.account_broker = ? and p.account_id = ? and p.security_isin = ?",
+        )
+        .bind(account.broker())
+        .bind(account.id())
+        .bind(security.as_str())
+        .fetch_all(&mut *connection)
+        .await?;
+        let mut splits = Vec::with_capacity(ids.len());
+        for row in ids {
+            let id = TransactionId::new(row.get("id"));
+            match Self::find_in(&mut *connection, id).await? {
+                Some(Transaction::Split(split)) => splits.push(split),
+                _ => {
+                    return Err(StorageError::CorruptValue {
+                        field: "kind",
+                        value: id.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(splits)
+    }
+
+    /// The first transaction of `security` in `account` that the records a `transfer_out` emits
+    /// there at places from `after` onwards would reach back past: a split or closing sorting
+    /// strictly between `after` and `before`, or an attributed closing sorting after `after`
+    /// (DEC-105, provisional).
+    pub(crate) async fn reached_back_past_in(
+        connection: &mut SqliteConnection,
+        account: &Account,
+        security: &Isin,
+        after: OrderKey,
+        before: OrderKey,
+    ) -> Result<Option<TransactionId>, StorageError> {
+        let sql = "select t.id from transaction_record t
+                        join transaction_placement p on p.transaction_id = t.id
+                        left join attribution a on a.closing_transaction_id = t.id
+                   where p.account_broker = ? and p.account_id = ? and p.security_isin = ?
+                     and t.kind in ('split', 'sell', 'expiration', 'transfer_out')
+                     and (t.trade_date, t.ordering, t.batch_age, t.leg) > (?, ?, ?, ?)
+                     and ((t.trade_date, t.ordering, t.batch_age, t.leg) < (?, ?, ?, ?)
+                          or a.id is not null)
+                   order by t.trade_date, t.ordering, t.batch_age, t.leg, t.id
+                   limit 1";
+        Ok(query(sql)
+            .bind(account.broker())
+            .bind(account.id())
+            .bind(security.as_str())
+            .bind(after.trade_date())
+            .bind(i64::from(after.position().order().get()))
+            .bind(after.position().batch_age().get())
+            .bind(leg_rank(after.leg()))
+            .bind(before.trade_date())
+            .bind(i64::from(before.position().order().get()))
+            .bind(before.position().batch_age().get())
+            .bind(leg_rank(before.leg()))
+            .fetch_optional(connection)
+            .await?
+            .map(|row| TransactionId::new(row.get("id"))))
     }
 
     /// The account and security `id` is a transaction of [DOM-013], or `None` if no such
@@ -459,14 +554,20 @@ impl<'a> TransactionRepository<'a> {
                 let row = Self::detail(
                     &mut *connection,
                     id,
-                    "select * from transaction_transfer_out where transaction_id = ?",
+                    // An inner join: a `transfer_out` without its target reads as a missing
+                    // detail row, corrupt, rather than as a transfer to nowhere.
+                    "select * from transaction_transfer_out
+                          join transaction_transfer_out_target using (transaction_id)
+                     where transaction_id = ?",
                 )
                 .await?;
                 Transaction::from(Closing::from(TransferOut::new(
                     derivation,
                     read_quantity("quantity", &text(&row, "quantity"))?,
                     money_pair("fees", &text(&row, "fees_native"), &text(&row, "fees_eur"))?,
+                    ratio(&row)?,
                     conversion(&row)?,
+                    Isin::new(text(&row, "target_security_isin")),
                 )))
             }
             SPLIT => {
@@ -501,9 +602,19 @@ impl<'a> TransactionRepository<'a> {
         transfer_in: TransactionId,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
+        Self::record_emission_in(&mut tx, transfer_out, transfer_in).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 
+    /// [`Self::record_emission`] inside the caller's SQLite transaction, which commits it.
+    pub(crate) async fn record_emission_in(
+        tx: &mut SqliteConnection,
+        transfer_out: TransactionId,
+        transfer_in: TransactionId,
+    ) -> Result<(), StorageError> {
         for (transaction, expected) in [(transfer_out, TRANSFER_OUT), (transfer_in, TRANSFER_IN)] {
-            let kind = kind_of(&mut tx, transaction).await?;
+            let kind = kind_of(&mut *tx, transaction).await?;
             if kind != expected {
                 return Err(StorageError::NotOfKind {
                     transaction,
@@ -519,7 +630,6 @@ impl<'a> TransactionRepository<'a> {
             .execute(&mut *tx)
             .await?;
 
-        tx.commit().await?;
         Ok(())
     }
 
@@ -671,7 +781,7 @@ fn leg_rank(leg: Leg) -> i64 {
 }
 
 /// A transaction's stored place in the canonical order [DOM-011], [DOM-111].
-fn order_key(header: &SqliteRow) -> Result<OrderKey, StorageError> {
+pub(super) fn order_key(header: &SqliteRow) -> Result<OrderKey, StorageError> {
     let ordering = header.get::<i64, _>("ordering");
     let order = u32::try_from(ordering).map_err(|_| StorageError::CorruptValue {
         field: "ordering",

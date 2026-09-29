@@ -507,7 +507,9 @@ async fn every_transaction_variant_round_trips() {
             derivation.clone(),
             Quantity::new(dec!(55)),
             money(dec!(15.00), dec!(13.96)),
+            one_for_three(),
             conversion(),
+            isin(),
         )
         .into(),
         Split::new(
@@ -1218,6 +1220,47 @@ async fn a_stored_transaction_without_citations_is_refused_on_reading_back() {
             assert_eq!(value, id.to_string());
         }
         other => panic!("a transaction citing nothing must be refused, got {other:?}"),
+    }
+}
+
+/// A `transfer_out` stored without its target and ratio, as one written before migration 0008
+/// would be, reads back as a missing detail row, corrupt, rather than as a transfer to nowhere
+/// [DOM-090], [TST-004].
+#[tokio::test]
+async fn a_transfer_out_without_its_target_is_refused_on_reading_back() {
+    let (db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let id = database
+        .transactions()
+        .insert(
+            &placement,
+            &TransferOut::new(
+                derivation(&database, batch).await,
+                Quantity::new(dec!(55)),
+                money(dec!(0.00), dec!(0.00)),
+                one_for_three(),
+                conversion(),
+                isin(),
+            )
+            .into(),
+        )
+        .await
+        .expect("insert");
+
+    let pool = raw(&db).await;
+    query("delete from transaction_transfer_out_target where transaction_id = ?")
+        .bind(id.get())
+        .execute(&pool)
+        .await
+        .expect("remove the target row");
+    pool.close().await;
+
+    match database.transactions().find(id).await {
+        Err(StorageError::CorruptValue { field, value }) => {
+            assert_eq!(field, "transaction_id");
+            assert_eq!(value, id.to_string());
+        }
+        other => panic!("a transfer to nowhere must be refused, got {other:?}"),
     }
 }
 
@@ -2025,17 +2068,18 @@ async fn the_migration_fills_the_canonical_order_of_earlier_rows() {
               derived, pending, non_position)
          values (1, 'Saxo', '69900/1000000', '2022.xlsx', 'saxo_nl_xlsx',
                  '2024-05-03T09:00:00Z', 1, 0, 0)",
-        // Transfers out rather than splits, which carried no fields under this schema: a split
-        // now has a ratio no earlier row can supply [DOM-113].
+        // Expirations, whose fields this schema already holds in full: a split now has a ratio
+        // [DOM-113] and a transfer out a target and ratio [DOM-090] that no earlier row can
+        // supply.
         "insert into transaction_record (id, kind, trade_date)
-         values (1, 'transfer_out', '2024-05-02')",
+         values (1, 'expiration', '2024-05-02')",
         "insert into transaction_record (id, kind, trade_date)
-         values (2, 'transfer_out', '2024-05-02')",
-        "insert into transaction_transfer_out
-             (transaction_id, quantity, fees_native, fees_eur, conversion_currency,
-              conversion_rate, conversion_source, conversion_rate_date)
-         values (1, '10', '0.00', '0.00', 'EUR', '1.000000', 'native', '2024-05-02'),
-                (2, '10', '0.00', '0.00', 'EUR', '1.000000', 'native', '2024-05-02')",
+         values (2, 'expiration', '2024-05-02')",
+        "insert into transaction_expiration
+             (transaction_id, gross_native, gross_eur, fees_native, fees_eur,
+              conversion_currency, conversion_rate, conversion_source, conversion_rate_date)
+         values (1, '0.00', '0.00', '0.00', '0.00', 'EUR', '1.000000', 'native', '2024-05-02'),
+                (2, '0.00', '0.00', '0.00', '0.00', 'EUR', '1.000000', 'native', '2024-05-02')",
     ] {
         query(statement)
             .execute(&pool)
@@ -2098,14 +2142,14 @@ async fn the_migration_fills_the_canonical_order_of_earlier_rows() {
         handle.position(),
         RecordPosition::new(Order::new(7), BatchAge::new(3))
     );
-    let transfer_out = database
+    let expiration = database
         .transactions()
         .find(TransactionId::new(1))
         .await
         .expect("read back")
         .expect("the transaction is stored");
     assert_eq!(
-        transfer_out.order_key(),
+        expiration.order_key(),
         OrderKey::new(
             date(),
             RecordPosition::new(Order::new(4), BatchAge::new(2)),

@@ -68,15 +68,7 @@ impl EffectiveQuantity {
     /// holding reaches; reporting it beats producing a wrapped figure.
     #[must_use]
     pub fn at_quantity_scale(&self) -> Option<Quantity> {
-        // `Ratio::round` rounds half away from zero, which is ARC-010's rule; `decimal::round_to`
-        // cannot be used because no decimal holds the exact value to round from.
-        let units = (&self.0 * BigRational::from_integer(BigInt::from(10).pow(QUANTITY_SCALE)))
-            .round()
-            .to_integer()
-            .to_i128()?;
-        Decimal::try_from_i128_with_scale(units, QUANTITY_SCALE)
-            .ok()
-            .map(|value| Quantity::new(value.normalize()))
+        at_quantity_scale(&self.0)
     }
 
     /// The unit price at this position: `total_cost` over this quantity [DOM-089]. The total is
@@ -182,6 +174,21 @@ pub fn unattributed_quantity<'a>(
         .map(|remaining| Quantity::new(remaining.normalize()))
 }
 
+/// An exact rational at the 8-decimal quantity scale, half away from zero [ARC-010]; `None` beyond
+/// what a decimal holds there. Shared with the quantities a transfer emits [DOM-115], so every
+/// rational quantity in the crate is rounded by one rule.
+pub(crate) fn at_quantity_scale(value: &BigRational) -> Option<Quantity> {
+    // `Ratio::round` rounds half away from zero, which is ARC-010's rule; `decimal::round_to`
+    // cannot be used because no decimal holds the exact value to round from.
+    let units = (value * BigRational::from_integer(BigInt::from(10).pow(QUANTITY_SCALE)))
+        .round()
+        .to_integer()
+        .to_i128()?;
+    Decimal::try_from_i128_with_scale(units, QUANTITY_SCALE)
+        .ok()
+        .map(|value| Quantity::new(value.normalize()))
+}
+
 /// A decimal as the rational it denotes, exactly: mantissa over ten to the scale.
 pub(crate) fn exact(value: Decimal) -> BigRational {
     BigRational::new(
@@ -190,7 +197,7 @@ pub(crate) fn exact(value: Decimal) -> BigRational {
     )
 }
 
-fn as_rational(ratio: Ratio) -> BigRational {
+pub(crate) fn as_rational(ratio: Ratio) -> BigRational {
     BigRational::new(
         BigInt::from(ratio.numerator().get()),
         BigInt::from(ratio.denominator().get()),

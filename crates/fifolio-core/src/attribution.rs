@@ -22,6 +22,15 @@
 //! instead would leave a window in which the checked opening is deleted and, row ids being
 //! reused (`integer primary key` without `autoincrement`), a new transaction takes its id: the
 //! allocation's foreign key would hold while nothing checked the new row.
+//!
+//! # A `transfer_out` emits as it is approved
+//!
+//! Approving a `transfer_out` also stores the `transfer_in` records it emits, one per consumed
+//! parcel, and the links that tie them to it, in the same SQLite transaction as the allocations,
+//! so approval and emission commit or fail together [DOM-090]. What each record carries is
+//! [`crate::transfer`]'s; the cost and buy fee it is handed are each parcel's own opening side,
+//! derived here from every allocation against that parcel, this one included [DOM-106]. A
+//! transfer carrying a fee of its own is refused before anything is derived [DOM-107].
 
 use std::collections::HashSet;
 
@@ -29,15 +38,19 @@ use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 use thiserror::Error;
 
-use crate::allocation::{Uncovered, covered};
+use crate::allocation::{
+    AgainstOpening, AllocationError, Half, OpeningShares, Uncovered, covered, opening_shares,
+};
 use crate::decimal::{Quantity, Scaled};
 use crate::entities::{Account, Isin};
 use crate::ordering::OrderKey;
 use crate::storage::{
-    Allocation, AttributionId, AttributionRepository, Database, StorageError, TransactionId,
-    TransactionRepository,
+    Allocation, AttributionId, AttributionRepository, Database, Placement, StorageError,
+    TransactionId, TransactionRepository,
 };
-use crate::transaction::{Closing, Transaction};
+use crate::transaction::{Closing, Opening, Transaction, TransferIn, TransferOut};
+use crate::transfer::{EmissionError, Parcel, emit, refuse_own_fee};
+use crate::valuation::Valued;
 
 /// Why an attribution is refused before storage is asked to write it.
 #[derive(Debug, Error)]
@@ -77,6 +90,29 @@ pub enum AttributionError {
     /// The allocations do not sum to the closing's quantity [DOM-065].
     #[error(transparent)]
     Uncovered(#[from] Uncovered),
+    /// The `transfer_out` emits nothing, for the reason given: among them a fee of its own,
+    /// which names its rows [DOM-107].
+    #[error("transfer out {transfer_out} cannot be approved: {source}")]
+    Emission {
+        transfer_out: TransactionId,
+        #[source]
+        source: EmissionError,
+    },
+    /// A parcel's allocated cost or buy fee, which the record carrying it takes, cannot be
+    /// derived [DOM-106].
+    #[error(transparent)]
+    Allocation(#[from] AllocationError),
+    /// The records the `transfer_out` would emit into `target` sort before `transaction`, a split
+    /// or closing there that they would reach back past (DEC-105, provisional).
+    #[error(
+        "transfer out {transfer_out} would emit parcels of {} that reach back past its \
+         transaction {transaction}", .target.as_str()
+    )]
+    ReachesBackPast {
+        transfer_out: TransactionId,
+        target: Isin,
+        transaction: TransactionId,
+    },
     #[error(transparent)]
     Storage(#[from] StorageError),
 }
@@ -102,25 +138,119 @@ pub async fn approve(
             transaction: closing,
         })? {
         Closing::Sell(sell) => sell.quantity(),
-        Closing::TransferOut(transfer_out) => transfer_out.quantity(),
+        Closing::TransferOut(transfer_out) => {
+            refuse_own_fee(transfer_out).map_err(|source| AttributionError::Emission {
+                transfer_out: closing,
+                source,
+            })?;
+            transfer_out.quantity()
+        }
         Closing::Expiration(_) => return Err(AttributionError::QuantityNotStated { closing }),
     };
 
     let mut openings = Vec::with_capacity(allocations.len());
+    let mut parcels = Vec::with_capacity(allocations.len());
     for allocation in allocations {
         let (transaction, party) = read(&mut tx, allocation.opening()).await?;
-        if transaction.opening().is_none() {
+        let Transaction::Opening(opening) = transaction else {
             return Err(AttributionError::NotAnOpening {
                 transaction: allocation.opening(),
             });
-        }
+        };
         openings.push((party, allocation.quantity()));
+        parcels.push(opening);
     }
 
     check(&closing_party, closed, &openings)?;
+
+    // Derived before anything is written, so every allocation against a parcel read here is an
+    // earlier closing's: DOM-066 leaves no later closing of the pair attributed.
+    let emitted = match closing_transaction.closing() {
+        Some(Closing::TransferOut(transfer_out)) => {
+            emission(&mut tx, &closing_party, transfer_out, &openings, &parcels).await?
+        }
+        _ => Vec::new(),
+    };
+
     let id = AttributionRepository::approve_in(&mut tx, closing, allocations).await?;
+    for (target, transfer_in) in emitted {
+        let placement = Placement::emitted(closing_party.account.clone(), target);
+        let transfer_in =
+            TransactionRepository::insert_in(&mut tx, &placement, &transfer_in.into()).await?;
+        TransactionRepository::record_emission_in(&mut tx, closing, transfer_in).await?;
+    }
     tx.commit().await.map_err(StorageError::from)?;
     Ok(id)
+}
+
+/// The `transfer_in` records approving `transfer_out` emits, each with the security it is placed
+/// in, derived from each consumed parcel's own opening side [DOM-090], [DOM-106].
+async fn emission(
+    connection: &mut SqliteConnection,
+    closing: &Party,
+    transfer_out: &TransferOut,
+    openings: &[(Party, Quantity)],
+    parcels: &[Opening],
+) -> Result<Vec<(Isin, TransferIn)>, AttributionError> {
+    let splits =
+        TransactionRepository::splits_in(&mut *connection, &closing.account, &closing.security)
+            .await?;
+
+    let mut carried = Vec::with_capacity(parcels.len());
+    for ((party, quantity), opening) in openings.iter().zip(parcels) {
+        let mut against: Vec<AgainstOpening> =
+            AttributionRepository::against_opening_in(&mut *connection, party.id)
+                .await?
+                .into_iter()
+                .map(|(closing, closed_at, quantity)| {
+                    AgainstOpening::new(closing, closed_at, quantity)
+                })
+                .collect();
+        against.push(AgainstOpening::new(closing.id, closing.key, *quantity));
+        let share = |half| -> Result<OpeningShares, AllocationError> {
+            opening_shares(opening, &splits, &against, half)?
+                .into_iter()
+                .find_map(|(of, shares)| (of == closing.id).then_some(shares))
+                .ok_or(AllocationError::Unmeasurable {
+                    closing: closing.id,
+                })
+        };
+        let (native, eur) = (share(Half::Native)?, share(Half::Eur)?);
+        carried.push(Parcel::new(
+            party.id,
+            opening,
+            *quantity,
+            Valued::new(native.cost(), eur.cost()),
+            Valued::new(native.buy_fee(), eur.buy_fee()),
+        ));
+    }
+
+    let target = transfer_out.target();
+    if let Some(earliest) = openings.iter().map(|(party, _)| party.key).min()
+        && let Some(transaction) = TransactionRepository::reached_back_past_in(
+            connection,
+            &closing.account,
+            target,
+            earliest,
+            closing.key,
+        )
+        .await?
+    {
+        return Err(AttributionError::ReachesBackPast {
+            transfer_out: closing.id,
+            target: target.clone(),
+            transaction,
+        });
+    }
+
+    Ok(emit(transfer_out, &carried)
+        .map_err(|source| AttributionError::Emission {
+            transfer_out: closing.id,
+            source,
+        })?
+        .into_iter()
+        .map(|(_, transfer_in)| (target.clone(), transfer_in))
+        .collect())
 }
 
 /// What the checks read of a stored transaction: its key, the pair it belongs to [DOM-013], and

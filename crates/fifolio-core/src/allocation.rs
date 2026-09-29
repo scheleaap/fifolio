@@ -446,7 +446,7 @@ mod tests {
     use vec1::vec1;
 
     use crate::decimal::{FxRate, QuotedPrice};
-    use crate::entities::{Account, Order};
+    use crate::entities::{Account, Isin, Order};
     use crate::identity::{IdentitySource, identify};
     use crate::manual_entry::Ratio;
     use crate::ordering::{BatchAge, RecordPosition};
@@ -1086,7 +1086,9 @@ mod tests {
             on(10, 0),
             Quantity::new(dec!(3)),
             Valued::in_eur(Money::zero()),
+            Ratio::new(NonZeroU32::MIN, NonZeroU32::MIN),
             Conversion::native(date(10)),
+            Isin::new("IE000Y77LGG9"),
         ));
 
         assert_eq!(
@@ -1360,7 +1362,9 @@ mod tests {
             on(10, 0),
             Quantity::new(dec!(3)),
             fees(dec!(2.00)),
+            Ratio::new(NonZeroU32::MIN, NonZeroU32::MIN),
             Conversion::native(date(10)),
+            Isin::new("IE000Y77LGG9"),
         ));
         let sold = sell(10, dec!(3), dec!(100.00), dec!(3.00));
 

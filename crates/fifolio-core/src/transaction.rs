@@ -95,7 +95,6 @@
 //! | --- | --- | --- |
 //! | the EUR gross | `transfer_out` | FIF-080 (DOM-112): it is derived from its own allocations, not stored |
 //! | quantity | `expiration` | FIF-079 (DOM-092): it is the unattributed remainder, not a stated figure |
-//! | target security and ratio | `transfer_out` | FIF-063 (DOM-090) |
 //!
 //! The money fields present are the figures the variant states, at the scales of
 //! [`crate::decimal`].
@@ -104,7 +103,7 @@ use chrono::NaiveDate;
 use vec1::Vec1;
 
 use crate::decimal::{Money, Quantity, QuotedPrice};
-use crate::entities::RecordIdentity;
+use crate::entities::{Isin, RecordIdentity};
 use crate::manual_entry::Ratio;
 use crate::ordering::{Leg, OrderKey, RecordPosition};
 use crate::storage::RecordHandle;
@@ -207,6 +206,20 @@ impl Derivation {
             cites: cites.mapped(RecordHandle::into_identity),
             position: key.position(),
             leg: key.leg(),
+        }
+    }
+
+    /// The derivation of a `transfer_in` emitted on approval of the `transfer_out` this derives:
+    /// it cites the same records, which is what keeps it from being created from nothing
+    /// [DEC-079], and takes `parcel`, the stored place of the parcel it carries, as its own trade
+    /// date and place, so the parcels sort in the target security as they did before [DOM-090]
+    /// (DEC-105, provisional).
+    pub(crate) fn carried(&self, parcel: OrderKey) -> Self {
+        Self {
+            trade_date: parcel.trade_date(),
+            cites: self.cites.clone(),
+            position: parcel.position(),
+            leg: parcel.leg(),
         }
     }
 
@@ -410,12 +423,18 @@ variant!(
     TransferOut {
         quantity: Quantity,
         /// Commission, exchange fees and transaction taxes, summed [DOM-012], converted at
-        /// the same rate as the leg they belong to [DOM-035].
+        /// the same rate as the leg they belong to [DOM-035]. Stored as booked, but a transfer
+        /// carrying one is refused at approval rather than divided [DOM-107].
         fees: Valued<Money>,
+        /// Units of `target` received for each unit transferred, as an exact integer pair
+        /// (DEC-055), which the emitted quantities are scaled by [DOM-115].
+        ratio: Ratio,
     }
     borrowed {
         /// The rate the EUR figures were obtained under, its source and its date [DOM-028].
         conversion: Conversion,
+        /// The security the emitted `transfer_in` records open parcels of [DOM-090].
+        target: Isin,
     }
 );
 
@@ -531,6 +550,15 @@ impl Opening {
         match self {
             Self::Buy(buy) => buy.fees(),
             Self::TransferIn(transfer_in) => transfer_in.fees(),
+        }
+    }
+
+    /// The rate the opening's EUR figures were obtained under [DOM-028].
+    #[must_use]
+    pub fn conversion(&self) -> &Conversion {
+        match self {
+            Self::Buy(buy) => buy.conversion(),
+            Self::TransferIn(transfer_in) => transfer_in.conversion(),
         }
     }
 
@@ -813,7 +841,9 @@ mod tests {
             derivation(),
             Quantity::new(dec!(25)),
             Valued::in_eur(Money::zero()),
+            Ratio::new(NonZeroU32::MIN, NonZeroU32::MIN),
             Conversion::native(date()),
+            Isin::new("IE000Y77LGG9"),
         )
     }
 
