@@ -624,3 +624,34 @@ re-judge files already accepted, against the immutability DOM-008 gives records.
 refused deletion over a source record; batches, manual entries and transactions name the account
 too, and deleting it under them would orphan them. A mistaken account is corrected by undoing its
 batches, fixing it, and re-importing, which idempotence (SRV-015) makes cheap. [DEC-089, SRV-008]
+
+**Provisional decisions DEC-090 to DEC-093.** Taken on a best-effort basis on 2026-09-29 so the
+server could be finished without halting, at the user's instruction. Each is the most conservative
+reading consistent with the rest of the specification, and each awaits the user's ratification; see
+the provisional section of `open-questions.md`.
+
+**DEC-090 — Provisional: order of a transaction built from several records, and of a decomposition's
+legs.** A transaction consuming several records takes the lowest of their orders, so it sorts where
+its first row does. Of a decomposition, the `sell` consumes (DOM-101), as it carries all the money
+(DOM-116), and sorts first; the `transfer_out` cites the same records and sorts immediately after.
+The effect: FIFO gives the sale the oldest parcels. Alternative not taken: dividing every parcel
+between the legs in proportion, which may better fit a per-share mixed consideration. [DEC-090,
+DOM-011, DOM-101, DOM-091]
+
+**DEC-091 — Provisional: exhaustion is judged at the quantity scale.** An effective quantity stays an
+exact rational (DOM-113) but is compared at the 8-decimal quantity scale, rounded half away from
+zero; a parcel whose remaining quantity rounds to zero there is exhausted, and allocation sums are
+checked at that scale. The residue below 1e-8 of a share is dropped. [DEC-091, DOM-064, DOM-065,
+DOM-113]
+
+**DEC-092 — Provisional: canonical order uses the oldest supplying batch; undo returns ownership.**
+Ordering by the owning batch's age made a re-import reorder records nobody edited, so the tie-break
+uses the oldest batch that supplied the record, which never changes. Deleting a batch removes the
+records it owns unless a remaining batch also supplied them, in which case the newest remaining
+supplier owns them again: undoing a re-import restores the previous import instead of losing the
+year. [DEC-092, DOM-111, SRV-021, SRV-052]
+
+**DEC-093 — Provisional: a `transfer_out` has no line in the acquisition report.** It realizes no
+gain and has no proceeds, so it is not a disposal; its parcels are reported where the emitted
+`transfer_in` records are later consumed, carrying their inherited cost and buy fee. [DEC-093,
+DOM-078, DOM-112]

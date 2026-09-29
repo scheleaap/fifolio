@@ -1135,19 +1135,25 @@ Notes: Named next to build in revision 43. FIF-032 (`8964f18`) left `fifolio-ser
 "Each core error variant" is read as each variant of an error a handler can hold: `StorageError`, `ImportError` (with `ReadError` through `ImportError::Read`), `RateError`, `FeedError` and `IngestError`. `SaxoError` and `TradeRepublicError` are format-internal and get no problem type: the server imports through `import::import`, and the `Importer` trait answers only `RowError` and `ImportError`, so a format error reaches the server as one of those or not at all. Consequence for whoever writes the Saxo and Trade Republic `Importer` impls (FIF-023 onward, FIF-029): `ImportError` has no variant yet for a format's whole-file refusals (unrecognized or reordered headers, an unjoined detail row, a duplicate identity, a disagreeing quantity, an unknown instrument type, a mixed security type), so those need `ImportError` variants, and each new variant needs its `ProblemType` in `fifolio-server/src/problem.rs`, which the exhaustive match will demand.
 
 ## FIF-034 Accounts and securities endpoints
-Status: todo
+Status: done
 Requirements: SRV-007, SRV-008, SRV-009, SRV-010, SRV-011, SRV-057, DOM-126
 Depends on: FIF-033
 Acceptance: CRUDL for accounts and securities; deleting an account, or changing its broker or id, is refused while a source record, an import batch, a manual entry or a transaction references it (SRV-008 as amended by DEC-089); deleting a security referenced by any source record is refused; creating a security with an existing ISIN is a conflict; type and quotation are editable, which is how an auto-created security is corrected; a security carries `auto_created` (provenance, never changed) and `needs_review` as separate fields; only marking the security reviewed clears `needs_review`, and an edit leaves it set.
 Notes: Named next to build in revision 44. Its cases go into the in-process harness FIF-033 left in `crates/fifolio-server/tests/http_surface.rs`, and each refusal maps to a `ProblemType` in `fifolio-server/src/problem.rs`. Revision 54: this item's partial, **unreviewed** code was committed at the user's instruction so the tree is clean; build on it and review it against the specification as if uncommitted.
 Revision 67: SRV-008 was **widened** in `e98430a` (DEC-089): the account guard now also covers batches, manual entries and transactions, and refuses a change of broker or id, not only deletion. Acceptance restated. The working tree holds further uncommitted FIF-034 work (`0005_needs_review.sql`, `entities.rs`, `securities.rs`, tests); it is unreviewed, so review it against the specification like the rest.
+Revision 68: **done**, committed as `cca68b9`. The account guard in `storage/entities.rs` counts
+source records, batches, manual entries and transactions and refuses delete or a change of key,
+while writing an account back to its own key is not refused [SRV-008]; migration `0005` stores
+`needs_review` apart from `auto_created`, and `POST /securities/{isin}/reviewed` alone clears it
+[DOM-126, SRV-057]. Covered in `fifolio-core/tests/storage.rs` and `http_surface.rs`.
+`cargo test --workspace`: **649 passed, 0 failed**.
 
 ## FIF-035 Import endpoint
 Status: todo
 Requirements: SRV-012, SRV-013, SRV-014, SRV-015, SRV-016, SRV-018, SRV-049
-Depends on: FIF-034, FIF-023, FIF-029
+Depends on: FIF-034, FIF-029
 Acceptance: the caller supplies target account, format and file; formats are Saxo NL XLSX and Trade Republic DE CSV; unknown ISINs are auto-created and flagged; re-posting the same file changes nothing; non-position rows are counted and not stored; the response **names every unrecognized row type it met with how many rows carried it**; a sell exceeding holdings imports fine and surfaces only at attribution.
-Notes: Revision 3 splits the counted summary (SRV-017) into FIF-085, it being undecided; SRV-049's naming of unrecognized types is decided and stays here.
+Notes: Revision 3 splits the counted summary (SRV-017) into FIF-085, it being undecided; SRV-049's naming of unrecognized types is decided and stays here. Revision 58 (user: server first, importers later): no longer waits on FIF-023. Until the Saxo importer can classify rows, a Saxo file sent to the endpoint is refused as a format not yet supported, naming FIF-023; Trade Republic imports work end to end.
 Revision 47: a failed row now refuses the whole import (SRV-058). FIF-099 builds that in core. Here it is one more refusal mapped to problem+json, naming every failed row.
 
 ## FIF-085 Import response summary counts
@@ -1250,6 +1256,7 @@ Status: todo
 Requirements: SRV-046, SRV-047
 Depends on: FIF-033, FIF-010
 Acceptance: list cached rates with filters, and trigger a refresh from the ECB feed; the cache seeds from the full historical series on first use. Integration tests inject a fake rate source; nothing reaches the network.
+Notes: Named next to build in revision 68. The cache, seeding and the rate source it fetches through already exist in `fifolio-core` (`ecb.rs`, `fx.rs`, FIF-010, FIF-095); this item exposes them over HTTP, so a fake source goes into the FIF-033 harness in `crates/fifolio-server/tests/http_surface.rs` and each failure maps to a `ProblemType` in `fifolio-server/src/problem.rs`.
 
 ## FIF-042 CLI binary, arguments and HTTP-only access
 Status: todo
@@ -1345,6 +1352,24 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 58.** The user put the server first and the importers, CLI and UI later. OQ-001, OQ-004,
+OQ-007 and OQ-011 are provisionally answered (DEC-090 to DEC-093), which unblocks FIF-076, FIF-061,
+FIF-071, FIF-086 and FIF-082 and with them the engine the attribution and report endpoints need.
+FIF-035 no longer waits on FIF-023.
+
+**Revision 68.** A status reconciliation. `design/` is **unchanged** since `e98430a`.
+`open-questions.md` names the same **18** ids, and the 14 items carrying one are exactly the 14
+`blocked` (checked by script); none is unblocked.
+
+* **Completed: FIF-034**, committed as `cca68b9`, reviewed against SRV-007 to SRV-011, SRV-057 and
+  DOM-126 as widened by DEC-089; suite 649 passed, 0 failed.
+* No item added, split, retired, blocked or unblocked. 101 items: **48 `done`, 39 `todo`, 14
+  `blocked`**. Coverage: **352** live ids, each on exactly one item; uncovered only the retired
+  DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-041.** Its dependencies FIF-033 and FIF-010 are `done`, and neither SRV-046
+  nor SRV-047 is blocked. Every `todo` before it waits on a `blocked` item, directly or
+  transitively (FIF-058, FIF-061, FIF-063 via FIF-015, FIF-023, FIF-076). Also ready: FIF-042.
 
 **Revision 67.** `design/` **changed** in `e98430a` (DEC-089): SRV-008 now refuses deleting an
 account, or changing its broker or id, while a source record, batch, manual entry or transaction

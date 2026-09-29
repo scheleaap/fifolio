@@ -17,29 +17,10 @@ Closing a question means answering it, writing the answer into the requirement d
 
 ---
 
-**OQ-001 — A transaction's `order` when it consumes no record, or several.**
-Blocks: `DOM-011`, `DOM-101`, `DOM-091`
-Every variant takes the `order` of the record it consumes, and a decomposition produces two
-transactions from one group of rows. Which record each consumes, and what orders the two legs
-relative to each other, is unstated.
-
-**OQ-004 — Exact-rational quantities against 8-decimal allocations.**
-Blocks: `DOM-064`, `DOM-065`, `DOM-113`
-Effective quantity is an exact rational so that a one-for-three split leaves no residue, but
-allocations are decimals required to sum exactly to the closing quantity. After such a split no sum
-of decimals equals the remaining quantity, so a parcel can never be exactly exhausted and the drift
-rule that depends on exhaustion never fires.
-
 **OQ-005 — When an expiration of nothing is detected.**
 Blocks: `DOM-092`, `DOM-114`, `IMP-SAXO-013`
 The rule says such a row stays pending, but it is stated as an import-time check, and at import the
 remaining position is not yet known — it depends on attributions not yet approved.
-
-**OQ-007 — Ownership moves under re-import, but order and deletion depend on it.**
-Blocks: `DOM-111`, `SRV-052`, `SRV-021`
-Canonical order uses batch age, and batch deletion removes the records a batch owns. Re-importing a
-year transfers ownership to the newer batch, so both the tie-break and what a deletion removes
-change without any record being edited.
 
 **OQ-008 — A Saxo `Acties` value outside the table.**
 Blocks: `IMP-SAXO-013`
@@ -57,11 +38,6 @@ specification. Roughly one euro is at stake.
 Blocks: `ARC-008`, `DOM-038`, `DOM-104`
 Trade value has a formula, and every calculation is confined to the booked EUR total. Nothing says
 where the formula is used, or whether it is only a reconciliation check.
-
-**OQ-011 — A `transfer_out` row in the acquisition report.**
-Blocks: `DOM-078`, `DOM-112`
-The per-disposal columns are proceeds, sell fee, cost, buy fee and gain. A transfer realizes no gain
-and has no proceeds, and nothing says what those columns hold.
 
 **OQ-013 — Where a row with no ordering column sorts.**
 Blocks: `IMP-SAXO-026`
@@ -90,3 +66,17 @@ the specification says nothing about where either comes from. This is the **larg
 manual work in the sample: 19 events across four years, against 12 for every other corporate action
 combined. Whether the user supplies the share count per event, or the amount is treated as cash and
 the shares picked up elsewhere, decides how much of the tool's use is data entry.
+
+---
+
+## Provisionally answered, awaiting ratification
+
+Answered on a best-effort basis on 2026-09-29 so the server could be built without halting. They
+block nothing any more; the user ratifies or overrides each, and an override reopens the items
+built on it.
+
+* **OQ-001** (order of a multi-record transaction and of decomposition legs) → DEC-090
+* **OQ-004** (exact rationals against 8-decimal allocations) → DEC-091
+* **OQ-007** (ownership moving under re-import) → DEC-092
+* **OQ-011** (a `transfer_out` in the acquisition report) → DEC-093
+

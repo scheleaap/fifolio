@@ -54,7 +54,7 @@ The two are separate entities because their lifecycles differ and that differenc
 
 Transaction
 * Everything that happens to a holding. A sum type: each variant carries only the fields it has, so a variant can never be read as another [DOM-010]
-* Common to every variant: trade date, and the `order` of the source record it consumes [DOM-011], and a relation to account, security and >= 1 source records [DOM-013]
+* Common to every variant: trade date, and the `order` of the source record it consumes; a transaction consuming several takes the lowest of their orders, and of a decomposition's two legs the `sell` consumes and sorts first, the `transfer_out` citing the same records and sorting immediately after it (DEC-090, provisional) [DOM-011], and a relation to account, security and >= 1 source records [DOM-013]
 * A transaction **consumes** the source records that are answered by its existence, and may **cite** further records without consuming them. Consumption is what clears a record from the completion queue; citation is what preserves the audit trail. A decomposition names which of its transactions consumes [DOM-101]
 * Variants, grouped by what they do to holdings:
 
@@ -140,7 +140,7 @@ Order is established **when a file is read**, from the file's own content, and s
 
 The third key is always available, so the order within a file is total and no import is ever refused for ambiguity. [DOM-102]
 
-`order` is scoped to the file it was computed from. The canonical order over an account and security is therefore **(trade date, order, batch age)**: trade date first, `order` to separate rows of one date, and the age of the owning batch to settle the rare case of two records from different files sharing a date. [DOM-111] Because it is derived from file content alone, re-importing the same file reproduces it exactly, and the order no longer depends on which files were imported first.
+`order` is scoped to the file it was computed from. The canonical order over an account and security is therefore **(trade date, order, batch age)**: trade date first, `order` to separate rows of one date, and the age of the **oldest** batch that supplied the record to settle the rare case of two records from different files sharing a date. That age never changes when ownership moves (DEC-092, provisional). [DOM-111] Because it is derived from file content alone, re-importing the same file reproduces it exactly, and the order no longer depends on which files were imported first.
 
 Every variant takes part in this order, `split` included. [DOM-088]
 
@@ -227,8 +227,8 @@ A gain is computed from the four **rounded** shares, not exactly and then rounde
 
 # Invariants
 
-* The sum of allocated quantities against an opening, each scaled to a common position in the canonical order, must never exceed its effective quantity at that position. Comparing quantities stated at different positions compares different unit scales [DOM-064]
-* The allocations of a closing must sum exactly to that closing's quantity [DOM-065]
+* The sum of allocated quantities against an opening, each scaled to a common position in the canonical order, must never exceed its effective quantity at that position. Comparing quantities stated at different positions compares different unit scales. Effective quantities are compared at the quantity scale: a parcel whose remaining effective quantity rounds to zero there, half away from zero, is exhausted (DEC-091, provisional) [DOM-064]
+* The allocations of a closing must sum exactly to that closing's quantity, both at the quantity scale (DEC-091, provisional) [DOM-065]
 * Closings are attributed in canonical order per account and security: a closing may only be attributed if every earlier closing of the same account and security is already attributed [DOM-066]
 * A security with any pending source record may not be attributed in that account [DOM-067]
 * An attribution may only be deleted if no later attribution exists for the same account and security [DOM-068]
@@ -255,7 +255,7 @@ Acquisition report
 * Lists every opening transaction with the disposals it was attributed to, its remaining quantity and its realized gain/loss [DOM-076]
 * Opening columns: date, account, security, effective quantity, remaining quantity, effective unit price, fees, realized gain/loss [DOM-077]
 * Effective quantity and effective unit price are reported **as of today**, the latest position in canonical order, so the two quantity columns are in one scale and comparable to a broker statement [DOM-118]
-* Per attributed disposal: date, quantity consumed, allocated proceeds, allocated sell fee, allocated cost, allocated buy fee, gain/loss [DOM-078]
+* Per attributed disposal: date, quantity consumed, allocated proceeds, allocated sell fee, allocated cost, allocated buy fee, gain/loss. A `transfer_out` realizes nothing and is not a disposal, so it has no line; the parcels it carried appear under the disposals that later consume their emitted `transfer_in` records (DEC-093, provisional) [DOM-078]
 * The year filter selects openings that have at least one allocation in that year [DOM-079]
 * A `transfer_in` appears as an opening in its own right, and names the opening it inherited from, so a holding can be traced back to the purchase it descends from [DOM-096]
 

@@ -45,7 +45,7 @@ Every import creates a batch, and a batch is the unit of undo: [SRV-019]
 
 * Read and list import batches, with their account, filename, format, timestamp and counts [SRV-020]
 * A source record belongs to every batch that supplied it, and the **newest** of those owns it. Re-importing a year transfers ownership to the new batch; the superseded batches then own nothing [SRV-052]
-* Delete a batch, which removes exactly the source records it owns and anything derived from them. Manual entries are never removed [SRV-021]
+* Delete a batch, which removes exactly the source records it owns and anything derived from them. A record it owns that a remaining batch also supplied is not removed: ownership returns to the newest remaining supplier (DEC-092, provisional). Manual entries are never removed [SRV-021]
 * Deletion is refused, naming the offenders, if any derived transaction participates in an attribution, or if a record the batch owns is cited by a transaction the batch did not derive [SRV-022]. Delete those attributions first
 
 ## Source records and manual entries
