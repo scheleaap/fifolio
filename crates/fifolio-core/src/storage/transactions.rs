@@ -295,12 +295,45 @@ impl<'a> TransactionRepository<'a> {
         Ok(TransactionId::new(id))
     }
 
+    /// The account and security `id` is a transaction of [DOM-013], or `None` if no such
+    /// transaction is stored. Attribution reads it to hold every allocated opening to its
+    /// closing's pair [DOM-019], inside the SQLite transaction that writes the attribution.
+    pub(crate) async fn account_and_security_in(
+        connection: &mut SqliteConnection,
+        id: TransactionId,
+    ) -> Result<Option<(Account, Isin)>, StorageError> {
+        Ok(query(
+            "select account_broker, account_id, security_isin from transaction_placement
+             where transaction_id = ?",
+        )
+        .bind(id.get())
+        .fetch_optional(connection)
+        .await?
+        .map(|row| {
+            (
+                Account::new(
+                    row.get::<String, _>("account_broker"),
+                    row.get::<String, _>("account_id"),
+                ),
+                Isin::new(row.get::<String, _>("security_isin")),
+            )
+        }))
+    }
+
     pub async fn find(&self, id: TransactionId) -> Result<Option<Transaction>, StorageError> {
+        Self::find_in(&mut *self.pool.acquire().await?, id).await
+    }
+
+    /// [`Self::find`] on `connection`, so a caller can read inside its own SQLite transaction.
+    pub(crate) async fn find_in(
+        connection: &mut SqliteConnection,
+        id: TransactionId,
+    ) -> Result<Option<Transaction>, StorageError> {
         let Some(header) = query(
             "select kind, trade_date, ordering, batch_age, leg from transaction_record where id = ?",
         )
         .bind(id.get())
-        .fetch_optional(self.pool)
+        .fetch_optional(&mut *connection)
         .await?
         else {
             return Ok(None);
@@ -311,7 +344,7 @@ impl<'a> TransactionRepository<'a> {
              where transaction_id = ? order by ordinal",
         )
         .bind(id.get())
-        .fetch_all(self.pool)
+        .fetch_all(&mut *connection)
         .await?
         .into_iter()
         .map(|row| RecordIdentity::new(row.get::<String, _>("record_identity")))
@@ -334,9 +367,12 @@ impl<'a> TransactionRepository<'a> {
 
         let transaction = match kind.as_str() {
             BUY => {
-                let row = self
-                    .detail(id, "select * from transaction_buy where transaction_id = ?")
-                    .await?;
+                let row = Self::detail(
+                    &mut *connection,
+                    id,
+                    "select * from transaction_buy where transaction_id = ?",
+                )
+                .await?;
                 Transaction::from(Opening::from(Buy::new(
                     derivation,
                     read_quantity("quantity", &text(&row, "quantity"))?,
@@ -356,12 +392,12 @@ impl<'a> TransactionRepository<'a> {
                 )))
             }
             TRANSFER_IN => {
-                let row = self
-                    .detail(
-                        id,
-                        "select * from transaction_transfer_in where transaction_id = ?",
-                    )
-                    .await?;
+                let row = Self::detail(
+                    &mut *connection,
+                    id,
+                    "select * from transaction_transfer_in where transaction_id = ?",
+                )
+                .await?;
                 Transaction::from(Opening::from(TransferIn::new(
                     derivation,
                     read_quantity("quantity", &text(&row, "quantity"))?,
@@ -378,12 +414,12 @@ impl<'a> TransactionRepository<'a> {
                 )))
             }
             SELL => {
-                let row = self
-                    .detail(
-                        id,
-                        "select * from transaction_sell where transaction_id = ?",
-                    )
-                    .await?;
+                let row = Self::detail(
+                    &mut *connection,
+                    id,
+                    "select * from transaction_sell where transaction_id = ?",
+                )
+                .await?;
                 Transaction::from(Closing::from(Sell::new(
                     derivation,
                     read_quantity("quantity", &text(&row, "quantity"))?,
@@ -402,12 +438,12 @@ impl<'a> TransactionRepository<'a> {
                 )))
             }
             EXPIRATION => {
-                let row = self
-                    .detail(
-                        id,
-                        "select * from transaction_expiration where transaction_id = ?",
-                    )
-                    .await?;
+                let row = Self::detail(
+                    &mut *connection,
+                    id,
+                    "select * from transaction_expiration where transaction_id = ?",
+                )
+                .await?;
                 Transaction::from(Closing::from(Expiration::new(
                     derivation,
                     money_pair(
@@ -420,12 +456,12 @@ impl<'a> TransactionRepository<'a> {
                 )))
             }
             TRANSFER_OUT => {
-                let row = self
-                    .detail(
-                        id,
-                        "select * from transaction_transfer_out where transaction_id = ?",
-                    )
-                    .await?;
+                let row = Self::detail(
+                    &mut *connection,
+                    id,
+                    "select * from transaction_transfer_out where transaction_id = ?",
+                )
+                .await?;
                 Transaction::from(Closing::from(TransferOut::new(
                     derivation,
                     read_quantity("quantity", &text(&row, "quantity"))?,
@@ -434,12 +470,12 @@ impl<'a> TransactionRepository<'a> {
                 )))
             }
             SPLIT => {
-                let row = self
-                    .detail(
-                        id,
-                        "select * from transaction_split where transaction_id = ?",
-                    )
-                    .await?;
+                let row = Self::detail(
+                    &mut *connection,
+                    id,
+                    "select * from transaction_split where transaction_id = ?",
+                )
+                .await?;
                 Transaction::from(Split::new(derivation, ratio(&row)?))
             }
             other => {
@@ -511,7 +547,7 @@ impl<'a> TransactionRepository<'a> {
     /// The variant's own row. Its absence means a header without its detail, which the insert
     /// above cannot produce.
     async fn detail(
-        &self,
+        connection: &mut SqliteConnection,
         id: TransactionId,
         sql: &'static str,
     ) -> Result<SqliteRow, StorageError> {
@@ -519,7 +555,7 @@ impl<'a> TransactionRepository<'a> {
         // one: SQLite binds values, never identifiers.
         query(sql)
             .bind(id.get())
-            .fetch_optional(self.pool)
+            .fetch_optional(connection)
             .await?
             .ok_or(StorageError::CorruptValue {
                 field: "transaction_id",

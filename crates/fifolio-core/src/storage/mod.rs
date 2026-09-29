@@ -348,6 +348,16 @@ impl Database {
         ManualEntryRepository::new(&self.pool)
     }
 
+    /// Opens a SQLite transaction for a service that reads and writes as one unit, as approving
+    /// an attribution does. SQLite serializes it against every other connection's writes: its
+    /// reads see one snapshot, and a write after another connection committed since fails as
+    /// busy rather than building on rows that have changed.
+    pub(crate) async fn begin(
+        &self,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, StorageError> {
+        Ok(self.pool.begin().await?)
+    }
+
     /// Closes the pool. Dropping it works too; this waits for the connections to go.
     pub async fn close(&self) {
         self.pool.close().await;

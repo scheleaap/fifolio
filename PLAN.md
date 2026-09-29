@@ -441,11 +441,13 @@ Revision 69: unblocked; OQ-011 is provisionally answered by DEC-093. Outside the
 Notes: Split out of FIF-014 in revision 3 so the cash closings' formulas can be built.
 
 ## FIF-015 Attribution service
-Status: todo
+Status: done
 Requirements: DOM-018, DOM-019, DOM-020, DOM-054, DOM-055
 Depends on: FIF-014, FIF-012
 Acceptance: approve-or-decline only, no partial edit; creating an attribution validates same account and same security, every allocated opening preceding the closing in canonical order, and quantities summing exactly to the closing quantity; declining writes nothing and leaves the closing blocking later closings by construction.
 Notes: DOM-049 (the pending-record refusal, previously here) moved to FIF-060.
+Revision 73: named next to build; FIF-014 and FIF-012 are done. `storage/attributions.rs` `approve` already refuses a non-closing, a closing already attributed and an earlier unattributed closing (DOM-066, FIF-012); it does not yet check DOM-019, DOM-020 or the sum. Add those checks in the service in front of it: same account and security for every allocated opening; each opening strictly before the closing by the stored `OrderKey`, row id breaking a tie (DEC-095); allocation quantities summing to the closing quantity, both at the 8-decimal scale (DEC-091). The sum rule's id, DOM-065, stays on FIF-078 (out of this run's scope); share one check rather than writing it twice. Approval takes a proposal from `fifo.rs` and writes it unchanged or not at all (DOM-054); there is no edit path. Declining is a no-op that writes nothing (DOM-055). The pending-record refusal (DOM-067) is FIF-060's, outside this scope, so do not add it here.
+Done in revision 73: `attribution.rs` `approve` checks, in the same SQLite transaction as storage's own refusals and the write, that every allocation names an opening of the closing's account and security (DOM-019) strictly before it in canonical order (DOM-020, DEC-095), with a positive quantity and each opening once (provisional DEC-103), and that the quantities sum to the closing's at the 8-decimal scale through `allocation::covered`, the one check DOM-065 shares; it then stores the allocations unchanged (DOM-054). An `expiration` is refused until FIF-079 decides its quantity (provisional DEC-102). Declining has no function (DOM-055). The proposal-equals-display guarantee is FIF-039's fingerprint (provisional DEC-104). Integration tests in `crates/fifolio-core/tests/attribution.rs`.
 
 ## FIF-063 Transfer out: emission and basis
 Status: todo
@@ -1261,6 +1263,7 @@ Status: todo
 Requirements: SRV-035, SRV-036, SRV-037, SRV-038, SRV-039, SRV-040, SRV-041, SRV-042, SRV-043, SRV-050
 Depends on: FIF-038, FIF-015
 Acceptance: a proposal endpoint returns the closing, the proposed allocations with derived figures and a fingerprint, and is also addressable as "the next closing awaiting attribution" for an account and security; the fingerprint covers the closing, every allocation's opening id and quantity **and every derived money figure displayed**, as a hash of a canonical serialization stable across processes, so a re-rating between display and approval changes it; an uncoverable closing returns the named shortfall instead; a security with pending records is refused, naming what is outstanding; creating an attribution requires the fingerprint the client was shown, and a mismatch is a conflict; attributions can be read, listed and deleted but never updated; deletion is refused when a later attribution exists for that account and security; declining is not an API call.
+Notes: DEC-104 (provisional) places DOM-054's "proposal written unchanged" here, not in core's `attribution::approve`, which stores any allocations passing DOM-018/019/020/065 and DEC-103. Creation must recompute the proposal and its fingerprint and refuse a differing fingerprint or allocation set as a conflict; this item carries the test that a valid non-FIFO allocation set (for example, skipping the oldest opening) is refused.
 
 ## FIF-040 Report endpoints
 Status: todo
@@ -1369,6 +1372,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 73.** A status reconciliation. `design/` changed in `6d9916e` only by adding the
+provisional DEC-100 and DEC-101 and listing them under "Provisionally answered"; no requirement id
+added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines, and the 5 items
+carrying one are exactly the 5 `blocked`.
+
+* **Completed: FIF-014**, committed as `6d9916e` (`allocation.rs`), on the provisional DEC-100 and
+  DEC-101. Its item text already recorded this; only the history lagged.
+* No item added, split, retired, blocked or unblocked. 101 items: **52 `done`, 44 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-015.** Its dependencies FIF-014 and FIF-012 are `done`, and none of DOM-018,
+  DOM-019, DOM-020, DOM-054, DOM-055 is blocked. Also ready in scope: FIF-035, FIF-041.
 
 **Revision 72.** A status reconciliation. `design/` changed in `88597d5` only by adding the
 provisional DEC-098 and DEC-099 and listing them under "Provisionally answered"; no requirement id

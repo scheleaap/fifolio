@@ -746,3 +746,41 @@ zero and spreading the excess over the earlier shares, which makes those shares 
 independently and, on the opening side, changes the figures of earlier closings, already
 attributed and possibly reported, when a later closing exhausts the parcel. [DEC-101, DOM-061,
 DOM-062, DOM-063, DOM-125]
+
+**DEC-102 — Provisional: an `expiration` cannot be approved until its quantity is decided.**
+Approving an attribution checks that its allocations sum to the closing's quantity (DOM-065), and
+an `expiration` states none: its quantity is the unattributed remainder (DOM-092), which FIF-079
+has not yet decided. The attribution service refuses an `expiration` with an error of its own
+rather than storing its allocations unchecked. The FIFO proposal already refuses to propose for
+one, so no displayed proposal is lost. Alternative not taken: skipping the sum check for an
+`expiration`, which would store an attribution whose quantity nothing verified and whose figures
+FIF-014 cannot derive. [DEC-102, DOM-065, DOM-092, DOM-054]
+
+**DEC-103 — Provisional: an allocation's quantity is positive, and each opening appears once per
+attribution.** DOM-018 gives an allocation "a quantity" and does not bound it, nor say whether one
+closing's allocations may name the same opening twice. Approving an attribution refuses an
+allocation of zero or less, and an opening that appears a second time among the closing's
+allocations, each with its own error naming the opening. A negative allocation offset by an excess
+elsewhere keeps the sum (DOM-065) while giving a negative cost share and lowering the opening's
+consumed quantity, so later proposals could take more of it than exists; a zero allocation links a
+closing to a parcel it did not consume; and two rows against one parcel make DOM-062's "allocation
+that exhausts the parcel" ambiguous. The FIFO proposal produces none of these, so no displayed
+proposal is refused. Alternative not taken: accepting them as the schema does, which lets figures
+be derived from rows no FIFO consumption could produce. [DEC-103, DOM-018, DOM-054, DOM-062,
+DOM-064, DOM-065]
+
+**DEC-104 — Provisional: "written unchanged" is held by the server's fingerprint, not by core.**
+DOM-054 lets the user only approve or decline the proposal shown. The attribution service in core
+checks that what it is given is an attribution at all (DOM-018, DOM-019, DOM-020, DOM-065, DEC-103)
+and stores it exactly as given, but does not recompute the FIFO proposal, so a valid non-FIFO
+choice passes it. The guarantee that the stored allocations are the proposal displayed belongs to
+the attribution endpoint (SRV-040, FIF-039): on creation it recomputes the proposal and its
+fingerprint and refuses, as a conflict, a posted fingerprint or allocation set that differs, and
+FIF-039 carries the test that a non-FIFO allocation set is refused. A fingerprint the client could
+compute over its own allocations would not suffice. This follows SRV-040, which exists "so the
+client can never approve figures other than the ones displayed", and FIF-015's acceptance, which
+asks core for the three validations rather than for a comparison with the proposal. Alternative not
+taken: recomputing the proposal inside `approve`, which gathers every opening, allocation and split
+of the account and security again and duplicates what the proposal endpoint already does; any
+later caller outside the server (the CLI) must then hold the same guarantee itself. [DEC-104,
+DOM-054, DOM-056, SRV-040]

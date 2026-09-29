@@ -235,6 +235,38 @@ pub enum AllocationError {
     OverAllocated { closing: TransactionId },
 }
 
+/// A closing's allocations that do not sum to its quantity [DOM-065].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("the allocations sum to {allocated}, not to the closing's {closed}")]
+pub struct Uncovered {
+    pub allocated: Decimal,
+    pub closed: Decimal,
+}
+
+/// Whether `allocated` sums exactly to `closed`, the closing's stated quantity viewed at the
+/// quantity scale (DEC-091, DEC-100) [DOM-065].
+///
+/// The one statement of the sum rule: the closing side below reads it, and so does approving an
+/// attribution ([`crate::attribution`]), so a closing that can be approved is one whose shares
+/// can be derived. Allocated quantities are summed as given; storage refuses one finer than the
+/// quantity scale [ARC-010].
+///
+/// # Errors
+///
+/// [`Uncovered`], carrying both sums, when they differ.
+pub fn covered(
+    closed: Quantity,
+    allocated: impl IntoIterator<Item = Quantity>,
+) -> Result<(), Uncovered> {
+    let allocated: Decimal = allocated.into_iter().map(Quantity::get).sum();
+    let closed = closed.rounded().get();
+    if allocated == closed {
+        Ok(())
+    } else {
+        Err(Uncovered { allocated, closed })
+    }
+}
+
 /// The cost and buy fee share of each allocation against `opening`, keyed by closing, in the
 /// canonical order of the closings [DOM-059], [DOM-062].
 ///
@@ -326,12 +358,9 @@ pub fn closing_shares(
             quantity: quantity.get(),
         });
     }
-    // DOM-065 holds a closing's allocations to its quantity at the quantity scale (DEC-091).
-    let allocated: Decimal = allocations.iter().map(|a| a.quantity.get()).sum();
-    let closed = quantity.rounded().get();
-    if allocated != closed {
-        return Err(AllocationError::Incomplete { allocated, closed });
-    }
+    covered(quantity, allocations.iter().map(|a| a.quantity)).map_err(
+        |Uncovered { allocated, closed }| AllocationError::Incomplete { allocated, closed },
+    )?;
 
     let mut sorted = allocations.to_vec();
     sorted.sort_by_key(|allocation| (allocation.opened_at, allocation.opening));

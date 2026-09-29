@@ -150,6 +150,19 @@ impl<'a> AttributionRepository<'a> {
         closing: TransactionId,
         allocations: &[Allocation],
     ) -> Result<AttributionId, StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let id = Self::approve_in(&mut tx, closing, allocations).await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// [`Self::approve`] inside the caller's SQLite transaction, which commits it; the attribution
+    /// service checks its own rules in the same transaction before writing [DOM-054].
+    pub(crate) async fn approve_in(
+        connection: &mut SqliteConnection,
+        closing: TransactionId,
+        allocations: &[Allocation],
+    ) -> Result<AttributionId, StorageError> {
         // Every quantity is scaled before anything is written, so a refusal at the last
         // allocation leaves no half-stored attribution [ARC-010].
         let quantities = allocations
@@ -157,8 +170,7 @@ impl<'a> AttributionRepository<'a> {
             .map(|allocation| at_scale("quantity", allocation.quantity()))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut tx = self.pool.begin().await?;
-        let position = Position::of(&mut tx, closing).await?;
+        let position = Position::of(&mut *connection, closing).await?;
 
         if !is_closing(&position.kind) {
             return Err(StorageError::NotAClosing {
@@ -167,20 +179,20 @@ impl<'a> AttributionRepository<'a> {
             });
         }
 
-        if let Some(existing) = attribution_of(&mut tx, closing).await? {
+        if let Some(existing) = attribution_of(&mut *connection, closing).await? {
             return Err(StorageError::ClosingAlreadyAttributed {
                 closing,
                 attribution: existing,
             });
         }
 
-        if let Some(earlier) = earlier_unattributed_closing(&mut tx, &position).await? {
+        if let Some(earlier) = earlier_unattributed_closing(&mut *connection, &position).await? {
             return Err(StorageError::EarlierClosingUnattributed { closing, earlier });
         }
 
         let inserted = query("insert into attribution (closing_transaction_id) values (?)")
             .bind(closing.get())
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await?;
         let id = inserted.last_insert_rowid();
 
@@ -194,11 +206,10 @@ impl<'a> AttributionRepository<'a> {
             .bind(ordinal)
             .bind(allocation.opening().get())
             .bind(quantity)
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await?;
         }
 
-        tx.commit().await?;
         Ok(AttributionId::new(id))
     }
 

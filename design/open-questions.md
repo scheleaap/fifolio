@@ -86,3 +86,6 @@ built on it.
 * **FIF-013** (remaining quantity: rounded exact difference, or difference of rounded sides) → DEC-099
 * **FIF-014** (closing-side divisor: stated quantity, or its view at the quantity scale) → DEC-100
 * **FIF-014** (whether a last share may be negative, or a running total pass the parent) → DEC-101
+* **FIF-015** (approving an `expiration`, whose quantity is undecided) → DEC-102
+* **FIF-015** (allocations of zero or less; one opening allocated twice in one attribution) → DEC-103
+* **FIF-015** (which layer holds DOM-054's "proposal written unchanged") → DEC-104
