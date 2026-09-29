@@ -1012,6 +1012,8 @@ dependencies = [
  "fifolio-test-support",
  "http-body-util",
  "insta",
+ "rust_decimal",
+ "rust_decimal_macros",
  "serde",
  "serde_json",
  "sqlx",
@@ -1025,6 +1027,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-axum",
+ "vec1",
 ]
 
 [[package]]

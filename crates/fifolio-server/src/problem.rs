@@ -68,6 +68,7 @@ pub enum ProblemType {
     UnscaledValue,
     CorruptValue,
     UnknownTransaction,
+    UnknownBatch,
     NotAClosing,
     WrongTransactionKind,
     ClosingAlreadyAttributed,
@@ -77,6 +78,7 @@ pub enum ProblemType {
     EmittedTransferIn,
     BatchTransactionAttributed,
     BatchRecordsCited,
+    BatchRemovalNotSupported,
     StorageFailure,
     UnreadableFile,
     MultipleCalendarYears,
@@ -99,7 +101,8 @@ impl ProblemType {
     ///
     /// Statuses: 409 for a refusal that depends on what is stored, 422 for a request whose
     /// content cannot be acted on, 404 for a row that is not there, 502 for the ECB feed
-    /// failing us, and 500 for what no request could have caused.
+    /// failing us, 501 for an operation this server does not carry out yet, and 500 for what
+    /// no request could have caused.
     fn spec(self) -> (&'static str, StatusCode, &'static str) {
         use StatusCode as S;
         match self {
@@ -139,6 +142,7 @@ impl ProblemType {
             Self::UnknownTransaction => {
                 ("unknown-transaction", S::NOT_FOUND, "No such transaction")
             }
+            Self::UnknownBatch => ("unknown-batch", S::NOT_FOUND, "No such import batch"),
             Self::NotAClosing => (
                 "not-a-closing",
                 S::UNPROCESSABLE_ENTITY,
@@ -183,6 +187,11 @@ impl ProblemType {
                 "batch-records-cited",
                 S::CONFLICT,
                 "The batch owns records other transactions cite",
+            ),
+            Self::BatchRemovalNotSupported => (
+                "batch-removal-not-supported",
+                S::NOT_IMPLEMENTED,
+                "Removing an import batch is not supported yet",
             ),
             Self::StorageFailure => (
                 "storage-failure",
@@ -287,6 +296,7 @@ impl From<&StorageError> for ProblemType {
             StorageError::UnscaledValue { .. } => Self::UnscaledValue,
             StorageError::CorruptValue { .. } => Self::CorruptValue,
             StorageError::UnknownTransaction { .. } => Self::UnknownTransaction,
+            StorageError::UnknownBatch { .. } => Self::UnknownBatch,
             StorageError::NotAClosing { .. } => Self::NotAClosing,
             StorageError::NotOfKind { .. } => Self::WrongTransactionKind,
             StorageError::ClosingAlreadyAttributed { .. } => Self::ClosingAlreadyAttributed,
@@ -552,6 +562,11 @@ mod tests {
             404,
         ),
         (
+            ProblemType::UnknownBatch,
+            "urn:fifolio:problem:unknown-batch",
+            404,
+        ),
+        (
             ProblemType::NotAClosing,
             "urn:fifolio:problem:not-a-closing",
             422,
@@ -595,6 +610,11 @@ mod tests {
             ProblemType::BatchRecordsCited,
             "urn:fifolio:problem:batch-records-cited",
             409,
+        ),
+        (
+            ProblemType::BatchRemovalNotSupported,
+            "urn:fifolio:problem:batch-removal-not-supported",
+            501,
         ),
         (
             ProblemType::StorageFailure,
@@ -804,6 +824,12 @@ mod tests {
                     transaction: transaction(1),
                 },
                 ProblemType::UnknownTransaction,
+            ),
+            (
+                StorageError::UnknownBatch {
+                    batch: BatchId::new(1),
+                },
+                ProblemType::UnknownBatch,
             ),
             (
                 StorageError::NotAClosing {

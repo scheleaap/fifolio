@@ -99,3 +99,4 @@ built on it.
 * **FIF-085** (whether a batch stores the auto-created count too) → DEC-112
 * **FIF-070** (how a refusal on several grounds carries each ground to the caller) → DEC-113
 * **FIF-090** (testing the account refusal while no served format states an account) → DEC-114
+* **FIF-036** (what deleting a batch answers while batch removal is not built) → DEC-115

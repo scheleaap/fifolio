@@ -2086,3 +2086,115 @@ async fn an_import_undo_leaves_a_manual_entry_standing() {
         "the entry and the identities it answers survive the undo [DOM-099]"
     );
 }
+
+/// Checking a deletion answers the same two refusals the deletion does, naming the same
+/// transactions, and removes nothing, so a caller can learn what holds a batch without undoing it
+/// [SRV-022], [DOM-072], [DOM-119], [TST-004].
+#[tokio::test]
+async fn checking_a_batch_deletion_refuses_as_the_deletion_does_and_removes_nothing() {
+    let (_db, database, batch) = open().await;
+    let r1 = stored_record(&database, batch, "r1").await;
+    let opening = store(&database, batch, isin(), &buy(day(1), r1.clone())).await;
+    let closing = store(
+        &database,
+        batch,
+        isin(),
+        &sell(day(2), stored_record(&database, batch, "s1").await),
+    )
+    .await;
+    let attribution = database
+        .attributions()
+        .approve(
+            closing,
+            &[Allocation::new(opening, Quantity::new(dec!(10.00000000)))],
+        )
+        .await
+        .expect("approve");
+    let second = database
+        .import_batches()
+        .insert(&import("2025.xlsx"))
+        .await
+        .expect("the second import");
+    let citing = store(&database, second, isin(), &sell(day(3), r1)).await;
+
+    // Held on both grounds, the attribution is named first, as the deletion names it.
+    match database.import_batches().check_deletable(batch).await {
+        Err(StorageError::BatchTransactionAttributed {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, batch);
+            assert_eq!(transactions, vec![opening, closing]);
+        }
+        other => panic!("an attributed batch must be refused, got {other:?}"),
+    }
+
+    database
+        .attributions()
+        .delete(attribution)
+        .await
+        .expect("delete the attribution");
+    match database.import_batches().check_deletable(batch).await {
+        Err(StorageError::BatchRecordsCited {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, batch);
+            assert_eq!(transactions, vec![citing]);
+        }
+        other => panic!("a cited batch must be refused, got {other:?}"),
+    }
+
+    database
+        .transactions()
+        .delete(citing)
+        .await
+        .expect("delete the foreign citer");
+    database
+        .import_batches()
+        .check_deletable(batch)
+        .await
+        .expect("nothing holds the batch now");
+    assert!(
+        database
+            .import_batches()
+            .find(batch)
+            .await
+            .expect("read back")
+            .is_some(),
+        "the check removes no batch"
+    );
+    for transaction in [opening, closing] {
+        assert!(
+            database
+                .transactions()
+                .find(transaction)
+                .await
+                .expect("read back")
+                .is_some(),
+            "the check removes no transaction"
+        );
+    }
+    assert!(
+        database
+            .source_records()
+            .handle(&cite("r1"))
+            .await
+            .expect("read the handle")
+            .is_some(),
+        "the check removes no record"
+    );
+}
+
+/// A batch that is not stored is named as unknown, where a deletion would find nothing to remove
+/// [SRV-022], [TST-004].
+#[tokio::test]
+async fn checking_the_deletion_of_an_unstored_batch_is_refused_as_unknown() {
+    let (_db, database, batch) = open().await;
+    let absent = BatchId::new(batch.get() + 1);
+
+    assert!(matches!(
+        database.import_batches().check_deletable(absent).await,
+        Err(StorageError::UnknownBatch { batch }) if batch == absent
+    ));
+}

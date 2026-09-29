@@ -410,6 +410,37 @@ async fn an_import_batch_round_trips_with_its_counts() {
     }
 }
 
+/// Batches list with their keys, in the order they were imported, each reading back as stored
+/// [SRV-020], [DOM-017], [TST-004].
+#[tokio::test]
+async fn import_batches_list_in_import_order_with_their_keys() {
+    let (_db, database) = open().await;
+    database
+        .accounts()
+        .insert(&account())
+        .await
+        .expect("insert");
+    assert_eq!(database.import_batches().list().await.expect("list"), []);
+
+    let saxo = batch(SourceFormat::SaxoNlXlsx);
+    let trade_republic = batch(SourceFormat::TradeRepublicDeCsv);
+    let first = database
+        .import_batches()
+        .insert(&saxo)
+        .await
+        .expect("insert");
+    let second = database
+        .import_batches()
+        .insert(&trade_republic)
+        .await
+        .expect("insert");
+
+    assert_eq!(
+        database.import_batches().list().await.expect("list"),
+        [(first, saxo), (second, trade_republic)]
+    );
+}
+
 /// Foreign keys are enforced rather than merely declared: SQLite leaves them off per
 /// connection, so a batch naming an account that was never stored must be refused [ARC-012],
 /// [TST-004].

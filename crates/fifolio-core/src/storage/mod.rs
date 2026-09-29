@@ -202,6 +202,8 @@ pub enum StorageError {
     /// No transaction with this id is stored, so nothing can be said about it.
     #[error("no transaction {transaction} is stored")]
     UnknownTransaction { transaction: TransactionId },
+    #[error("no import batch {batch} is stored")]
+    UnknownBatch { batch: BatchId },
     /// Both attribution invariants are stated over closings, so an opening cannot be attributed
     /// [DOM-066], [DOM-068].
     #[error("transaction {transaction} is a {kind} and not a closing")]

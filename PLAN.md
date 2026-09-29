@@ -1212,11 +1212,13 @@ Revision 80: named next to build. Both dependencies are done. The Ground-to-prob
 Done in revision 80: a Trade Republic file, which states no account, is not checked: it imports into two accounts of different ids over HTTP. The account refusal is pinned one step short of the wire: the endpoint's error path renders `account-mismatch` and `multiple-accounts` as 422 problem+json naming both accounts, and a combined refusal as one `several-grounds` problem (SRV-056, SRV-059, DEC-113). No served format states an account yet (Saxo is refused as not supported until FIF-023), so the HTTP case for a Saxo file naming another account is owed by the item that first serves a Saxo import (provisional DEC-114). Tests in `crates/fifolio-server/src/problem.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-036 Import batch endpoints
-Status: todo
+Status: done
 Requirements: SRV-019, SRV-020, SRV-022
 Depends on: FIF-035
 Acceptance: every import creates a batch; batches are readable and listable with account, filename, format, timestamp and counts; deletion is refused, naming the offenders, when any derived transaction participates in an attribution or when a record the batch owns is cited by a transaction the batch did not derive.
 Notes: Revision 3 splits the deletion behavior itself (SRV-021) into FIF-086; what remains is batch creation, reading and the two refusals, which is reviewable on its own because a refused deletion never reaches the removal path.
+Revision 81: named next to build. Its one dependency, FIF-035, is `done`, and none of SRV-019, SRV-020, SRV-022 is on a `Blocks:` line. Batch creation (SRV-019) already happens on every import, including a file posted again (provisional DEC-111), and the endpoint returns the batch id. `ImportBatchRepository` in `fifolio-core/src/storage/entities.rs` has `insert`, `find` and `delete` but no list; the batch keeps three counts, not four (provisional DEC-112). What remains: read and list endpoints, the delete route with SRV-022's two refusals as problem+json naming the offenders, and HTTP tests in `http_surface.rs`. The removal itself stays FIF-086's.
+Done in revision 81: every import creates a batch, and `GET /imports` and `GET /imports/{batch}` read and list each with its account, filename, format, timestamp and three counts; a file posted again has a batch of its own (SRV-019, SRV-020, DEC-111, DEC-112). `DELETE /imports/{batch}` refuses as a 409 problem naming the transactions that hold the batch, on the attribution ground first, then on a record it owns cited by a transaction it did not derive (SRV-022); an absent batch is a 404. Where neither refusal holds it answers 501 `batch-removal-not-supported` and removes nothing until FIF-086 (provisional DEC-115). `ImportBatchRepository` gains a list. Tests in `crates/fifolio-core/tests/storage.rs`, `crates/fifolio-core/tests/invariants.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-086 Batch deletion removes its records
 Status: todo
@@ -1385,6 +1387,22 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 81.** A status reconciliation after an interrupted session. `design/` changed since
+revision 80 only by adding the provisional DEC-114 (testing the account refusal while no served
+format states an account), listed under "Provisionally answered" against FIF-090; no requirement id
+added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines, and the 5 items
+carrying one are exactly the 5 `blocked`.
+
+* **Completed: FIF-090** (`2a60a9d`). Its item text already recorded this; only the history lagged.
+  DEC-114 invalidates no completed work.
+* No item added, split, retired, blocked or unblocked. 101 items: **61 `done`, 35 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-036, 071, 086, 037, 072, 038, 087, 073, 039, 040, 041 remain
+  `todo`; none carries a blocked requirement, so each waits only on dependencies inside that list.
+* **Next to build: FIF-036.** Its dependency FIF-035 is `done`; batch creation already happens on
+  every import (DEC-111), so what remains is read, list and the refused delete (SRV-022).
 
 **Revision 80.** A status reconciliation after an interrupted session. `design/` changed in
 `c776fa4` only by adding the provisional DEC-113 (a refusal on several grounds is one
@@ -2795,6 +2813,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 81: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `2a60a9d`. One hundred and one items: 61 `done`, 35 `todo`, 5 `blocked`.
 
 Revision 80: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `c776fa4`. One hundred and one items: 60 `done`, 36 `todo`, 5 `blocked`.

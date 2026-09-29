@@ -15,18 +15,25 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use chrono::DateTime;
+use fifolio_core::decimal::{Money, Quantity, QuotedPrice};
 use fifolio_core::entities::{
     Account, ImportBatch, ImportCounts, Isin, Order, Quotation, Security, SecurityType,
     SourceFormat, SourceRecord,
 };
 use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
-use fifolio_core::storage::Database;
+use fifolio_core::storage::{
+    Allocation, BatchId, Database, Placement, RecordHandle, TransactionId,
+};
+use fifolio_core::transaction::{Buy, BuyOrigin, Derivation, Sell, Transaction};
+use fifolio_core::valuation::Conversion;
 use fifolio_server::problem::{ABOUT_BLANK, CONTENT_TYPE};
 use fifolio_test_support::TempDb;
 use http_body_util::BodyExt;
+use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+use vec1::vec1;
 
 /// The server as a request sees it, over a database of its own.
 struct Harness {
@@ -711,6 +718,7 @@ async fn the_endpoints_are_documented() {
         "/securities/{isin}",
         "/securities/{isin}/reviewed",
         "/imports",
+        "/imports/{batch}",
     ] {
         assert!(spec["paths"].get(path).is_some(), "{path} is undocumented");
     }
@@ -1176,4 +1184,241 @@ async fn an_unknown_account_or_an_incomplete_request_is_refused() {
         )
         .await
         .assert_problem(StatusCode::BAD_REQUEST, ABOUT_BLANK);
+}
+
+/// Every import creates a batch, and each batch is read and listed with its account, filename,
+/// format, timestamp and three counts; a file posted again has a batch of its own (DEC-111,
+/// DEC-112, provisional) [SRV-019], [SRV-020], [TST-005].
+#[tokio::test]
+async fn every_import_creates_a_batch_that_is_read_and_listed() {
+    let harness = with_trade_republic_account().await;
+    assert_eq!(
+        harness.request(Method::GET, "/imports").await.body,
+        json!([])
+    );
+    let query = format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv&filename=a.csv");
+    let file = trade_republic_fixture("transactions_2022-01-01_2022-12-31.csv");
+
+    let first = harness.post_file(&query, file.clone()).await;
+    let second = harness.post_file(&query, file).await;
+
+    let listed = harness.request(Method::GET, "/imports").await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let batches = listed.body.as_array().expect("a list");
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch["id"].clone())
+            .collect::<Vec<_>>(),
+        [first.body["batch"].clone(), second.body["batch"].clone()],
+        "one batch per import, in import order"
+    );
+    for batch in batches {
+        let imported_at = batch["imported_at"].as_str().expect("a timestamp");
+        assert!(
+            DateTime::parse_from_rfc3339(imported_at).is_ok(),
+            "{imported_at}"
+        );
+        assert_eq!(
+            batch,
+            &json!({
+                "id": batch["id"],
+                "account": {"broker": "Trade Republic", "id": "DE0001"},
+                "filename": "a.csv",
+                "format": "trade_republic_de_csv",
+                "imported_at": imported_at,
+                "counts": {"derived": 2, "pending": 0, "non_position": 5},
+            })
+        );
+        let read = harness
+            .request(Method::GET, &format!("/imports/{}", batch["id"]))
+            .await;
+        assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+        assert_eq!(&read.body, batch);
+    }
+}
+
+/// A batch that is not stored is a 404 to read and to delete [SRV-020], [SRV-022], [ARC-020].
+#[tokio::test]
+async fn an_absent_batch_is_not_found() {
+    let harness = Harness::new().await;
+
+    for method in [Method::GET, Method::DELETE] {
+        harness
+            .request(method, "/imports/1")
+            .await
+            .assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-batch");
+    }
+}
+
+/// The ISIN of [`philips`].
+fn philips_isin() -> Isin {
+    Isin::new("NL0000009538")
+}
+
+fn on(day: u32) -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(2024, 5, day).expect("a valid date")
+}
+
+fn valued<T: fifolio_core::decimal::Scaled>(value: T) -> fifolio_core::valuation::Valued<T> {
+    fifolio_core::valuation::Valued::new(value, value)
+}
+
+fn buy_of(record: RecordHandle) -> Transaction {
+    Buy::new(
+        Derivation::new(on(1), vec1![record]),
+        Quantity::new(dec!(100.00000000)),
+        valued(QuotedPrice::new(dec!(10.000000))),
+        valued(Money::new(dec!(1000.00))),
+        valued(Money::new(dec!(8.00))),
+        BuyOrigin::Purchase,
+        Conversion::native(on(1)),
+    )
+    .into()
+}
+
+fn sell_of(day: u32, record: RecordHandle) -> Transaction {
+    Sell::new(
+        Derivation::new(on(day), vec1![record]),
+        Quantity::new(dec!(10.00000000)),
+        valued(QuotedPrice::new(dec!(12.000000))),
+        valued(Money::new(dec!(120.00))),
+        valued(Money::new(dec!(8.00))),
+        Conversion::native(on(day)),
+    )
+    .into()
+}
+
+impl Harness {
+    /// A batch of the Saxo account with no records, as an import leaves one.
+    async fn saxo_batch(&self, filename: &str) -> BatchId {
+        self.database
+            .import_batches()
+            .insert(&ImportBatch::new(
+                Account::new("Saxo", "69900/1000000"),
+                filename,
+                SourceFormat::SaxoNlXlsx,
+                DateTime::from_timestamp(1_714_608_000, 0).expect("a timestamp"),
+                ImportCounts::default(),
+            ))
+            .await
+            .expect("insert the batch")
+    }
+
+    /// A record `batch` owns, and the handle a transaction is derived from.
+    async fn owned_record(&self, batch: BatchId, reference: &str) -> RecordHandle {
+        let record = SourceRecord::new(
+            identify(
+                &Account::new("Saxo", "69900/1000000"),
+                &IdentitySource::BrokerReference(reference),
+            ),
+            Order::new(1),
+            "raw",
+            BTreeMap::new(),
+        );
+        self.database
+            .source_records()
+            .insert(batch, &record)
+            .await
+            .expect("insert the record")
+    }
+
+    async fn derive(&self, batch: BatchId, transaction: &Transaction) -> TransactionId {
+        self.database
+            .transactions()
+            .insert(
+                &Placement::derived(Account::new("Saxo", "69900/1000000"), philips_isin(), batch),
+                transaction,
+            )
+            .await
+            .expect("store the transaction")
+    }
+}
+
+/// Deleting a batch is refused while a transaction derived from it takes part in an attribution,
+/// then while a record it owns is cited by a transaction it did not derive, each refusal a 409
+/// problem naming the transactions that hold it; once neither holds, the deletion is answered as
+/// not supported yet and nothing is removed, the removal being FIF-086's (DEC-115, provisional)
+/// [SRV-022], [DOM-072], [DOM-119], [ARC-020], [TST-005].
+#[tokio::test]
+async fn deleting_a_batch_is_refused_naming_what_holds_it() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness.json(Method::POST, "/securities", &philips()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    let b1 = harness.owned_record(batch, "b1").await;
+    let opening = harness.derive(batch, &buy_of(b1.clone())).await;
+    let s1 = harness.owned_record(batch, "s1").await;
+    let closing = harness.derive(batch, &sell_of(2, s1)).await;
+    let attribution = harness
+        .database
+        .attributions()
+        .approve(
+            closing,
+            &[Allocation::new(opening, Quantity::new(dec!(10.00000000)))],
+        )
+        .await
+        .expect("approve");
+    // Another import's transaction citing this batch's record: a multi-file event.
+    let other = harness.saxo_batch("2025.xlsx").await;
+    let citing = harness.derive(other, &sell_of(3, b1)).await;
+    let uri = format!("/imports/{batch}");
+
+    let detail = harness
+        .request(Method::DELETE, &uri)
+        .await
+        .assert_problem(
+            StatusCode::CONFLICT,
+            "urn:fifolio:problem:batch-transaction-attributed",
+        )
+        .expect("a detail")
+        .to_owned();
+    assert!(
+        detail.ends_with(&format!("{opening}, {closing}")),
+        "the refusal names both attributed transactions: {detail}"
+    );
+
+    harness
+        .database
+        .attributions()
+        .delete(attribution)
+        .await
+        .expect("delete the attribution");
+    let detail = harness
+        .request(Method::DELETE, &uri)
+        .await
+        .assert_problem(
+            StatusCode::CONFLICT,
+            "urn:fifolio:problem:batch-records-cited",
+        )
+        .expect("a detail")
+        .to_owned();
+    assert!(
+        detail.ends_with(&format!(": {citing}")),
+        "the refusal names the citing transaction and only it: {detail}"
+    );
+
+    harness
+        .database
+        .transactions()
+        .delete(citing)
+        .await
+        .expect("delete the citing transaction");
+    let detail = harness
+        .request(Method::DELETE, &uri)
+        .await
+        .assert_problem(
+            StatusCode::NOT_IMPLEMENTED,
+            "urn:fifolio:problem:batch-removal-not-supported",
+        )
+        .expect("a detail")
+        .to_owned();
+    assert!(detail.contains("FIF-086"), "{detail}");
+    assert_eq!(
+        harness.request(Method::GET, &uri).await.status,
+        StatusCode::OK,
+        "no refused or unsupported deletion removes the batch"
+    );
+    assert_eq!(harness.count("source_record").await, 2);
+    assert_eq!(harness.count("transaction_record").await, 2);
 }

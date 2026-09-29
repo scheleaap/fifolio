@@ -628,23 +628,7 @@ impl<'a> ImportBatchRepository<'a> {
     pub async fn delete(&self, batch: BatchId) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await?;
 
-        let derived = derived_transactions(&mut tx, batch).await?;
-
-        let attributed = attributed_of(&mut tx, &derived).await?;
-        if !attributed.is_empty() {
-            return Err(StorageError::BatchTransactionAttributed {
-                batch,
-                transactions: attributed,
-            });
-        }
-
-        let citing = foreign_citations(&mut tx, batch).await?;
-        if !citing.is_empty() {
-            return Err(StorageError::BatchRecordsCited {
-                batch,
-                transactions: citing,
-            });
-        }
+        let derived = refuse_deletion(&mut tx, batch).await?;
 
         delete_transactions(&mut tx, &derived).await?;
         query("delete from source_record where batch_id = ?")
@@ -660,8 +644,28 @@ impl<'a> ImportBatchRepository<'a> {
         Ok(())
     }
 
+    /// Answers whether deleting `batch` would be refused, and on which ground, without deleting
+    /// anything: the two refusals of [`Self::delete`], checked the same way [SRV-022].
+    ///
+    /// A batch that is not stored is refused as [`StorageError::UnknownBatch`], where
+    /// [`Self::delete`] would find nothing to remove.
+    pub async fn check_deletable(&self, batch: BatchId) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let stored = query("select count(*) as stored from import_batch where id = ?")
+            .bind(batch.get())
+            .fetch_one(&mut *tx)
+            .await?
+            .get::<i64, _>("stored");
+        if stored == 0 {
+            return Err(StorageError::UnknownBatch { batch });
+        }
+        refuse_deletion(&mut tx, batch).await?;
+        // Nothing was written, so the transaction is dropped rather than committed.
+        Ok(())
+    }
+
     pub async fn find(&self, id: BatchId) -> Result<Option<ImportBatch>, StorageError> {
-        let Some(row) = query(
+        query(
             "select account_broker, account_id, filename, format, imported_at,
                     derived, pending, non_position
              from import_batch where id = ?",
@@ -669,24 +673,72 @@ impl<'a> ImportBatchRepository<'a> {
         .bind(id.get())
         .fetch_optional(self.pool)
         .await?
-        else {
-            return Ok(None);
-        };
-
-        let counts = ImportCounts {
-            derived: count("derived", row.get::<i64, _>("derived"))?,
-            pending: count("pending", row.get::<i64, _>("pending"))?,
-            non_position: count("non_position", row.get::<i64, _>("non_position"))?,
-        };
-
-        Ok(Some(ImportBatch::new(
-            account_from_row(&row, "account_broker", "account_id"),
-            row.get::<String, _>("filename"),
-            source_format(&row.get::<String, _>("format"))?,
-            row.get("imported_at"),
-            counts,
-        )))
+        .as_ref()
+        .map(batch_from_row)
+        .transpose()
     }
+
+    /// Every batch with its key, in the order they were imported [SRV-020].
+    pub async fn list(&self) -> Result<Vec<(BatchId, ImportBatch)>, StorageError> {
+        query(
+            "select id, account_broker, account_id, filename, format, imported_at,
+                    derived, pending, non_position
+             from import_batch order by id",
+        )
+        .fetch_all(self.pool)
+        .await?
+        .iter()
+        .map(|row| Ok((BatchId::new(row.get("id")), batch_from_row(row)?)))
+        .collect()
+    }
+}
+
+fn batch_from_row(row: &SqliteRow) -> Result<ImportBatch, StorageError> {
+    let counts = ImportCounts {
+        derived: count("derived", row.get::<i64, _>("derived"))?,
+        pending: count("pending", row.get::<i64, _>("pending"))?,
+        non_position: count("non_position", row.get::<i64, _>("non_position"))?,
+    };
+
+    Ok(ImportBatch::new(
+        account_from_row(row, "account_broker", "account_id"),
+        row.get::<String, _>("filename"),
+        source_format(&row.get::<String, _>("format"))?,
+        row.get("imported_at"),
+        counts,
+    ))
+}
+
+/// The two grounds a batch deletion is refused on, checked in the caller's SQLite transaction,
+/// answering the transactions a deletion would take with it when neither holds.
+///
+/// Refused while any of those transactions participates in an attribution [DOM-072], and while
+/// any record the batch owns is cited by a transaction it did not derive [DOM-119], each refusal
+/// naming the transactions that hold the batch in place. The attribution ground is checked first,
+/// so a batch held on both grounds is refused naming the attributed transactions.
+async fn refuse_deletion(
+    connection: &mut SqliteConnection,
+    batch: BatchId,
+) -> Result<Vec<TransactionId>, StorageError> {
+    let derived = derived_transactions(connection, batch).await?;
+
+    let attributed = attributed_of(connection, &derived).await?;
+    if !attributed.is_empty() {
+        return Err(StorageError::BatchTransactionAttributed {
+            batch,
+            transactions: attributed,
+        });
+    }
+
+    let citing = foreign_citations(connection, batch).await?;
+    if !citing.is_empty() {
+        return Err(StorageError::BatchRecordsCited {
+            batch,
+            transactions: citing,
+        });
+    }
+
+    Ok(derived)
 }
 
 /// The transactions derived from a record `batch` owns [DOM-072], read through the relation from

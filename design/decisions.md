@@ -900,3 +900,17 @@ several, is owed by the item that first serves a Saxo import at the endpoint. Al
 taken: lifting the Saxo refusal, which would store rows unclassified, the guess the interim
 refusal exists to prevent; and giving the router an importer seam for tests, production
 abstraction no requirement asks for. [DEC-114, SRV-056, SRV-013, IMP-003, ARC-021]
+
+**DEC-115 — Provisional: until batch removal is built, a deletion no refusal holds is answered as
+not supported, and removes nothing.** FIF-036 serves the delete route with SRV-022's two refusals
+and leaves the removal to FIF-086, but says nothing of what the route answers when neither refusal
+holds. The core already has a removal, but it predates the supplier relation SRV-052 needs
+(FIF-071): it deletes every record the batch owns, including records a later re-import also
+supplied, which SRV-021 (DEC-092) says must survive. So `DELETE /imports/{batch}` checks the two
+refusals, answering each as a 409 problem naming the transactions that hold the batch, and
+otherwise answers 501 `batch-removal-not-supported` without touching anything; FIF-086 replaces
+that answer with the removal. A batch held on both grounds is named on the attribution ground
+first, as the core removal already refuses it. Alternatives not taken: calling the existing
+removal, which serves a deletion that loses records SRV-021 keeps; and answering success without
+removing, which tells the caller an undo happened when it did not. [DEC-115, SRV-021, SRV-022,
+SRV-052, DOM-072, DOM-119]
