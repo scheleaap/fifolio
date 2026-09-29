@@ -8,6 +8,7 @@
 //! Every test opens its own file through the shared helper. No test reaches the network.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 
 use chrono::NaiveDate;
 use fifolio_core::decimal::{Money, Quantity, QuotedPrice};
@@ -16,7 +17,7 @@ use fifolio_core::entities::{
     SecurityType, SourceFormat, SourceRecord,
 };
 use fifolio_core::identity::{IdentitySource, identify};
-use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
+use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use fifolio_core::ordering::Leg;
 use fifolio_core::storage::{
     Allocation, AttributionId, BatchId, Database, Placement, RecordHandle, StorageError,
@@ -157,7 +158,14 @@ fn transfer_in_at(on: NaiveDate, record: RecordHandle, conversion: Conversion) -
 
 /// A split carries no money and so no conversion [DOM-105].
 fn split(on: NaiveDate, record: RecordHandle) -> Transaction {
-    Split::new(Derivation::new(on, vec1![record])).into()
+    Split::new(
+        Derivation::new(on, vec1![record]),
+        Ratio::new(
+            NonZeroU32::new(2).expect("a non-zero numerator"),
+            NonZeroU32::MIN,
+        ),
+    )
+    .into()
 }
 
 /// The `transfer_in` a `transfer_out` emits on approval: derived from no row of its own

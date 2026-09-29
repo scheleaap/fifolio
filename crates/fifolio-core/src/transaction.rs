@@ -96,7 +96,6 @@
 //! | the EUR gross | `transfer_out` | FIF-080 (DOM-112): it is derived from its own allocations, not stored |
 //! | quantity | `expiration` | FIF-079 (DOM-092): it is the unattributed remainder, not a stated figure |
 //! | target security and ratio | `transfer_out` | FIF-063 (DOM-090) |
-//! | ratio, as an integer numerator and denominator | `split` | FIF-061 (DOM-113) |
 //!
 //! The money fields present are the figures the variant states, at the scales of
 //! [`crate::decimal`].
@@ -106,6 +105,7 @@ use vec1::Vec1;
 
 use crate::decimal::{Money, Quantity, QuotedPrice};
 use crate::entities::RecordIdentity;
+use crate::manual_entry::Ratio;
 use crate::ordering::{Leg, OrderKey, RecordPosition};
 use crate::storage::RecordHandle;
 use crate::valuation::{Conversion, Valued};
@@ -423,9 +423,13 @@ variant!(
     /// Rescales every open parcel of one security. Neither opens nor closes anything
     /// [DOM-081], and realizes no gain.
     ///
-    /// Its ratio is DOM-113 — an integer numerator and denominator, with an exact-rational
-    /// effective quantity — which is undecided (OQ-004) and belongs to FIF-061.
-    Split {}
+    /// What it does to a parcel is [`crate::effective_quantity`]'s: the parcel's stated figures
+    /// stay as booked, and its effective quantity is derived through this ratio [DOM-089].
+    Split {
+        /// `numerator` new units for every `denominator` held, as an integer pair so that a
+        /// one-for-three is never flattened into a decimal that cannot hold it [DOM-113].
+        ratio: Ratio,
+    }
 );
 
 /// How a [`Buy`] arose [DOM-082].
@@ -496,6 +500,27 @@ impl Opening {
         match self {
             Self::Buy(buy) => buy.derivation(),
             Self::TransferIn(transfer_in) => transfer_in.derivation(),
+        }
+    }
+
+    /// The quantity the statement states, in the units current at the opening. A split never
+    /// rewrites it; the quantity at a later position is [`crate::effective_quantity`]'s
+    /// [DOM-089].
+    #[must_use]
+    pub fn quantity(&self) -> Quantity {
+        match self {
+            Self::Buy(buy) => buy.quantity(),
+            Self::TransferIn(transfer_in) => transfer_in.quantity(),
+        }
+    }
+
+    /// What the parcel cost in total: a buy's gross, a `transfer_in`'s carried cost basis, which
+    /// is its gross [DOM-085]. Fees are not in it; they are a separate figure [DOM-059].
+    #[must_use]
+    pub fn gross(&self) -> Valued<Money> {
+        match self {
+            Self::Buy(buy) => buy.gross(),
+            Self::TransferIn(transfer_in) => transfer_in.cost_basis(),
         }
     }
 
@@ -641,6 +666,8 @@ impl From<Split> for Transaction {
 mod tests {
     use super::*;
 
+    use std::num::NonZeroU32;
+
     use rust_decimal_macros::dec;
     use vec1::vec1;
 
@@ -770,7 +797,10 @@ mod tests {
     }
 
     fn split() -> Split {
-        Split::new(derivation())
+        Split::new(
+            derivation(),
+            Ratio::new(NonZeroU32::new(2).expect("non-zero"), NonZeroU32::MIN),
+        )
     }
 
     fn every_variant() -> Vec<Transaction> {

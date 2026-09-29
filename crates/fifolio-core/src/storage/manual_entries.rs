@@ -395,7 +395,9 @@ fn required<T>(field: &'static str, value: Option<T>) -> Result<T, StorageError>
     })
 }
 
-fn ratio(row: &SqliteRow) -> Result<Ratio, StorageError> {
+/// A ratio from the `ratio_numerator` and `ratio_denominator` columns of `row`, which the
+/// manual entry and the split detail table share.
+pub(super) fn ratio(row: &SqliteRow) -> Result<Ratio, StorageError> {
     let part = |field: &'static str| -> Result<NonZeroU32, StorageError> {
         let stored = required(field, row.get::<Option<i64>, _>(field))?;
         u32::try_from(stored)

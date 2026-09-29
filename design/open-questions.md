@@ -81,3 +81,4 @@ built on it.
 * **OQ-011** (a `transfer_out` in the acquisition report) → DEC-093
 * **FIF-076** (a transaction's `order` from records of several files; batch age) → DEC-094, DEC-095
 * **FIF-076** (whether undo-then-re-import restores batch age as well) → DEC-096
+* **FIF-061** (whether "between" an opening and a position includes either end) → DEC-097

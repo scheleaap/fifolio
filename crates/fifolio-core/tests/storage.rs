@@ -59,6 +59,15 @@ async fn derivation(database: &Database, batch: BatchId) -> Derivation {
     )
 }
 
+/// A reverse split, whose ratio has no finite decimal expansion: storing it as anything but the
+/// integer pair would not read back as itself [DOM-113].
+fn one_for_three() -> Ratio {
+    Ratio::new(
+        NonZeroU32::MIN,
+        NonZeroU32::new(3).expect("a non-zero denominator"),
+    )
+}
+
 /// The Saxo worked example's conversion: USD booked, the rate stated per EUR [DOM-086].
 fn conversion() -> Conversion {
     Conversion::new(
@@ -420,7 +429,8 @@ async fn a_batch_for_an_account_that_was_never_stored_is_refused() {
 }
 
 /// Each of the six transaction variants round-trips with its own fields, its native/EUR pairs
-/// and its conversion [DOM-010], [DOM-028], [DOM-029], [DOM-085], [TST-004].
+/// and its conversion, a split its integer ratio [DOM-010], [DOM-028], [DOM-029], [DOM-085],
+/// [DOM-113], [TST-004].
 #[tokio::test]
 async fn every_transaction_variant_round_trips() {
     let (_db, database) = open().await;
@@ -500,10 +510,13 @@ async fn every_transaction_variant_round_trips() {
             conversion(),
         )
         .into(),
-        Split::new(Derivation::new(
-            date(),
-            vec1![store_record(&database, batch, "4100200302", &[]).await],
-        ))
+        Split::new(
+            Derivation::new(
+                date(),
+                vec1![store_record(&database, batch, "4100200302", &[]).await],
+            ),
+            one_for_three(),
+        )
         .into(),
     ];
 
@@ -546,7 +559,7 @@ async fn a_transaction_is_derived_only_from_a_record_storage_holds() {
         .transactions()
         .insert(
             &placement,
-            &Split::new(Derivation::new(date(), vec1![handle])).into(),
+            &Split::new(Derivation::new(date(), vec1![handle]), one_for_three()).into(),
         )
         .await
         .expect("insert");
@@ -585,7 +598,7 @@ async fn a_transaction_derived_from_a_record_an_undo_removed_is_refused() {
         .transactions()
         .insert(
             &placement,
-            &Split::new(Derivation::new(date(), vec1![handle])).into(),
+            &Split::new(Derivation::new(date(), vec1![handle]), one_for_three()).into(),
         )
         .await;
 
@@ -646,7 +659,7 @@ async fn a_handle_issued_by_another_database_is_refused() {
         .transactions()
         .insert(
             &placement,
-            &Split::new(Derivation::new(date(), vec1![handle])).into(),
+            &Split::new(Derivation::new(date(), vec1![handle]), one_for_three()).into(),
         )
         .await;
 
@@ -743,10 +756,10 @@ async fn citations_keep_their_order() {
     for reference in ["c", "a", "b"] {
         cites.push(store_record(&database, batch, reference, &[]).await);
     }
-    let transaction: Transaction = Split::new(Derivation::new(
-        date(),
-        cites.try_into().expect("three records"),
-    ))
+    let transaction: Transaction = Split::new(
+        Derivation::new(date(), cites.try_into().expect("three records")),
+        one_for_three(),
+    )
     .into();
 
     let id = database
@@ -773,7 +786,7 @@ async fn an_absent_transaction_reads_back_as_none() {
         .transactions()
         .insert(
             &placement,
-            &Split::new(derivation(&database, batch).await).into(),
+            &Split::new(derivation(&database, batch).await, one_for_three()).into(),
         )
         .await
         .expect("insert");
@@ -1086,7 +1099,7 @@ async fn a_stored_code_this_version_cannot_read_is_reported() {
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &Split::new(derivation(&database, batch).await).into(),
+            &Split::new(derivation(&database, batch).await, one_for_three()).into(),
         )
         .await
         .expect("insert");
@@ -1186,7 +1199,7 @@ async fn a_stored_transaction_without_citations_is_refused_on_reading_back() {
         .transactions()
         .insert(
             &placement,
-            &Split::new(derivation(&database, batch).await).into(),
+            &Split::new(derivation(&database, batch).await, one_for_three()).into(),
         )
         .await
         .expect("insert");
@@ -1219,7 +1232,7 @@ async fn a_stored_place_this_version_cannot_read_is_reported() {
         .transactions()
         .insert(
             &placement,
-            &Split::new(derivation(&database, batch).await).into(),
+            &Split::new(derivation(&database, batch).await, one_for_three()).into(),
         )
         .await
         .expect("insert");
@@ -1234,6 +1247,57 @@ async fn a_stored_place_this_version_cannot_read_is_reported() {
             "update transaction_record set leg = 0, ordering = -1",
             "ordering",
             "-1",
+        ),
+    ] {
+        let pool = raw(&db).await;
+        query(statement).execute(&pool).await.expect("edit the row");
+        pool.close().await;
+
+        match database.transactions().find(id).await {
+            Err(StorageError::CorruptValue {
+                field: reported,
+                value: stored,
+            }) => {
+                assert_eq!(reported, field);
+                assert_eq!(stored, value);
+            }
+            other => panic!("an unreadable {field} must be reported, got {other:?}"),
+        }
+    }
+}
+
+/// A split's ratio edited by hand to one `Ratio` cannot hold, zero or past a `u32`, is reported
+/// rather than read back as some other split [DOM-113], [TST-004].
+#[tokio::test]
+async fn a_hand_edited_split_ratio_is_reported() {
+    let (db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let id = database
+        .transactions()
+        .insert(
+            &placement,
+            &Split::new(
+                Derivation::new(
+                    date(),
+                    vec1![store_record(&database, batch, "4100200302", &[]).await],
+                ),
+                one_for_three(),
+            )
+            .into(),
+        )
+        .await
+        .expect("insert");
+
+    for (statement, field, value) in [
+        (
+            "update transaction_split set ratio_numerator = 0",
+            "ratio_numerator",
+            "0",
+        ),
+        (
+            "update transaction_split set ratio_numerator = 1, ratio_denominator = 4294967296",
+            "ratio_denominator",
+            "4294967296",
         ),
     ] {
         let pool = raw(&db).await;
@@ -1524,7 +1588,7 @@ async fn an_account_named_by_an_entry_or_a_transaction_is_not_deleted() {
         .transactions()
         .insert(
             &Placement::emitted(other.clone(), isin()),
-            &Split::new(derivation(&database, batch).await).into(),
+            &Split::new(derivation(&database, batch).await, one_for_three()).into(),
         )
         .await
         .expect("insert the transaction");
@@ -1961,8 +2025,17 @@ async fn the_migration_fills_the_canonical_order_of_earlier_rows() {
               derived, pending, non_position)
          values (1, 'Saxo', '69900/1000000', '2022.xlsx', 'saxo_nl_xlsx',
                  '2024-05-03T09:00:00Z', 1, 0, 0)",
-        "insert into transaction_record (id, kind, trade_date) values (1, 'split', '2024-05-02')",
-        "insert into transaction_record (id, kind, trade_date) values (2, 'split', '2024-05-02')",
+        // Transfers out rather than splits, which carried no fields under this schema: a split
+        // now has a ratio no earlier row can supply [DOM-113].
+        "insert into transaction_record (id, kind, trade_date)
+         values (1, 'transfer_out', '2024-05-02')",
+        "insert into transaction_record (id, kind, trade_date)
+         values (2, 'transfer_out', '2024-05-02')",
+        "insert into transaction_transfer_out
+             (transaction_id, quantity, fees_native, fees_eur, conversion_currency,
+              conversion_rate, conversion_source, conversion_rate_date)
+         values (1, '10', '0.00', '0.00', 'EUR', '1.000000', 'native', '2024-05-02'),
+                (2, '10', '0.00', '0.00', 'EUR', '1.000000', 'native', '2024-05-02')",
     ] {
         query(statement)
             .execute(&pool)
@@ -2025,14 +2098,14 @@ async fn the_migration_fills_the_canonical_order_of_earlier_rows() {
         handle.position(),
         RecordPosition::new(Order::new(7), BatchAge::new(3))
     );
-    let split = database
+    let transfer_out = database
         .transactions()
         .find(TransactionId::new(1))
         .await
         .expect("read back")
         .expect("the transaction is stored");
     assert_eq!(
-        split.order_key(),
+        transfer_out.order_key(),
         OrderKey::new(
             date(),
             RecordPosition::new(Order::new(4), BatchAge::new(2)),
@@ -2209,7 +2282,7 @@ async fn a_security_a_transaction_is_placed_on_is_not_deleted() {
         .transactions()
         .insert(
             &Placement::emitted(account(), isin()),
-            &Split::new(derivation(&database, batch).await).into(),
+            &Split::new(derivation(&database, batch).await, one_for_three()).into(),
         )
         .await
         .expect("insert the transaction");

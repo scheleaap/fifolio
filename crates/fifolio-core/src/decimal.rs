@@ -59,7 +59,9 @@ pub const FX_RATE_SCALE: u32 = 6;
 
 /// Round to `scale`, half away from zero [ARC-010].
 ///
-/// The only rounding in the crate.
+/// The only rounding of a decimal in the crate. An exact rational, which no decimal can hold,
+/// is rounded under the same rule by
+/// [`crate::effective_quantity::EffectiveQuantity::at_quantity_scale`].
 #[must_use]
 pub fn round_to(value: Decimal, scale: u32) -> Decimal {
     value.round_dp_with_strategy(scale, RoundingStrategy::MidpointAwayFromZero)

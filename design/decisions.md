@@ -687,3 +687,14 @@ Alternative not taken: keeping the undone batch's age for the records it supplie
 re-import takes it back. That needs a record of deleted batches and their ages that nothing
 defines, and it contradicts DEC-092's "oldest batch that supplied the record" once that batch is
 gone. [DEC-096, TST-010, DOM-111, DEC-092, DEC-095]
+
+**DEC-097 — Provisional: "between" the opening and a position excludes both ends.** An opening's
+effective quantity as of a position applies the splits that sort strictly after the opening and
+strictly before that position in the canonical order. A split at the queried position itself is
+not applied: the quantity as of a split is the one it rescales, not the one it produces. Asked of
+a position that precedes the opening, the effective quantity is undefined and the calculation
+refuses rather than answering with the stated quantity, since the parcel does not exist there.
+Alternative not taken: an inclusive upper bound. It changes nothing for a closing, which never
+shares a position with a split, but would make "as of the split" mean "after it", and answering a
+pre-opening position with the stated quantity would give a plausible figure for a question with no
+answer. [DEC-097, DOM-089, DOM-103]

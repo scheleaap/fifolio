@@ -4,6 +4,7 @@
 
 pub mod decimal;
 pub mod ecb;
+pub mod effective_quantity;
 pub mod entities;
 pub mod fx;
 pub mod identity;

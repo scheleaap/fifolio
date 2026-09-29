@@ -18,6 +18,7 @@ use crate::storage::codec::{
     pair_at_scale, price_pair, quantity as read_quantity, rate, rate_source, rate_source_code,
     transfer_in_source, transfer_in_source_code,
 };
+use crate::storage::manual_entries::ratio;
 use crate::storage::{AttributionId, BatchId, RecordHandle, StorageError, row_id};
 use crate::transaction::{
     Buy, Closing, Derivation, Expiration, Opening, Sell, Split, Transaction, TransferIn,
@@ -241,9 +242,18 @@ impl<'a> TransactionRepository<'a> {
                 .execute(&mut *tx)
                 .await?;
             }
-            // A split has no fields of its own yet [DOM-113, FIF-061], so the header row is the
-            // whole of it.
-            Transaction::Split(_) => {}
+            Transaction::Split(split) => {
+                query(
+                    "insert into transaction_split
+                         (transaction_id, ratio_numerator, ratio_denominator)
+                     values (?, ?, ?)",
+                )
+                .bind(id)
+                .bind(i64::from(split.ratio().numerator().get()))
+                .bind(i64::from(split.ratio().denominator().get()))
+                .execute(&mut *tx)
+                .await?;
+            }
         }
 
         // A handle says its record was stored when the handle was issued; an import undo since,
@@ -423,7 +433,15 @@ impl<'a> TransactionRepository<'a> {
                     conversion(&row)?,
                 )))
             }
-            SPLIT => Transaction::from(Split::new(derivation)),
+            SPLIT => {
+                let row = self
+                    .detail(
+                        id,
+                        "select * from transaction_split where transaction_id = ?",
+                    )
+                    .await?;
+                Transaction::from(Split::new(derivation, ratio(&row)?))
+            }
             other => {
                 return Err(StorageError::CorruptValue {
                     field: "kind",

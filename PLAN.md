@@ -408,12 +408,14 @@ Blocked by: DOM-092 and DOM-114 are on the undecided list.
 Notes: Split out of FIF-013 in revision 3. IMP-SAXO-013's `Expiratie` mapping (FIF-023) states the same pending rule from the importer side and is blocked too.
 
 ## FIF-061 Splits and effective quantity
-Status: todo
+Status: done
 Requirements: DOM-089, DOM-103, DOM-113
 Depends on: FIF-076, FIF-054
 Acceptance: a `split` carries an integer numerator and denominator; an opening's effective quantity **as of a position in the canonical order** is its stated quantity times the ratios of every split for that security falling between the opening and that position, computed as an exact rational and rounded only for display; its effective unit price at that position is its total cost over that effective quantity; stated figures are never rewritten; successive splits compose with no accumulated residue, so 1-for-3 then 3-for-1 returns the original quantity exactly.
 Blocked by (until revision 69): DOM-113 is on the undecided list, and it is the substance of the item: the rational representation is what the rest of the rule is built on. ARC-009 (FIF-054) bears on it too.
 Revision 69: unblocked by the provisional DEC-091. Acceptance amended: effective quantity stays an exact rational, and wherever it is compared (exhaustion, allocation sums) it is taken at the 8-decimal quantity scale, half away from zero; the residue below 1e-8 of a share is dropped. Provide that scaled view here so FIF-013, FIF-014 and FIF-078 share one rounding. If DEC-091 is overridden on ratification, this item reopens.
+Revision 70: named next to build; FIF-076 is done.
+Done in revision 71: migration `0007_split_ratio.sql` stores a split's integer ratio; `effective_quantity.rs` computes an opening's effective quantity and unit price as of an `OrderKey` as an exact `BigRational`, applying only the splits strictly between (provisional DEC-097), with `EffectiveQuantity::at_quantity_scale` the one 8-decimal view FIF-013, FIF-014 and FIF-078 compare through (DEC-091). Stated figures are never rewritten.
 Notes: New in this revision, replacing the "quantity adjustment" half of the retired FIF-018. DOM-103 is the reason effective quantity is parameterized by position at all: measuring as of today halves the cost of everything sold before a split.
 
 ## FIF-014 Allocation figure derivation and the drift rule
@@ -1363,6 +1365,20 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 70.** A status reconciliation. `design/` changed in `8293c03` only by adding the
+provisional DEC-094 to DEC-096 and listing them under "Provisionally answered" in
+`open-questions.md`; no requirement id added or removed. `open-questions.md` names the same **7** ids
+on `Blocks:` lines, and the 5 items carrying one are exactly the 5 `blocked` (checked by script).
+
+* **Completed: FIF-076**, committed as `8293c03` (migration `0006_canonical_order.sql`), on the
+  provisional DEC-090, DEC-092, DEC-094, DEC-095, DEC-096.
+* No item added, split, retired, blocked or unblocked. 101 items: **49 `done`, 47 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-061.** Its dependencies FIF-076 and FIF-054 are `done`, and none of DOM-089,
+  DOM-103, DOM-113 is blocked (DOM-113 rests on the provisional DEC-091). FIF-013 precedes it in
+  document order but depends on it. Also ready in scope: FIF-035, FIF-041.
 
 **Revision 69.** `design/` **changed** in `6921150`: OQ-001, OQ-004, OQ-007 and OQ-011 are
 provisionally answered (DEC-090 to DEC-093), awaiting the user's ratification; DOM-011, DOM-064,
