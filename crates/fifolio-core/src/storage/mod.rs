@@ -80,7 +80,10 @@ pub use manual_entries::{
 };
 pub use rates::{CachedRates, RateRepository};
 pub(crate) use transactions::StoredOpening;
-pub use transactions::{Placement, TransactionId, TransactionRepository};
+pub use transactions::{
+    Placement, StoredTransaction, TransactionFilter, TransactionId, TransactionKind,
+    TransactionRepository,
+};
 
 /// The database file used when nothing names another [ARC-013].
 ///

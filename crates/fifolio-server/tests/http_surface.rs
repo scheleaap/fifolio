@@ -10,6 +10,7 @@
 //! holds every error to the one problem+json shape [ARC-020].
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 
 use axum::Router;
 use axum::body::Body;
@@ -21,11 +22,14 @@ use fifolio_core::entities::{
     SourceFormat, SourceRecord,
 };
 use fifolio_core::identity::{IdentitySource, identify};
-use fifolio_core::manual_entry::{Election, ManualEntry, Supplied};
+use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use fifolio_core::storage::{
     Allocation, BatchId, Database, Placement, RecordHandle, TransactionId,
 };
-use fifolio_core::transaction::{Buy, BuyOrigin, Derivation, Sell, Transaction};
+use fifolio_core::transaction::{
+    Buy, BuyOrigin, DateProvenance, Derivation, Expiration, Sell, Split, Transaction, TransferIn,
+    TransferInSource, TransferOut,
+};
 use fifolio_core::valuation::Conversion;
 use fifolio_server::problem::{ABOUT_BLANK, CONTENT_TYPE};
 use fifolio_test_support::TempDb;
@@ -2081,4 +2085,602 @@ async fn no_route_edits_a_manual_entry() {
             .await
             .assert_problem(StatusCode::METHOD_NOT_ALLOWED, ABOUT_BLANK);
     }
+}
+
+/// The ids a list reply carries, in its order.
+fn listed_ids(reply: &Reply) -> Vec<i64> {
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    reply
+        .body
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|transaction| transaction["id"].as_i64().expect("an id"))
+        .collect()
+}
+
+fn apple() -> Value {
+    json!({
+        "isin": "US0378331005",
+        "name": "Apple",
+        "security_type": "stock",
+        "quotation": "per_unit",
+    })
+}
+
+/// A `transfer_out` of 10 Philips into Apple on 2024-05-`day`, derived from `record`. The
+/// target differs from the security the transfer closes, so the two cannot be confused unseen.
+fn transfer_out_of(day: u32, record: RecordHandle) -> Transaction {
+    TransferOut::new(
+        Derivation::new(on(day), vec1![record]),
+        Quantity::new(dec!(10.00000000)),
+        valued(Money::new(dec!(0.00))),
+        Ratio::new(NonZeroU32::MIN, NonZeroU32::MIN),
+        Conversion::native(on(day)),
+        Isin::new("US0378331005"),
+    )
+    .into()
+}
+
+/// The `transfer_in` a `transfer_out` of `record` on 2024-05-`day` emits.
+fn transfer_in_of(day: u32, record: RecordHandle) -> Transaction {
+    TransferIn::new(
+        Derivation::new(on(day), vec1![record]),
+        Quantity::new(dec!(10.00000000)),
+        valued(Money::new(dec!(100.00))),
+        valued(Money::new(dec!(0.00))),
+        on(1),
+        DateProvenance::Inherited,
+        TransferInSource::CorporateAction,
+        Conversion::native(on(day)),
+    )
+    .into()
+}
+
+/// Transactions are read one at a time and listed in canonical order, each with its account,
+/// security, deriving batch, citations and its variant's own fields as decimal strings, filtered
+/// on account, security, type and an inclusive trade-date range, and on closings no attribution
+/// closes (DEC-126, provisional) [SRV-028], [SRV-029], [ARC-006], [TST-005].
+#[tokio::test]
+async fn transactions_are_read_and_listed_with_filters() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness.json(Method::POST, "/securities", &philips()).await;
+    harness.json(Method::POST, "/securities", &apple()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    let elsewhere = harness.elsewhere_buy().await;
+    let late = harness.owned_record(batch, "s2").await;
+    let late_sell = harness.derive(batch, &sell_of(6, late)).await;
+    let b1 = harness.owned_record(batch, "b1").await;
+    let buy = harness.derive(batch, &buy_of(b1)).await;
+    let s1 = harness.owned_record(batch, "s1").await;
+    let early_sell = harness.derive(batch, &sell_of(3, s1)).await;
+    harness
+        .database
+        .attributions()
+        .approve(
+            early_sell,
+            &[Allocation::new(buy, Quantity::new(dec!(10.00000000)))],
+        )
+        .await
+        .expect("approve");
+    let list = |query: &'static str| {
+        let harness = &harness;
+        async move {
+            listed_ids(
+                &harness
+                    .request(Method::GET, &format!("/transactions{query}"))
+                    .await,
+            )
+        }
+    };
+    let ids =
+        |transactions: &[TransactionId]| transactions.iter().map(|id| id.get()).collect::<Vec<_>>();
+
+    let all = harness.request(Method::GET, "/transactions").await;
+    assert_eq!(
+        listed_ids(&all),
+        ids(&[buy, elsewhere, early_sell, late_sell])
+    );
+    assert_eq!(
+        all.body[2],
+        json!({
+            "id": early_sell.get(),
+            "account": {"broker": "Saxo", "id": "69900/1000000"},
+            "security": "NL0000009538",
+            "derived_by": batch.get(),
+            "trade_date": "2024-05-03",
+            "cites": [saxo_identity("s1")],
+            "detail": {
+                "type": "sell",
+                "quantity": "10.00000000",
+                "unit_price": {"native": "12.000000", "eur": "12.000000"},
+                "gross": {"native": "120.00", "eur": "120.00"},
+                "fees": {"native": "8.00", "eur": "8.00"},
+                "conversion": {
+                    "currency": "EUR",
+                    "rate": "1.000000",
+                    "source": "native",
+                    "rate_date": "2024-05-03",
+                },
+            },
+        })
+    );
+
+    assert_eq!(
+        list("?broker=Saxo&account=69900%2F1000000").await,
+        ids(&[buy, early_sell, late_sell])
+    );
+    assert_eq!(
+        list("?broker=Trade%20Republic&account=DE0001").await,
+        ids(&[elsewhere])
+    );
+    assert_eq!(
+        list("?security=NL0000009538").await,
+        ids(&[buy, early_sell, late_sell])
+    );
+    assert_eq!(list("?security=US0378331005").await, ids(&[elsewhere]));
+    assert_eq!(list("?type=sell").await, ids(&[early_sell, late_sell]));
+    assert_eq!(list("?type=buy").await, ids(&[buy, elsewhere]));
+    assert_eq!(
+        list("?from=2024-05-03&to=2024-05-06").await,
+        ids(&[early_sell, late_sell]),
+        "both ends of the range are inside it"
+    );
+    assert_eq!(
+        list("?to=2024-05-05").await,
+        ids(&[buy, elsewhere, early_sell])
+    );
+    assert_eq!(list("?unattributed=true").await, ids(&[late_sell]));
+    assert_eq!(
+        list("?unattributed=false").await,
+        ids(&[buy, elsewhere, early_sell, late_sell])
+    );
+    assert_eq!(list("?unattributed=true&type=buy").await, Vec::<i64>::new());
+
+    let read = harness
+        .request(Method::GET, &format!("/transactions/{early_sell}"))
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    assert_eq!(read.body, all.body[2]);
+}
+
+/// A `transfer_out` and the `transfer_in` it emitted read back with their own fields, the
+/// emitted record deriving from no batch [DOM-090], [SRV-028], [TST-005].
+#[tokio::test]
+async fn transfers_read_back_with_their_own_fields() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness.json(Method::POST, "/securities", &philips()).await;
+    harness.json(Method::POST, "/securities", &apple()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    let t1 = harness.owned_record(batch, "t1").await;
+    let transfer_out = harness.derive(batch, &transfer_out_of(4, t1.clone())).await;
+    let transfer_in = harness
+        .database
+        .transactions()
+        .insert(
+            &Placement::emitted(Account::new("Saxo", "69900/1000000"), philips_isin()),
+            &transfer_in_of(4, t1),
+        )
+        .await
+        .expect("store the emitted transfer_in");
+    let list = |query: &'static str| {
+        let harness = &harness;
+        async move {
+            listed_ids(
+                &harness
+                    .request(Method::GET, &format!("/transactions{query}"))
+                    .await,
+            )
+        }
+    };
+
+    let out = harness
+        .request(Method::GET, &format!("/transactions/{transfer_out}"))
+        .await;
+    let emitted = harness
+        .request(Method::GET, &format!("/transactions/{transfer_in}"))
+        .await;
+
+    assert_eq!(
+        out.body["detail"],
+        json!({
+            "type": "transfer_out",
+            "quantity": "10.00000000",
+            "fees": {"native": "0.00", "eur": "0.00"},
+            "ratio": {"numerator": 1, "denominator": 1},
+            "target": "US0378331005",
+            "conversion": {
+                "currency": "EUR",
+                "rate": "1.000000",
+                "source": "native",
+                "rate_date": "2024-05-04",
+            },
+        })
+    );
+    assert_eq!(
+        out.body["security"], "NL0000009538",
+        "listed under what it closes"
+    );
+    assert_eq!(
+        list("?security=US0378331005").await,
+        Vec::<i64>::new(),
+        "not under its target"
+    );
+    assert_eq!(list("?type=transfer_out").await, [transfer_out.get()]);
+    assert_eq!(list("?type=transfer_in").await, [transfer_in.get()]);
+    assert_eq!(emitted.body["derived_by"], Value::Null);
+    assert_eq!(
+        emitted.body["detail"],
+        json!({
+            "type": "transfer_in",
+            "quantity": "10.00000000",
+            "cost_basis": {"native": "100.00", "eur": "100.00"},
+            "fees": {"native": "0.00", "eur": "0.00"},
+            "acquisition_date": "2024-05-01",
+            "date_provenance": "inherited",
+            "source": "corporate_action",
+            "conversion": {
+                "currency": "EUR",
+                "rate": "1.000000",
+                "source": "native",
+                "rate_date": "2024-05-04",
+            },
+        })
+    );
+}
+
+/// An absent transaction is a 404; a filter naming half an account, a range ending before it
+/// starts, or an unknown type is a 400, and one naming an account or security that is not
+/// stored is a 404 rather than an empty list (DEC-126, provisional) [SRV-028], [ARC-020],
+/// [TST-005].
+#[tokio::test]
+async fn an_absent_transaction_or_filter_is_refused() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+
+    harness
+        .request(Method::GET, "/transactions/99")
+        .await
+        .assert_problem(
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-transaction",
+        );
+    for (query, status, problem_type) in [
+        ("broker=Saxo", StatusCode::BAD_REQUEST, ABOUT_BLANK),
+        (
+            "account=69900%2F1000000",
+            StatusCode::BAD_REQUEST,
+            ABOUT_BLANK,
+        ),
+        (
+            "from=2024-05-06&to=2024-05-03",
+            StatusCode::BAD_REQUEST,
+            ABOUT_BLANK,
+        ),
+        ("type=dividend", StatusCode::BAD_REQUEST, ABOUT_BLANK),
+        ("from=yesterday", StatusCode::BAD_REQUEST, ABOUT_BLANK),
+        (
+            "broker=Saxo&account=nobody",
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-account",
+        ),
+        (
+            "security=US0378331005",
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-security",
+        ),
+    ] {
+        harness
+            .request(Method::GET, &format!("/transactions?{query}"))
+            .await
+            .assert_problem(status, problem_type);
+    }
+}
+
+/// Deleting a derived transaction returns the source record it cited to the pending list;
+/// deleting an attributed transaction or an emitted `transfer_in` is refused as a 409 of that
+/// rule's own type and removes nothing, and an absent transaction is a 404 [SRV-033], [DOM-069],
+/// [DOM-094], [ARC-021], [TST-005].
+#[tokio::test]
+async fn deleting_a_transaction_returns_its_records_to_pending_or_is_refused() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness.json(Method::POST, "/securities", &philips()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    let b1 = harness.owned_record(batch, "b1").await;
+    let buy = harness.derive(batch, &buy_of(b1)).await;
+    let s1 = harness.owned_record(batch, "s1").await;
+    let sell = harness.derive(batch, &sell_of(3, s1)).await;
+    harness.json(Method::POST, "/securities", &apple()).await;
+    let t1 = harness.owned_record(batch, "t1").await;
+    let transfer_out = harness.derive(batch, &transfer_out_of(4, t1.clone())).await;
+    let transfer_in = harness
+        .database
+        .transactions()
+        .insert(
+            &Placement::emitted(Account::new("Saxo", "69900/1000000"), philips_isin()),
+            &transfer_in_of(4, t1),
+        )
+        .await
+        .expect("store the emitted transfer_in");
+    harness
+        .database
+        .transactions()
+        .record_emission(transfer_out, transfer_in)
+        .await
+        .expect("record the emission");
+    let attribution = harness
+        .database
+        .attributions()
+        .approve(
+            sell,
+            &[Allocation::new(buy, Quantity::new(dec!(10.00000000)))],
+        )
+        .await
+        .expect("approve");
+    let pending = || async {
+        listed_identities(
+            &harness
+                .request(Method::GET, "/source-records?status=pending")
+                .await,
+        )
+    };
+    assert_eq!(pending().await, Vec::<String>::new());
+
+    let detail = harness
+        .request(Method::DELETE, &format!("/transactions/{sell}"))
+        .await
+        .assert_problem(
+            StatusCode::CONFLICT,
+            "urn:fifolio:problem:transaction-attributed",
+        )
+        .expect("a detail")
+        .to_owned();
+    assert!(detail.contains(&sell.to_string()), "{detail}");
+    harness
+        .request(Method::DELETE, &format!("/transactions/{transfer_in}"))
+        .await
+        .assert_problem(
+            StatusCode::CONFLICT,
+            "urn:fifolio:problem:emitted-transfer-in",
+        );
+    assert_eq!(harness.count("transaction_record").await, 4);
+    assert_eq!(pending().await, Vec::<String>::new());
+
+    harness
+        .database
+        .attributions()
+        .delete(attribution)
+        .await
+        .expect("delete the attribution");
+    let deleted = harness
+        .request(Method::DELETE, &format!("/transactions/{sell}"))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    assert_eq!(pending().await, [saxo_identity("s1")]);
+    harness
+        .request(Method::GET, &format!("/transactions/{sell}"))
+        .await
+        .assert_problem(
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-transaction",
+        );
+
+    let deleted = harness
+        .request(Method::DELETE, &format!("/transactions/{transfer_out}"))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    assert_eq!(
+        pending().await,
+        [saxo_identity("s1"), saxo_identity("t1")],
+        "the emitted transfer_in went with its transfer_out, so nothing cites t1"
+    );
+
+    harness
+        .request(Method::DELETE, &format!("/transactions/{sell}"))
+        .await
+        .assert_problem(
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-transaction",
+        );
+    harness
+        .request(Method::DELETE, "/transactions/abc")
+        .await
+        .assert_problem(StatusCode::BAD_REQUEST, ABOUT_BLANK);
+}
+
+/// No endpoint edits a transaction: the routing table serves only reads and a deletion under
+/// `/transactions`, asserted over the table itself, and PUT, PATCH or POST there is a 405; a
+/// transferred parcel's acquisition date in particular has no route to change it [SRV-054],
+/// [DOM-069], [TST-005].
+#[tokio::test]
+async fn no_route_edits_a_transaction() {
+    let spec = serde_json::to_value(fifolio_server::openapi()).expect("the spec serializes");
+    let paths = spec["paths"].as_object().expect("paths");
+    let transaction_paths: Vec<&String> = paths
+        .keys()
+        .filter(|path| path.starts_with("/transactions"))
+        .collect();
+    assert_eq!(transaction_paths, ["/transactions", "/transactions/{id}"]);
+    // The exact sets rather than an absence of PUT and PATCH, so an edit behind any other
+    // method is caught too. A path item's other keys, such as `parameters`, are not methods.
+    let http_methods = [
+        "get", "put", "post", "delete", "options", "head", "patch", "trace",
+    ];
+    for (path, served) in [
+        ("/transactions", vec!["get"]),
+        ("/transactions/{id}", vec!["delete", "get"]),
+    ] {
+        let mut methods: Vec<&str> = paths[path]
+            .as_object()
+            .expect("a path item")
+            .keys()
+            .map(String::as_str)
+            .filter(|key| http_methods.contains(key))
+            .collect();
+        methods.sort_unstable();
+        assert_eq!(methods, served, "{path} serves no edit");
+    }
+
+    let harness = Harness::new().await;
+    for uri in ["/transactions", "/transactions/1"] {
+        for method in [Method::PUT, Method::PATCH, Method::POST] {
+            harness
+                .json(method, uri, &json!({"acquisition_date": "2020-01-01"}))
+                .await
+                .assert_problem(StatusCode::METHOD_NOT_ALLOWED, ABOUT_BLANK);
+        }
+    }
+}
+
+impl Harness {
+    /// A buy of Apple in a second account, on the first account's buy date, derived by that
+    /// account's own batch: what an account filter must leave out.
+    async fn elsewhere_buy(&self) -> TransactionId {
+        let other = Account::new("Trade Republic", "DE0001");
+        self.json(
+            Method::POST,
+            "/accounts",
+            &json!({"broker": "Trade Republic", "id": "DE0001"}),
+        )
+        .await;
+        let batch = self
+            .database
+            .import_batches()
+            .insert(&ImportBatch::new(
+                other.clone(),
+                "tr.csv",
+                SourceFormat::SaxoNlXlsx,
+                DateTime::from_timestamp(1_714_608_000, 0).expect("a timestamp"),
+                ImportCounts::default(),
+            ))
+            .await
+            .expect("insert the batch");
+        let record = self
+            .database
+            .source_records()
+            .insert(
+                batch,
+                &SourceRecord::new(
+                    identify(&other, &IdentitySource::BrokerReference("x1")),
+                    Order::new(1),
+                    "raw",
+                    BTreeMap::new(),
+                ),
+            )
+            .await
+            .expect("insert the record");
+        self.database
+            .transactions()
+            .insert(
+                &Placement::derived(other, Isin::new("US0378331005"), batch),
+                &buy_of(record),
+            )
+            .await
+            .expect("store the transaction")
+    }
+}
+
+/// A buy, an expiration and a split read back with every field of their own, synthetic figures
+/// kept distinct so that no two fields can be swapped unseen, and the type filter reaches each
+/// (DEC-126, provisional) [SRV-028], [DOM-010], [ARC-006], [TST-005].
+#[tokio::test]
+async fn buys_expirations_and_splits_read_back_with_their_own_fields() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    harness.json(Method::POST, "/securities", &philips()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    let b1 = harness.owned_record(batch, "b1").await;
+    let buy = harness.derive(batch, &buy_of(b1)).await;
+    let e1 = harness.owned_record(batch, "e1").await;
+    let expiration = harness
+        .derive(
+            batch,
+            &Expiration::new(
+                Derivation::new(on(7), vec1![e1]),
+                valued(Money::new(dec!(3.25))),
+                valued(Money::new(dec!(1.50))),
+                Conversion::native(on(7)),
+            )
+            .into(),
+        )
+        .await;
+    let p1 = harness.owned_record(batch, "p1").await;
+    let split = harness
+        .derive(
+            batch,
+            &Split::new(
+                Derivation::new(on(8), vec1![p1]),
+                Ratio::new(
+                    NonZeroU32::new(3).expect("a non-zero numerator"),
+                    NonZeroU32::new(2).expect("a non-zero denominator"),
+                ),
+            )
+            .into(),
+        )
+        .await;
+    let detail = |id: TransactionId| {
+        let harness = &harness;
+        async move {
+            let read = harness
+                .request(Method::GET, &format!("/transactions/{id}"))
+                .await;
+            assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+            read.body["detail"].clone()
+        }
+    };
+    let list = |query: &'static str| {
+        let harness = &harness;
+        async move {
+            listed_ids(
+                &harness
+                    .request(Method::GET, &format!("/transactions{query}"))
+                    .await,
+            )
+        }
+    };
+
+    assert_eq!(
+        detail(buy).await,
+        json!({
+            "type": "buy",
+            "quantity": "100.00000000",
+            "unit_price": {"native": "10.000000", "eur": "10.000000"},
+            "gross": {"native": "1000.00", "eur": "1000.00"},
+            "fees": {"native": "8.00", "eur": "8.00"},
+            "origin": "purchase",
+            "conversion": {
+                "currency": "EUR",
+                "rate": "1.000000",
+                "source": "native",
+                "rate_date": "2024-05-01",
+            },
+        })
+    );
+    assert_eq!(
+        detail(expiration).await,
+        json!({
+            "type": "expiration",
+            "gross": {"native": "3.25", "eur": "3.25"},
+            "fees": {"native": "1.50", "eur": "1.50"},
+            "conversion": {
+                "currency": "EUR",
+                "rate": "1.000000",
+                "source": "native",
+                "rate_date": "2024-05-07",
+            },
+        })
+    );
+    assert_eq!(
+        detail(split).await,
+        json!({
+            "type": "split",
+            "ratio": {"numerator": 3, "denominator": 2},
+        })
+    );
+    assert_eq!(list("?type=buy").await, [buy.get()]);
+    assert_eq!(list("?type=expiration").await, [expiration.get()]);
+    assert_eq!(list("?type=split").await, [split.get()]);
 }

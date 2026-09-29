@@ -110,3 +110,4 @@ built on it.
 * **FIF-072** (whether a share count or disposed quantity may be zero or negative) → DEC-123
 * **FIF-072** (whether equal ratios in other terms, `2:1` and `4:2`, are one entry) → DEC-124
 * **FIF-072** (whether a manual entry may cite the same record identity twice) → DEC-125
+* **FIF-038** (the reach of the transaction list filters; inverted ranges; deleting an absent one) → DEC-126

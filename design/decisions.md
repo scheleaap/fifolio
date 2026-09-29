@@ -1051,3 +1051,22 @@ refusal follows the sameness match (DEC-121), like DEC-122's, so no stored entry
 replay. Alternative not taken: accepting and storing the repetition, which keeps a citation list
 no queue could have produced and leaves FIF-038 to decide what a doubled record contributes.
 [DEC-125, SRV-025, SRV-048, DOM-098, DEC-121, DEC-122]
+
+**DEC-126 — Provisional: what the transaction list filters match, and the refusals around
+them.** SRV-028 names the filters and SRV-029 the unattributed-closings filter, but not their
+reach. The account and security are the transaction's own placement (DOM-013), so a
+`transfer_out` is listed under the security it closes, not its target. The type is one of the six
+variants (DOM-010), spelled as stored. The date range is on the trade date and inclusive at both
+ends; a range ending before it starts is refused (`400`). `unattributed=true` admits only the
+three closing variants (DOM-081) that no attribution closes; absent or `false` filters nothing.
+Given filters must all hold; the list runs in canonical order (DOM-011). An account or security
+that is not stored is refused as not found, and an account named by half is a `400`, as DEC-120
+has it for source records, so a mistyped filter cannot pass for "nothing to attribute". Deleting a
+transaction that is not stored answers `404 unknown-transaction`, as an absent batch or manual
+entry does, although the repository's own deletion stays idempotent as its tests pin. Alternatives
+not taken: filtering a `transfer_out` under its target as well, which would list one closing under
+a security whose attribution it does not take part in; an exclusive upper bound, which drops the
+last named day's trades; answering an empty list for an inverted range or an unknown account or
+security, which reads as an empty queue; and `204` for an absent transaction, which reports a
+correction that did not happen. [DEC-126, SRV-028, SRV-029, SRV-033, DOM-010, DOM-011, DOM-013,
+DOM-081, DEC-120]

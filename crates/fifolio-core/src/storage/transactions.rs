@@ -19,7 +19,9 @@ use crate::storage::codec::{
     transfer_in_source, transfer_in_source_code,
 };
 use crate::storage::manual_entries::ratio;
-use crate::storage::{AttributionId, BatchId, RecordHandle, StorageError, row_id};
+use crate::storage::{
+    AccountRepository, AttributionId, BatchId, RecordHandle, StorageError, row_id,
+};
 use crate::transaction::{
     Buy, Closing, Derivation, Expiration, Opening, Sell, Split, Transaction, TransferIn,
     TransferOut,
@@ -39,6 +41,101 @@ const SELL: &str = "sell";
 const EXPIRATION: &str = "expiration";
 const TRANSFER_OUT: &str = "transfer_out";
 const SPLIT: &str = "split";
+
+/// The six variants [DOM-010], as a list filters on them [SRV-028].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransactionKind {
+    Buy,
+    TransferIn,
+    Sell,
+    Expiration,
+    TransferOut,
+    Split,
+}
+
+impl TransactionKind {
+    #[must_use]
+    pub fn of(transaction: &Transaction) -> Self {
+        match transaction {
+            Transaction::Opening(Opening::Buy(_)) => Self::Buy,
+            Transaction::Opening(Opening::TransferIn(_)) => Self::TransferIn,
+            Transaction::Closing(Closing::Sell(_)) => Self::Sell,
+            Transaction::Closing(Closing::Expiration(_)) => Self::Expiration,
+            Transaction::Closing(Closing::TransferOut(_)) => Self::TransferOut,
+            Transaction::Split(_) => Self::Split,
+        }
+    }
+
+    /// The code stored in `transaction_record.kind`.
+    fn code(self) -> &'static str {
+        match self {
+            Self::Buy => BUY,
+            Self::TransferIn => TRANSFER_IN,
+            Self::Sell => SELL,
+            Self::Expiration => EXPIRATION,
+            Self::TransferOut => TRANSFER_OUT,
+            Self::Split => SPLIT,
+        }
+    }
+}
+
+/// Which transactions a list answers [SRV-028], [SRV-029]. A filter left `None` (or `false`)
+/// admits every transaction; the ones given must all hold. What each reaches is DEC-126
+/// (provisional).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TransactionFilter {
+    /// The account the transaction is placed in [DOM-013].
+    pub account: Option<Account>,
+    /// The security the transaction is placed on; a `transfer_out` is of the security it
+    /// closes, not of its target.
+    pub security: Option<Isin>,
+    pub kind: Option<TransactionKind>,
+    /// The earliest trade date admitted, inclusive.
+    pub from: Option<NaiveDate>,
+    /// The latest trade date admitted, inclusive.
+    pub to: Option<NaiveDate>,
+    /// Only closings that no attribution closes [SRV-029].
+    pub unattributed_closings: bool,
+}
+
+/// A stored transaction with its id and where it belongs: the account and security it is a
+/// transaction of [DOM-013], and the import that derived it, if one did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTransaction {
+    id: TransactionId,
+    account: Account,
+    security: Isin,
+    derived_by: Option<BatchId>,
+    transaction: Transaction,
+}
+
+impl StoredTransaction {
+    #[must_use]
+    pub fn id(&self) -> TransactionId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn account(&self) -> &Account {
+        &self.account
+    }
+
+    #[must_use]
+    pub fn security(&self) -> &Isin {
+        &self.security
+    }
+
+    /// `None` for a `transfer_in` emitted on approval, which no import derived [DOM-090].
+    #[must_use]
+    pub fn derived_by(&self) -> Option<BatchId> {
+        self.derived_by
+    }
+
+    #[must_use]
+    pub fn transaction(&self) -> &Transaction {
+        &self.transaction
+    }
+}
 
 /// Whether a stored kind is one of the three that close parcels [DOM-081].
 ///
@@ -121,14 +218,7 @@ impl<'a> TransactionRepository<'a> {
         placement: &Placement,
         transaction: &Transaction,
     ) -> Result<TransactionId, StorageError> {
-        let kind = match transaction {
-            Transaction::Opening(Opening::Buy(_)) => BUY,
-            Transaction::Opening(Opening::TransferIn(_)) => TRANSFER_IN,
-            Transaction::Closing(Closing::Sell(_)) => SELL,
-            Transaction::Closing(Closing::Expiration(_)) => EXPIRATION,
-            Transaction::Closing(Closing::TransferOut(_)) => TRANSFER_OUT,
-            Transaction::Split(_) => SPLIT,
-        };
+        let kind = TransactionKind::of(transaction).code();
 
         let key = transaction.order_key();
         let header = query(
@@ -626,6 +716,56 @@ impl<'a> TransactionRepository<'a> {
         Ok(Some(transaction))
     }
 
+    /// The transaction `id` with its placement [SRV-028], or `None` if no such transaction is
+    /// stored.
+    pub async fn read(&self, id: TransactionId) -> Result<Option<StoredTransaction>, StorageError> {
+        let mut connection = self.pool.acquire().await?;
+        Ok(
+            stored_transactions(&mut connection, &TransactionFilter::default(), Some(id))
+                .await?
+                .into_iter()
+                .next(),
+        )
+    }
+
+    /// Every stored transaction `filter` admits, in canonical order [DOM-011] (DEC-126,
+    /// provisional). With `unattributed_closings` set, the closings awaiting attribution
+    /// [SRV-029].
+    ///
+    /// An account or security the filter names that is not stored is refused as
+    /// [`StorageError::UnknownAccount`] or [`StorageError::UnknownSecurity`], so a mistyped
+    /// filter does not answer as "nothing to attribute", as DEC-120 has it for source records.
+    pub async fn list(
+        &self,
+        filter: &TransactionFilter,
+    ) -> Result<Vec<StoredTransaction>, StorageError> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(account) = &filter.account
+            && AccountRepository::find_in(&mut tx, account.broker(), account.id())
+                .await?
+                .is_none()
+        {
+            return Err(StorageError::UnknownAccount {
+                broker: account.broker().to_owned(),
+                id: account.id().to_owned(),
+            });
+        }
+        if let Some(isin) = &filter.security
+            && query("select 1 from security where isin = ?")
+                .bind(isin.as_str())
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_none()
+        {
+            return Err(StorageError::UnknownSecurity {
+                isin: isin.as_str().to_owned(),
+            });
+        }
+        // Read in the same transaction as the checks, so nothing is removed in between; nothing
+        // is written, so it is dropped rather than committed.
+        stored_transactions(&mut tx, filter, None).await
+    }
+
     /// Records that `transfer_out` emitted `transfer_in` on approval, one such record per parcel
     /// consumed [DOM-090]. The link is what DOM-094 refuses to let a deletion break.
     ///
@@ -679,13 +819,28 @@ impl<'a> TransactionRepository<'a> {
     }
 
     /// Deletes a transaction, refusing while it participates in an attribution [DOM-069] and
-    /// refusing a `transfer_in` that a `transfer_out` emitted [DOM-094].
+    /// refusing a `transfer_in` that a `transfer_out` emitted [DOM-094]. The records it cited
+    /// return to pending unless another transaction still cites them [SRV-033] (DEC-119,
+    /// provisional).
+    ///
+    /// Answers whether a transaction was stored under the id. Deleting one that is not is already
+    /// true and succeeds, as its tests pin; the answer lets a caller report the absence anyway
+    /// (DEC-126, provisional).
     ///
     /// Deleting the `transfer_out` takes its emitted records with it, which is what "not
     /// independently of it" leaves allowed.
-    pub async fn delete(&self, transaction: TransactionId) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await?;
-
+    pub async fn delete(&self, transaction: TransactionId) -> Result<bool, StorageError> {
+        // IMMEDIATE takes the write lock before the existence check, so a concurrent deletion
+        // of the same id cannot slip between check and delete and have both answer `true`.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if query("select 1 from transaction_record where id = ?")
+            .bind(transaction.get())
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
         if let Some(transfer_out) = emitting_transfer_out(&mut tx, transaction).await? {
             return Err(StorageError::EmittedTransferIn {
                 transfer_in: transaction,
@@ -696,7 +851,7 @@ impl<'a> TransactionRepository<'a> {
         delete_transactions(&mut tx, &[transaction]).await?;
 
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     /// The variant's own row. Its absence means a header without its detail, which the insert
@@ -728,6 +883,74 @@ pub(crate) struct StoredOpening {
     /// The opening an emitted `transfer_in` carries the parcel of; `None` for a buy, an imported
     /// `transfer_in`, or one whose parent has since been deleted (DEC-108, provisional).
     pub(crate) inherited_from: Option<TransactionId>,
+}
+
+/// The stored transactions `filter` admits, and only `id` when given, in canonical order.
+async fn stored_transactions(
+    connection: &mut SqliteConnection,
+    filter: &TransactionFilter,
+    id: Option<TransactionId>,
+) -> Result<Vec<StoredTransaction>, StorageError> {
+    // A left join: `insert` places every transaction it writes, so a header with no placement
+    // was not written by this code and is refused below rather than silently left unlisted.
+    let rows = query(
+        "select t.id, p.transaction_id as placed, p.account_broker, p.account_id,
+                p.security_isin, p.derived_by_batch
+           from transaction_record t
+                left join transaction_placement p on p.transaction_id = t.id
+          where (?1 is null or t.id = ?1)
+            and (?2 is null or (p.account_broker = ?2 and p.account_id = ?3))
+            and (?4 is null or p.security_isin = ?4)
+            and (?5 is null or t.kind = ?5)
+            and (?6 is null or t.trade_date >= ?6)
+            and (?7 is null or t.trade_date <= ?7)
+            and (not ?8 or (t.kind in (?9, ?10, ?11)
+                            and not exists (select 1 from attribution a
+                                             where a.closing_transaction_id = t.id)))
+          order by t.trade_date, t.ordering, t.batch_age, t.leg, t.id",
+    )
+    .bind(id.map(TransactionId::get))
+    .bind(filter.account.as_ref().map(Account::broker))
+    .bind(filter.account.as_ref().map(Account::id))
+    .bind(filter.security.as_ref().map(Isin::as_str))
+    .bind(filter.kind.map(TransactionKind::code))
+    .bind(filter.from)
+    .bind(filter.to)
+    .bind(filter.unattributed_closings)
+    // The closing kinds of `is_closing` [DOM-081]: the codes the inserts write, so a renamed
+    // code cannot silently drop its closings from the queue.
+    .bind(SELL)
+    .bind(EXPIRATION)
+    .bind(TRANSFER_OUT)
+    .fetch_all(&mut *connection)
+    .await?;
+
+    let mut stored = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = TransactionId::new(row.get("id"));
+        if row.get::<Option<i64>, _>("placed").is_none() {
+            return Err(StorageError::CorruptValue {
+                field: "transaction_placement",
+                value: id.to_string(),
+            });
+        }
+        let transaction = TransactionRepository::find_in(&mut *connection, id)
+            .await?
+            .ok_or(StorageError::UnknownTransaction { transaction: id })?;
+        stored.push(StoredTransaction {
+            id,
+            account: Account::new(
+                row.get::<String, _>("account_broker"),
+                row.get::<String, _>("account_id"),
+            ),
+            security: Isin::new(row.get::<String, _>("security_isin")),
+            derived_by: row
+                .get::<Option<i64>, _>("derived_by_batch")
+                .map(BatchId::new),
+            transaction,
+        });
+    }
+    Ok(stored)
 }
 
 /// The stored kind of `transaction`, or a refusal if no such transaction is stored.

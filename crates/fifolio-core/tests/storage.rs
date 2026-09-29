@@ -17,8 +17,9 @@ use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use fifolio_core::ordering::{BatchAge, Leg, OrderKey, RecordPosition};
 use fifolio_core::storage::{
-    BatchId, Creation, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, RecordFilter,
-    RecordHandle, RecordStatus, StorageError, TransactionId,
+    Allocation, BatchId, Creation, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement,
+    RecordFilter, RecordHandle, RecordStatus, StorageError, TransactionFilter, TransactionId,
+    TransactionKind,
 };
 use fifolio_core::transaction::{
     Buy, BuyOrigin, DateProvenance, Derivation, Expiration, Sell, Split, Transaction, TransferIn,
@@ -3300,4 +3301,451 @@ async fn concurrent_creations_of_one_manual_entry_store_it_once() {
         }
     }
     assert_eq!(entries.list().await.expect("list").len(), rounds.count());
+}
+
+/// A sell of `quantity` on 2024-05-`day`, derived from `record` alone.
+fn sell_on(day: u32, quantity: rust_decimal::Decimal, record: RecordHandle) -> Transaction {
+    let on = NaiveDate::from_ymd_opt(2024, 5, day).expect("a valid date");
+    Sell::new(
+        Derivation::new(on, vec1![record]),
+        Quantity::new(quantity),
+        price(dec!(4.50), dec!(4.19)),
+        money(dec!(45.00), dec!(41.88)),
+        money(dec!(8.00), dec!(7.45)),
+        Conversion::new(
+            Currency::new("USD"),
+            FxRate::new(dec!(1.074500)),
+            RateSource::Ecb,
+            on,
+        ),
+    )
+    .into()
+}
+
+/// The ids of `listed`, in the order they were answered.
+fn transaction_ids(listed: &[fifolio_core::storage::StoredTransaction]) -> Vec<TransactionId> {
+    listed.iter().map(|stored| stored.id()).collect()
+}
+
+/// Transactions are listed in canonical order with their placement, filtered on account,
+/// security, type and an inclusive trade-date range, the filters given all holding at once, and
+/// on closings no attribution closes; one is read by id (DEC-126, provisional) [SRV-028],
+/// [SRV-029], [TST-004].
+#[tokio::test]
+async fn transactions_are_read_and_listed_by_account_security_type_and_trade_date() {
+    let (_db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let other_account = Account::new("Trade Republic", "DE0001");
+    let other_isin = Isin::new("US0378331005");
+    database
+        .accounts()
+        .insert(&other_account)
+        .await
+        .expect("the second account");
+    database
+        .securities()
+        .insert(&Security::auto_created(
+            other_isin.clone(),
+            "Apple",
+            SecurityType::Stock,
+            Quotation::PerUnit,
+        ))
+        .await
+        .expect("the second security");
+    let transactions = database.transactions();
+    // Inserted out of trade-date order, so an answer in insertion order would be caught.
+    let late_sell = transactions
+        .insert(
+            &placement,
+            &sell_on(6, dec!(5), store_record(&database, batch, "s2", &[]).await),
+        )
+        .await
+        .expect("the later sell");
+    let buy = transactions
+        .insert(
+            &placement,
+            &buy_citing(store_record(&database, batch, "b1", &[]).await),
+        )
+        .await
+        .expect("the buy");
+    let early_sell = transactions
+        .insert(
+            &placement,
+            &sell_on(3, dec!(10), store_record(&database, batch, "s1", &[]).await),
+        )
+        .await
+        .expect("the earlier sell");
+    let elsewhere = transactions
+        .insert(
+            &Placement::derived(other_account.clone(), other_isin.clone(), batch),
+            &buy_citing(store_record(&database, batch, "b2", &[]).await),
+        )
+        .await
+        .expect("the buy in the other account");
+    database
+        .attributions()
+        .approve(early_sell, &[Allocation::new(buy, Quantity::new(dec!(10)))])
+        .await
+        .expect("attribute the earlier sell");
+    let list = |filter: TransactionFilter| {
+        let transactions = &transactions;
+        async move { transaction_ids(&transactions.list(&filter).await.expect("the list")) }
+    };
+    let day = |day| NaiveDate::from_ymd_opt(2024, 5, day);
+
+    assert_eq!(
+        list(TransactionFilter::default()).await,
+        [buy, elsewhere, early_sell, late_sell]
+    );
+    assert_eq!(
+        list(TransactionFilter {
+            account: Some(account()),
+            ..TransactionFilter::default()
+        })
+        .await,
+        [buy, early_sell, late_sell]
+    );
+    assert_eq!(
+        list(TransactionFilter {
+            security: Some(other_isin.clone()),
+            ..TransactionFilter::default()
+        })
+        .await,
+        [elsewhere]
+    );
+    assert_eq!(
+        list(TransactionFilter {
+            kind: Some(TransactionKind::Sell),
+            ..TransactionFilter::default()
+        })
+        .await,
+        [early_sell, late_sell]
+    );
+    assert_eq!(
+        list(TransactionFilter {
+            from: day(3),
+            to: day(6),
+            ..TransactionFilter::default()
+        })
+        .await,
+        [early_sell, late_sell],
+        "both ends of the range are inside it"
+    );
+    assert_eq!(
+        list(TransactionFilter {
+            from: day(3),
+            to: day(5),
+            ..TransactionFilter::default()
+        })
+        .await,
+        [early_sell]
+    );
+    assert_eq!(
+        list(TransactionFilter {
+            unattributed_closings: true,
+            ..TransactionFilter::default()
+        })
+        .await,
+        [late_sell],
+        "neither the openings nor the attributed sell await attribution"
+    );
+    assert_eq!(
+        list(TransactionFilter {
+            account: Some(other_account.clone()),
+            kind: Some(TransactionKind::Buy),
+            ..TransactionFilter::default()
+        })
+        .await,
+        [elsewhere]
+    );
+    assert_eq!(
+        list(TransactionFilter {
+            account: Some(other_account.clone()),
+            kind: Some(TransactionKind::Sell),
+            ..TransactionFilter::default()
+        })
+        .await,
+        Vec::<TransactionId>::new()
+    );
+
+    let read = transactions
+        .read(elsewhere)
+        .await
+        .expect("read")
+        .expect("stored");
+    assert_eq!(read.account(), &other_account);
+    assert_eq!(read.security(), &other_isin);
+    assert_eq!(read.derived_by(), Some(batch));
+    assert_eq!(
+        read.transaction(),
+        &transactions
+            .find(elsewhere)
+            .await
+            .expect("find")
+            .expect("stored")
+    );
+    assert_eq!(
+        transactions
+            .read(TransactionId::new(99))
+            .await
+            .expect("read"),
+        None
+    );
+}
+
+/// A transaction list naming an account or security that is not stored is refused by name
+/// rather than answered as an empty list, which would read as nothing to attribute (DEC-126,
+/// provisional) [SRV-028], [TST-004].
+#[tokio::test]
+async fn a_transaction_filter_naming_nothing_stored_is_refused() {
+    let (_db, database) = open().await;
+    place(&database).await;
+    let transactions = database.transactions();
+
+    let account = transactions
+        .list(&TransactionFilter {
+            account: Some(Account::new("Saxo", "nobody")),
+            ..TransactionFilter::default()
+        })
+        .await;
+    let security = transactions
+        .list(&TransactionFilter {
+            security: Some(Isin::new("US0378331005")),
+            ..TransactionFilter::default()
+        })
+        .await;
+
+    assert!(
+        matches!(&account, Err(StorageError::UnknownAccount { id, .. }) if id == "nobody"),
+        "{account:?}"
+    );
+    assert!(
+        matches!(&security, Err(StorageError::UnknownSecurity { isin }) if isin == "US0378331005"),
+        "{security:?}"
+    );
+}
+
+/// A transaction stored without its placement was not written by the repository, and is
+/// refused on listing rather than silently left out of every list [TST-004].
+#[tokio::test]
+async fn a_transaction_without_its_placement_is_refused_on_listing() {
+    let (db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let id = database
+        .transactions()
+        .insert(
+            &placement,
+            &buy_citing(store_record(&database, batch, "b1", &[]).await),
+        )
+        .await
+        .expect("insert");
+    let pool = raw(&db).await;
+    query("delete from transaction_placement where transaction_id = ?")
+        .bind(id.get())
+        .execute(&pool)
+        .await
+        .expect("remove the placement");
+    pool.close().await;
+
+    match database
+        .transactions()
+        .list(&TransactionFilter::default())
+        .await
+    {
+        Err(StorageError::CorruptValue { field, value }) => {
+            assert_eq!(field, "transaction_placement");
+            assert_eq!(value, id.to_string());
+        }
+        other => panic!("an unplaced transaction must be refused, got {other:?}"),
+    }
+}
+
+/// Deleting a transaction answers whether one was stored under the id, so the server can refuse
+/// an absent one while the deletion itself stays idempotent (DEC-126, provisional) [SRV-033],
+/// [TST-004].
+#[tokio::test]
+async fn deleting_a_transaction_answers_whether_one_was_stored() {
+    let (_db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let transactions = database.transactions();
+    let buy = transactions
+        .insert(
+            &placement,
+            &buy_citing(store_record(&database, batch, "b1", &[]).await),
+        )
+        .await
+        .expect("the buy");
+
+    assert!(transactions.delete(buy).await.expect("delete the buy"));
+    assert!(
+        !transactions.delete(buy).await.expect("delete it again"),
+        "nothing was stored under the id the second time"
+    );
+}
+
+/// A `transfer_out` of 55 on 2024-05-`day` to `target`, derived from `record` alone.
+fn transfer_out_on(day: u32, target: Isin, record: RecordHandle) -> Transaction {
+    let on = NaiveDate::from_ymd_opt(2024, 5, day).expect("a valid date");
+    TransferOut::new(
+        Derivation::new(on, vec1![record]),
+        Quantity::new(dec!(55)),
+        money(dec!(0.00), dec!(0.00)),
+        one_for_three(),
+        conversion(),
+        target,
+    )
+    .into()
+}
+
+/// The unattributed-closings filter admits each of the three closing kinds while no attribution
+/// closes it, and neither an attributed closing nor a split, which closes nothing (DEC-126,
+/// provisional) [SRV-029], [DOM-081], [TST-004].
+#[tokio::test]
+async fn every_closing_kind_awaits_attribution_until_attributed() {
+    let (_db, database) = open().await;
+    let (placement, batch) = place(&database).await;
+    let target = Isin::new("US0378331005");
+    database
+        .securities()
+        .insert(&Security::auto_created(
+            target.clone(),
+            "Apple",
+            SecurityType::Stock,
+            Quotation::PerUnit,
+        ))
+        .await
+        .expect("the target security");
+    let transactions = database.transactions();
+    let store = |reference: &'static str, transaction: fn(RecordHandle) -> Transaction| {
+        let (database, placement) = (&database, &placement);
+        async move {
+            database
+                .transactions()
+                .insert(
+                    placement,
+                    &transaction(store_record(database, batch, reference, &[]).await),
+                )
+                .await
+                .expect("insert")
+        }
+    };
+    let buy = store("b1", buy_citing).await;
+    let attributed_out = transactions
+        .insert(
+            &placement,
+            &transfer_out_on(
+                3,
+                target.clone(),
+                store_record(&database, batch, "t1", &[]).await,
+            ),
+        )
+        .await
+        .expect("the attributed transfer_out");
+    let split = store("p1", |record| {
+        Split::new(
+            Derivation::new(
+                NaiveDate::from_ymd_opt(2024, 5, 4).expect("a valid date"),
+                vec1![record],
+            ),
+            one_for_three(),
+        )
+        .into()
+    })
+    .await;
+    let open_out = transactions
+        .insert(
+            &placement,
+            &transfer_out_on(
+                5,
+                target.clone(),
+                store_record(&database, batch, "t2", &[]).await,
+            ),
+        )
+        .await
+        .expect("the unattributed transfer_out");
+    let expiration = store("e1", |record| {
+        let on = NaiveDate::from_ymd_opt(2024, 5, 6).expect("a valid date");
+        Expiration::new(
+            Derivation::new(on, vec1![record]),
+            money(dec!(0.00), dec!(0.00)),
+            money(dec!(0.00), dec!(0.00)),
+            conversion(),
+        )
+        .into()
+    })
+    .await;
+    database
+        .attributions()
+        .approve(
+            attributed_out,
+            &[Allocation::new(buy, Quantity::new(dec!(55)))],
+        )
+        .await
+        .expect("attribute the earlier transfer_out");
+
+    let listed = |filter: TransactionFilter| {
+        let transactions = &transactions;
+        async move { transaction_ids(&transactions.list(&filter).await.expect("the list")) }
+    };
+    assert_eq!(
+        listed(TransactionFilter::default()).await,
+        [buy, attributed_out, split, open_out, expiration]
+    );
+    assert_eq!(
+        listed(TransactionFilter {
+            unattributed_closings: true,
+            ..TransactionFilter::default()
+        })
+        .await,
+        [open_out, expiration]
+    );
+}
+
+/// Transactions of one trade date are listed by their stored order key: `order`, then batch
+/// age, then leg, whatever order they were inserted in (DEC-126, provisional) [SRV-028],
+/// [DOM-011], [DOM-111], [TST-004].
+#[tokio::test]
+async fn transactions_of_one_date_are_listed_by_order_batch_age_and_leg() {
+    let (_db, database) = open().await;
+    let (_, older) = place(&database).await;
+    let newer = database
+        .import_batches()
+        .insert(&batch(SourceFormat::SaxoNlXlsx))
+        .await
+        .expect("the newer batch");
+    let transactions = database.transactions();
+    let insert = |batch: BatchId, reference: &'static str, order: u32, trailing: bool| {
+        let (database, transactions) = (&database, &transactions);
+        let placement = Placement::derived(account(), isin(), batch);
+        async move {
+            let record = store_record_at(database, batch, reference, order, &[]).await;
+            let derivation = Derivation::new(date(), vec1![record]);
+            let derivation = if trailing {
+                derivation.trailing()
+            } else {
+                derivation
+            };
+            let transaction: Transaction = Split::new(derivation, one_for_three()).into();
+            transactions
+                .insert(&placement, &transaction)
+                .await
+                .expect("insert")
+        }
+    };
+    // Each inserted before the one it follows in the order key, so that an answer by id would
+    // reverse the list.
+    let third_row = insert(older, "r3", 3, false).await;
+    let newer_row = insert(newer, "n2", 2, false).await;
+    let trailing = insert(older, "r2t", 2, true).await;
+    let lead = insert(older, "r2", 2, false).await;
+
+    assert_eq!(
+        transaction_ids(
+            &transactions
+                .list(&TransactionFilter::default())
+                .await
+                .expect("the list")
+        ),
+        [lead, trailing, newer_row, third_row]
+    );
 }
