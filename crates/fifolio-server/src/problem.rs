@@ -78,6 +78,9 @@ pub enum ProblemType {
     EmittedTransferIn,
     BatchTransactionAttributed,
     BatchRecordsCited,
+    UnknownManualEntry,
+    ManualEntryAnswersNothing,
+    ManualEntryAnswersRepeated,
     StorageFailure,
     UnreadableFile,
     MultipleCalendarYears,
@@ -185,6 +188,19 @@ impl ProblemType {
                 "batch-records-cited",
                 S::CONFLICT,
                 "The batch owns records other transactions cite",
+            ),
+            Self::UnknownManualEntry => {
+                ("unknown-manual-entry", S::NOT_FOUND, "No such manual entry")
+            }
+            Self::ManualEntryAnswersNothing => (
+                "manual-entry-answers-nothing",
+                S::UNPROCESSABLE_ENTITY,
+                "A manual entry must answer at least one source record",
+            ),
+            Self::ManualEntryAnswersRepeated => (
+                "manual-entry-answers-repeated",
+                S::UNPROCESSABLE_ENTITY,
+                "A manual entry names a source record more than once",
             ),
             Self::StorageFailure => (
                 "storage-failure",
@@ -299,6 +315,9 @@ impl From<&StorageError> for ProblemType {
             StorageError::EmittedTransferIn { .. } => Self::EmittedTransferIn,
             StorageError::BatchTransactionAttributed { .. } => Self::BatchTransactionAttributed,
             StorageError::BatchRecordsCited { .. } => Self::BatchRecordsCited,
+            StorageError::UnknownManualEntry { .. } => Self::UnknownManualEntry,
+            StorageError::ManualEntryAnswersNothing => Self::ManualEntryAnswersNothing,
+            StorageError::ManualEntryAnswersRepeated { .. } => Self::ManualEntryAnswersRepeated,
             // Neither is something a caller can act on: the driver failed, or the schema could
             // not be brought current, which only happens at startup.
             StorageError::Database(_) | StorageError::Migration(_) => Self::StorageFailure,
@@ -493,7 +512,7 @@ mod tests {
     use chrono::NaiveDate;
     use fifolio_core::import::reader::ReadError;
     use fifolio_core::import::{RowError, RowFailure};
-    use fifolio_core::storage::{AttributionId, BatchId, TransactionId};
+    use fifolio_core::storage::{AttributionId, BatchId, ManualEntryId, TransactionId};
     use fifolio_core::valuation::Currency;
     use http_body_util::BodyExt;
     use strum::IntoEnumIterator;
@@ -603,6 +622,21 @@ mod tests {
             ProblemType::BatchRecordsCited,
             "urn:fifolio:problem:batch-records-cited",
             409,
+        ),
+        (
+            ProblemType::UnknownManualEntry,
+            "urn:fifolio:problem:unknown-manual-entry",
+            404,
+        ),
+        (
+            ProblemType::ManualEntryAnswersNothing,
+            "urn:fifolio:problem:manual-entry-answers-nothing",
+            422,
+        ),
+        (
+            ProblemType::ManualEntryAnswersRepeated,
+            "urn:fifolio:problem:manual-entry-answers-repeated",
+            422,
         ),
         (
             ProblemType::StorageFailure,
@@ -882,6 +916,22 @@ mod tests {
                     transactions: vec![transaction(1)],
                 },
                 ProblemType::BatchRecordsCited,
+            ),
+            (
+                StorageError::UnknownManualEntry {
+                    entry: ManualEntryId::new(1),
+                },
+                ProblemType::UnknownManualEntry,
+            ),
+            (
+                StorageError::ManualEntryAnswersNothing,
+                ProblemType::ManualEntryAnswersNothing,
+            ),
+            (
+                StorageError::ManualEntryAnswersRepeated {
+                    identity: "r1".to_owned(),
+                },
+                ProblemType::ManualEntryAnswersRepeated,
             ),
             (
                 StorageError::Database(sqlx::Error::RowNotFound),

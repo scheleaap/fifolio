@@ -983,3 +983,71 @@ supplying batch, which lists a superseded import's records under a batch whose u
 touch them; a stored security column, which the importer does not fill for records already
 stored; and an empty list for an unknown filter, which reads as "nothing pending".
 [DEC-120, SRV-023, SRV-024, SRV-052, SRV-009, SRV-021, DOM-024]
+
+**DEC-121 — Provisional: what "the same manual entry" is, and what a replay answers.** SRV-048
+makes creation idempotent on "its content and the source record identities it cites" without
+saying whether the identities' order counts or what a replay answers. Two entries are the same
+when their account, security and supplied value are equal and they cite the same identities in
+the same order; quantities compare as numbers, so `12.5` and `12.50` are one entry. Order counts
+because DOM-098 stores it as the order the completion queue showed the rows in, an export writes
+it out as stored (CLI-009), and a replay therefore reproduces it. A new entry answers `201` with
+the stored entry; an identical one already stored answers `200` with that stored entry, as first
+written, and stores nothing. The match is made before any other check, so a replayed entry that
+is waiting is recognized rather than refused over its own absent records. Alternatives not taken:
+identities as a set, which would merge two entries a user deliberately made in different orders
+and makes the stored order meaningless to equality; a `409` conflict for a replay, which turns
+the replay CLI-040 calls idempotent into an error path; and a stored content key column, which
+would compare quantities as text and split `12.5` from `12.50`. [DEC-121, SRV-048, DOM-098,
+CLI-009, CLI-040]
+
+**DEC-122 — Provisional: a new manual entry cites at least one record, each stored.** SRV-025
+says an entry is created but not against what; the domain leaves "what an entry attached to no
+row means" to CLI-039 and SRV-026, and CLI-039 answers it for a replay: "an entry whose imported
+source records are not present is reported and skipped rather than guessed at, since a manual
+record attached to nothing has nowhere to belong". The server therefore refuses a new entry that
+names no record (`422 manual-entry-answers-nothing`) or names one no stored source record
+carries (`404 unknown-record`, naming it), and an entry whose account is not stored
+(`404 unknown-account`); each refusal stores nothing. Whether a cited record belongs to the
+entry's account is not checked: an emitted record has no owning batch and so no account storage
+can read, and refusing it would decide FIF-063's open path. Alternatives not taken: storing an
+entry whose records are absent as waiting, which would keep what CLI-039 says is skipped and
+report it as a completion that vanished (DOM-109) when it never completed anything; and
+accepting an entry naming nothing, which would be waiting for nothing and listed nowhere.
+[DEC-122, SRV-025, SRV-026, CLI-039, DOM-098, DOM-109]
+
+**DEC-123 — Provisional: a manual entry's share count or disposed quantity is above zero.**
+DOM-097 gives a stock election "a share count" and a disposal "a quantity disposed", and SRV-025
+sets no bound on either. Creating an entry refuses a value of zero or less with a `422` naming
+the field, and stores nothing; the smallest value at the quantity scale, `0.00000001`, is
+accepted. A stock election of no shares is a cash election misstated, and a disposal of nothing
+or less disposes of nothing; either would later derive a buy or disposal no holding could
+produce (FIF-038, FIF-104), as DEC-103 and DEC-106 refuse an allocation or an emitted record of
+zero or fewer units. The refusal is made on reading the body, before the account or the
+sameness match (DEC-121) is consulted: no stored entry can carry such a value, so a replay is
+never refused over one it stored. Alternative not taken: accepting any sign, which stores a
+value every later derivation would have to refuse or silently mis-apply.
+[DEC-123, SRV-025, DOM-097, DEC-103, DEC-106, DEC-121]
+
+**DEC-124 — Provisional: a manual entry's ratio compares as the pair it states.** DEC-121 makes
+quantities compare as numbers but says nothing of a split's or exchange's ratio, which DEC-055
+holds as an integer numerator and denominator. Two entries are the same only when their ratios
+state the same numerator and the same denominator; `2:1` and `4:2` are two entries, and neither
+is reduced when stored. A replay of an export is unaffected, because the export writes the stored
+pair back unchanged (CLI-009), and the pair stays exactly what the user said, as DOM-048 keeps a
+supplied value. Alternative not taken: comparing after reducing to lowest terms, which would
+answer a new entry with a stored one the user never stated in those terms, and would merge two
+deliberate entries on a numeric equivalence the domain has not asked for; this is the reading
+that stores rather than silently discards. [DEC-124, SRV-048, DEC-121, DEC-055, DOM-048, CLI-009]
+
+**DEC-125 — Provisional: a new manual entry names each record once.** DEC-122 requires a new
+entry to cite at least one stored record, but neither it nor DOM-098 says whether an entry may
+cite the same identity twice, and the schema would store both rows. Creating an entry that names
+an identity more than once is refused (`422 manual-entry-answers-repeated`, naming the identity),
+and nothing is stored. DOM-098 stores the answers as the rows the completion queue showed, and a
+row is shown once, so a repeated identity is a malformed request rather than a meaning to keep;
+under DEC-121's ordered comparison it would otherwise be a second entry distinct from the same
+entry citing the record once, and a derivation from it would cite one record as two rows. The
+refusal follows the sameness match (DEC-121), like DEC-122's, so no stored entry is refused on
+replay. Alternative not taken: accepting and storing the repetition, which keeps a citation list
+no queue could have produced and leaves FIF-038 to decide what a doubled record contributes.
+[DEC-125, SRV-025, SRV-048, DOM-098, DEC-121, DEC-122]

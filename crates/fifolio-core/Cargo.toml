@@ -31,7 +31,15 @@ tracing = "0.1.44"
 # nothing [DOM-047].
 vec1 = "1.12.1"
 
+[features]
+# Opens storage writes that skip the checks the real write path makes, so a test can place a
+# state (an entry whose records are absent) the checked path refuses to create. Never enabled
+# outside tests.
+test-support = []
+
 [dev-dependencies]
+# Itself, with `test-support`, so this crate's integration tests reach the gated writes.
+fifolio-core = { path = ".", features = ["test-support"] }
 cargo-lock = { version = "11.1.0", default-features = false }
 fifolio-test-support = { workspace = true }
 insta = "1.48.0"

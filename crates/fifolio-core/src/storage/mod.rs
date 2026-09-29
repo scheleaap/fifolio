@@ -75,7 +75,9 @@ pub use entities::{
     AccountRepository, BatchId, ImportBatchRepository, RecordFilter, RecordStatus,
     SecurityRepository, SourceRecordRepository, StoredSourceRecord,
 };
-pub use manual_entries::{ManualEntryId, ManualEntryRepository, ReconnectedEntry, WaitingEntry};
+pub use manual_entries::{
+    Creation, ManualEntryId, ManualEntryRepository, ReconnectedEntry, WaitingEntry,
+};
 pub use rates::{CachedRates, RateRepository};
 pub(crate) use transactions::StoredOpening;
 pub use transactions::{Placement, TransactionId, TransactionRepository};
@@ -273,6 +275,16 @@ pub enum StorageError {
         batch: BatchId,
         transactions: Vec<TransactionId>,
     },
+    #[error("no manual entry {entry} is stored")]
+    UnknownManualEntry { entry: ManualEntryId },
+    /// A manual record attached to nothing has nowhere to belong (CLI-039), so an entry is
+    /// created answering at least one record (DEC-122, provisional).
+    #[error("a manual entry must answer at least one source record")]
+    ManualEntryAnswersNothing,
+    /// An entry answers the rows the completion queue showed, each once (DOM-098), so citing a
+    /// record twice is refused rather than stored (DEC-125, provisional).
+    #[error("a manual entry names source record {identity} more than once")]
+    ManualEntryAnswersRepeated { identity: String },
     #[error(transparent)]
     Database(#[from] sqlx::Error),
     #[error(transparent)]

@@ -23,16 +23,19 @@
 //! module: no caller derives from [`ManualEntryRepository::reconnected`] yet, and the wiring that
 //! makes an import do it without asking is FIF-072's.
 
+use std::collections::HashSet;
 use std::num::NonZeroU32;
 
-use sqlx::sqlite::{SqlitePool, SqliteRow};
+use sqlx::sqlite::{SqliteConnection, SqlitePool, SqliteRow};
 use sqlx::{Row, query};
 use vec1::Vec1;
 
-use crate::entities::{Isin, RecordIdentity, SourceRecord};
+use crate::entities::{Account, Isin, RecordIdentity, SourceRecord};
 use crate::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use crate::storage::codec::{at_scale, quantity as read_quantity};
-use crate::storage::{BatchId, RecordHandle, SourceRecordRepository, StorageError, row_id};
+use crate::storage::{
+    AccountRepository, BatchId, RecordHandle, SourceRecordRepository, StorageError, row_id,
+};
 
 row_id!(
     /// A manual entry's key.
@@ -55,77 +58,119 @@ impl<'a> ManualEntryRepository<'a> {
         Self { pool }
     }
 
+    /// Stores `entry` as given, with none of [`Self::create`]'s sameness match or refusals, so a
+    /// test can place an entry whose records are absent. Gated to tests: outside them `create`
+    /// is the only way an entry is stored [SRV-025], [SRV-048].
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn insert(&self, entry: &ManualEntry) -> Result<ManualEntryId, StorageError> {
-        let columns = SuppliedColumns::of(entry.supplied())?;
-
         let mut tx = self.pool.begin().await?;
-        let inserted = query(
-            "insert into manual_entry
-                 (account_broker, account_id, security_isin, supplied_kind,
-                  shares, quantity, ratio_numerator, ratio_denominator, target_isin)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(entry.account().broker())
-        .bind(entry.account().id())
-        .bind(entry.security().as_str())
-        .bind(columns.kind)
-        .bind(columns.shares)
-        .bind(columns.quantity)
-        .bind(columns.numerator)
-        .bind(columns.denominator)
-        .bind(columns.target)
-        .execute(&mut *tx)
-        .await?;
-        let id = inserted.last_insert_rowid();
-
-        for (ordinal, identity) in (0i64..).zip(entry.answers()) {
-            query(
-                "insert into manual_entry_answer (manual_entry_id, ordinal, record_identity)
-                 values (?, ?, ?)",
-            )
-            .bind(id)
-            .bind(ordinal)
-            .bind(identity.as_str())
-            .execute(&mut *tx)
-            .await?;
-        }
-
+        let id = insert_in(&mut tx, entry).await?;
         tx.commit().await?;
-        Ok(ManualEntryId::new(id))
+        Ok(id)
+    }
+
+    /// Stores the entry against `security` in `account` supplying `supplied` and answering the
+    /// records `answers` names, unless an entry of the same content already is stored, which is
+    /// then answered instead [SRV-048]; the only way the server brings supplied information in
+    /// [SRV-025].
+    ///
+    /// The same content is the same account, security and supplied value, citing the same
+    /// identities in the same order (DEC-121, provisional); quantities compare as numbers, so
+    /// `12.5` and `12.50` are one entry, while ratios compare as the pair stated, so `2:1` and
+    /// `4:2` are two (DEC-124, provisional). An identical entry is recognized before anything else
+    /// is checked, so replaying an exported file answers an entry that is waiting as well as one
+    /// that is not. A new entry must name at least one record, and every record it names must be
+    /// stored, since a manual record attached to nothing has nowhere to belong (CLI-039)
+    /// (DEC-122, provisional); it names no record twice (DEC-125, provisional).
+    ///
+    /// The identities arrive as text, since only `identity::identify` builds one outside this
+    /// crate [DOM-024]. Text becomes an identity here only to be matched against identities
+    /// already stored, a record's or an entry's, so no identity is stored that storage did not
+    /// already hold.
+    pub async fn create(
+        &self,
+        account: &Account,
+        security: &Isin,
+        supplied: &Supplied,
+        answers: &[String],
+    ) -> Result<Creation, StorageError> {
+        let entry = ManualEntry::new(
+            account.clone(),
+            security.clone(),
+            supplied.clone(),
+            answers.iter().map(RecordIdentity::new),
+        );
+        // IMMEDIATE takes the write lock before the lookup, so two replays of one entry cannot
+        // both find nothing and both insert.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(existing) = find_same(&mut tx, &entry).await? {
+            return Ok(Creation::Existing(existing));
+        }
+        if AccountRepository::find_in(&mut tx, account.broker(), account.id())
+            .await?
+            .is_none()
+        {
+            return Err(StorageError::UnknownAccount {
+                broker: account.broker().to_owned(),
+                id: account.id().to_owned(),
+            });
+        }
+        if entry.answers().is_empty() {
+            return Err(StorageError::ManualEntryAnswersNothing);
+        }
+        let mut seen = HashSet::new();
+        if let Some(repeated) = entry
+            .answers()
+            .iter()
+            .find(|identity| !seen.insert(identity.as_str()))
+        {
+            return Err(StorageError::ManualEntryAnswersRepeated {
+                identity: repeated.as_str().to_owned(),
+            });
+        }
+        for identity in entry.answers() {
+            let stored: i64 = query("select count(*) from source_record where identity = ?")
+                .bind(identity.as_str())
+                .fetch_one(&mut *tx)
+                .await?
+                .get(0);
+            if stored == 0 {
+                return Err(StorageError::UnknownRecord {
+                    identity: identity.as_str().to_owned(),
+                });
+            }
+        }
+        let id = insert_in(&mut tx, &entry).await?;
+        tx.commit().await?;
+        Ok(Creation::Created(id))
+    }
+
+    /// Every stored entry, oldest first: what an export writes out [SRV-026], [CLI-009].
+    pub async fn list(&self) -> Result<Vec<(ManualEntryId, ManualEntry)>, StorageError> {
+        let mut entries = Vec::new();
+        for id in self.ids(None).await? {
+            if let Some(entry) = self.find(id).await? {
+                entries.push((id, entry));
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Removes an entry and the identities it names. The only removal of an entry there is
+    /// [SRV-053]: batch deletion never reaches this table [DOM-110].
+    pub async fn delete(&self, id: ManualEntryId) -> Result<(), StorageError> {
+        let deleted = query("delete from manual_entry where id = ?")
+            .bind(id.get())
+            .execute(self.pool)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(StorageError::UnknownManualEntry { entry: id });
+        }
+        Ok(())
     }
 
     pub async fn find(&self, id: ManualEntryId) -> Result<Option<ManualEntry>, StorageError> {
-        let Some(row) = query(
-            "select account_broker, account_id, security_isin, supplied_kind,
-                    shares, quantity, ratio_numerator, ratio_denominator, target_isin
-             from manual_entry where id = ?",
-        )
-        .bind(id.get())
-        .fetch_optional(self.pool)
-        .await?
-        else {
-            return Ok(None);
-        };
-
-        let answers = query(
-            "select record_identity from manual_entry_answer
-             where manual_entry_id = ? order by ordinal",
-        )
-        .bind(id.get())
-        .fetch_all(self.pool)
-        .await?
-        .into_iter()
-        .map(|row| RecordIdentity::new(row.get::<String, _>("record_identity")));
-
-        Ok(Some(ManualEntry::new(
-            crate::entities::Account::new(
-                row.get::<String, _>("account_broker"),
-                row.get::<String, _>("account_id"),
-            ),
-            Isin::new(row.get::<String, _>("security_isin")),
-            supplied(&row)?,
-            answers,
-        )))
+        find_in(&mut *self.pool.acquire().await?, id).await
     }
 
     /// The entries whose records are absent, each naming what it expects [DOM-109].
@@ -270,6 +315,23 @@ impl<'a> ManualEntryRepository<'a> {
     }
 }
 
+/// What [`ManualEntryRepository::create`] did: stored the entry, or found it already stored
+/// [SRV-048].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Creation {
+    Created(ManualEntryId),
+    Existing(ManualEntryId),
+}
+
+impl Creation {
+    #[must_use]
+    pub fn id(self) -> ManualEntryId {
+        match self {
+            Self::Created(id) | Self::Existing(id) => id,
+        }
+    }
+}
+
 /// A stored entry that is waiting, and the identities it is waiting for [DOM-109].
 ///
 /// The entry carries the account and the security, so what it names is the whole of "what it
@@ -334,6 +396,111 @@ impl ReconnectedEntry {
     pub fn handles(&self) -> Vec1<RecordHandle> {
         self.handles.clone()
     }
+}
+
+async fn find_in(
+    connection: &mut SqliteConnection,
+    id: ManualEntryId,
+) -> Result<Option<ManualEntry>, StorageError> {
+    let Some(row) = query(
+        "select account_broker, account_id, security_isin, supplied_kind,
+                shares, quantity, ratio_numerator, ratio_denominator, target_isin
+         from manual_entry where id = ?",
+    )
+    .bind(id.get())
+    .fetch_optional(&mut *connection)
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let answers = query(
+        "select record_identity from manual_entry_answer
+         where manual_entry_id = ? order by ordinal",
+    )
+    .bind(id.get())
+    .fetch_all(&mut *connection)
+    .await?
+    .into_iter()
+    .map(|row| RecordIdentity::new(row.get::<String, _>("record_identity")));
+
+    Ok(Some(ManualEntry::new(
+        Account::new(
+            row.get::<String, _>("account_broker"),
+            row.get::<String, _>("account_id"),
+        ),
+        Isin::new(row.get::<String, _>("security_isin")),
+        supplied(&row)?,
+        answers,
+    )))
+}
+
+/// Inserts `entry` and the identities it names, in the caller's transaction.
+async fn insert_in(
+    connection: &mut SqliteConnection,
+    entry: &ManualEntry,
+) -> Result<ManualEntryId, StorageError> {
+    let columns = SuppliedColumns::of(entry.supplied())?;
+    let inserted = query(
+        "insert into manual_entry
+             (account_broker, account_id, security_isin, supplied_kind,
+              shares, quantity, ratio_numerator, ratio_denominator, target_isin)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(entry.account().broker())
+    .bind(entry.account().id())
+    .bind(entry.security().as_str())
+    .bind(columns.kind)
+    .bind(columns.shares)
+    .bind(columns.quantity)
+    .bind(columns.numerator)
+    .bind(columns.denominator)
+    .bind(columns.target)
+    .execute(&mut *connection)
+    .await?;
+    let id = inserted.last_insert_rowid();
+
+    for (ordinal, identity) in (0i64..).zip(entry.answers()) {
+        query(
+            "insert into manual_entry_answer (manual_entry_id, ordinal, record_identity)
+             values (?, ?, ?)",
+        )
+        .bind(id)
+        .bind(ordinal)
+        .bind(identity.as_str())
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(ManualEntryId::new(id))
+}
+
+/// A stored entry whose content equals `entry`'s (DEC-121, provisional).
+///
+/// Compared as values rather than as columns: a quantity is stored as the caller wrote it, so
+/// `12.5` and `12.50` are different text for one number.
+async fn find_same(
+    connection: &mut SqliteConnection,
+    entry: &ManualEntry,
+) -> Result<Option<ManualEntryId>, StorageError> {
+    let candidates: Vec<ManualEntryId> = query(
+        "select id from manual_entry
+         where account_broker = ? and account_id = ? and security_isin = ?
+         order by id",
+    )
+    .bind(entry.account().broker())
+    .bind(entry.account().id())
+    .bind(entry.security().as_str())
+    .fetch_all(&mut *connection)
+    .await?
+    .iter()
+    .map(|row| ManualEntryId::new(row.get("id")))
+    .collect();
+    for id in candidates {
+        if find_in(connection, id).await?.as_ref() == Some(entry) {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
 }
 
 /// The columns one [`Supplied`] shape fills, so every shape is written in one place and the

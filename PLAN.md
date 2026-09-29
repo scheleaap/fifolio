@@ -1250,11 +1250,14 @@ Notes: Revision 84: named next to build. Its one dependency, FIF-035, is `done`,
 Done in revision 84's build: `GET /source-records` lists records filtered on account, owning batch, security (an ISIN among the parsed values) and `status=consumed|pending`, all given filters holding, in import then file order; `status=pending` is the completion queue (SRV-023, SRV-024). A record is consumed while a stored transaction cites it (provisional DEC-119); an account, batch or security not stored is a 404 problem (provisional DEC-120). `GET /source-records/{identity}` reads one record, 404 when absent. No route edits a record, asserted over the routing table (SRV-027). `SourceRecordRepository` gains a filtered list (`RecordFilter`, `RecordStatus`, `StoredSourceRecord`). Tests in `crates/fifolio-core/tests/storage.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-072 Manual entry endpoints
-Status: todo
-Requirements: SRV-025, SRV-026, SRV-048, SRV-053, SRV-055
+Status: done
+Requirements: SRV-025, SRV-026, SRV-048, SRV-053
 Depends on: FIF-037, FIF-062
-Acceptance: create a manual entry, which is the only way information no export contains enters the system; creation is idempotent on its content and the source record identities it cites, so replaying an exported file cannot duplicate one; list all entries for export, and list those whose source records are absent with what each is waiting for; delete an entry, which is the only thing that removes one; importing source records whose identities a waiting entry names reconnects it and restores the transaction it completed, without asking.
+Acceptance: create a manual entry, which is the only way information no export contains enters the system; creation is idempotent on its content and the source record identities it cites, so replaying an exported file cannot duplicate one; list all entries for export, and list those whose source records are absent with what each is waiting for; delete an entry, which is the only thing that removes one.
 Notes: New in this revision; the previous plan folded manual information into FIF-037 as a source record kind.
+Revision 85: SRV-055 split out into FIF-104. Restoring "the transaction it completed" needs the derivation of a transaction from records plus a manual entry, which is SRV-031/032 and FIF-038's; no such derivation exists in core (`import::completion` only builds the entry), so SRV-055 could not be judged until FIF-038 exists. Named next to build. Both dependencies are `done`; none of SRV-025, 026, 048, 053 is on a `Blocks:` line. `ManualEntryRepository` (`fifolio-core/src/storage/manual_entries.rs`) has `insert`, `find`, `waiting` and `reconnected`; missing: a list of all entries, a delete, and idempotency (`insert` always adds a row; `manual_entry` has no uniqueness over content plus `manual_entry_answer` identities, so SRV-048 needs either a content key or a lookup-before-insert in one transaction). `waiting` deliberately omits an entry naming no record, leaving that case to SRV-026 and CLI-039; the server has no manual entry routes. Tests in `storage.rs` and `http_surface.rs`.
+Done in revision 85's build: `POST /manual-entries` creates an entry against a stored account, citing at least one stored record, each once (SRV-025, provisional DEC-122, DEC-125); a share count or disposed quantity of zero or less is a 422 naming the field (provisional DEC-123). Creation is idempotent: an entry equal in account, security, supplied value (quantities as numbers, ratios as the stated pair) and ordered identities answers 200 with the stored entry, a new one 201, matched inside one immediate transaction before any other check (SRV-048, provisional DEC-121, DEC-124). `GET /manual-entries` lists every entry for export and `GET /manual-entries/waiting` each waiting entry with what it is missing (SRV-026); `DELETE /manual-entries/{id}` answers 204 and is the only removal (SRV-053). `ManualEntryRepository` gains `create`, a list and `delete`; `insert` is test-support only. Tests in `crates/fifolio-core/tests/storage.rs` and `crates/fifolio-server/tests/http_surface.rs`.
+Review findings that survived: (minor) refusing a quantity sends an untyped `about:blank` problem rather than a stable type (ARC-021), as `source_records.rs` already does; (decision-required) SRV-025 and DEC-122 do not say whether an entry's security must match the ISIN of the records it cites, and `create` does not check it, so a provisional decision is owed; (minor, untested) the sameness match past a non-matching stored entry is covered only by the concurrency test; replay a later variant (e.g. Split 4:2) in `creating_the_same_manual_entry_again_answers_the_stored_one`.
 
 ## FIF-038 Transaction endpoints
 Status: todo
@@ -1263,6 +1266,13 @@ Depends on: FIF-037, FIF-072
 Acceptance: transactions readable and listable with filters on account, security, type and date range, including an unattributed-closings filter; a derive endpoint builds a transaction from one or more pending source records plus what the user supplied, storing the supplied part as a manual entry cited alongside the imported records; deleting a derived transaction returns its source records to pending; **no endpoint edits one** — a transferred parcel's acquisition date in particular is fixed at import and never corrected.
 Notes: Revision 3 splits SRV-034, that no endpoint creates a transaction from nothing, into FIF-087, it being undecided.
 DOM-069 forbids three operations on an attributed transaction — edited, re-rated, deleted. FIF-012 refuses two; the third has no surface anywhere in the workspace to refuse, and this item is where the acceptance says there is to be none (`no endpoint edits one`). Should an edit surface ever be added, here or elsewhere, DOM-069's edit clause is that item's to refuse and to test; it is carried here so the gap is tracked where it would be closed rather than only in a test comment.
+
+## FIF-104 Re-import restores the transaction a waiting entry completed
+Status: todo
+Requirements: SRV-055
+Depends on: FIF-072, FIF-038
+Acceptance: importing source records whose identities a waiting manual entry names reconnects it and derives its transaction again, without asking; an undo followed by a re-import leaves the account's transactions as they were; an entry whose transaction is already stored derives nothing (no duplicate).
+Notes: Split out of FIF-072 in revision 85, because restoring the transaction reuses FIF-038's derivation from records plus a manual entry (SRV-031, SRV-032). `ManualEntryRepository::reconnected(batch)` already hands back each reconnected entry with its records and handles, and its doc states the caller owns the idempotency check. Not in the server scope list of revision 85's run; it inherits FIF-072's place in it.
 
 ## FIF-087 No endpoint creates a transaction from nothing
 Status: todo
@@ -1393,6 +1403,22 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 85.** A status reconciliation after an interrupted session. `design/` unchanged since
+revision 84 apart from the provisional DEC-119 and DEC-120 listed against FIF-037; no requirement id
+added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines, and the 5 items
+carrying one are exactly the 5 `blocked`.
+
+* **Completed: FIF-037** (`a15aad2`). Its item text already recorded this.
+* **Split: FIF-072.** SRV-055 moves to the new **FIF-104** (depends on FIF-072, FIF-038): restoring
+  a waiting entry's transaction needs FIF-038's derivation from records plus a manual entry, so as
+  cut, FIF-072 could not be judged on its own.
+* 102 items: **65 `done`, 32 `todo`, 5 `blocked`**. Coverage unchanged: **352** live ids, each on
+  exactly one item; uncovered only the retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope: FIF-072, 038, 087, 073, 039, 040, 041 remain `todo` (plus FIF-104, split from
+  FIF-072); none carries a blocked requirement.
+* **Next to build: FIF-072.** Its dependencies FIF-037 and FIF-062 are `done`. FIF-041 is also ready
+  but comes later in document order.
 
 **Revision 84.** A status reconciliation after an interrupted session. `design/` changed since
 revision 83 only by adding the provisional DEC-118 (a transaction an undone batch derived from
@@ -2873,6 +2899,10 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 85: **352** live ids, each exactly once, re-verified by script against `design/` at
+`a15aad2`; SRV-055 moved from FIF-072 to FIF-104. One hundred and two items: 65 `done`, 32 `todo`,
+5 `blocked`.
 
 Revision 84: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `f546f37`. One hundred and one items: 64 `done`, 32 `todo`, 5 `blocked`.

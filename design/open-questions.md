@@ -105,3 +105,8 @@ built on it.
 * **FIF-086** (the deriver of a kept transaction whose deriving batch is undone) → DEC-118
 * **FIF-037** (what consumed and pending mean before DOM-101's consumption relation) → DEC-119
 * **FIF-037** (the reach of the account, batch and security filters; unknown filters) → DEC-120
+* **FIF-072** (manual entry sameness for idempotency: identity order, number equality; replay's answer) → DEC-121
+* **FIF-072** (whether a new manual entry may cite no record, or records not stored) → DEC-122
+* **FIF-072** (whether a share count or disposed quantity may be zero or negative) → DEC-123
+* **FIF-072** (whether equal ratios in other terms, `2:1` and `4:2`, are one entry) → DEC-124
+* **FIF-072** (whether a manual entry may cite the same record identity twice) → DEC-125

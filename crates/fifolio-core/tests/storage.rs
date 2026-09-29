@@ -17,8 +17,8 @@ use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::manual_entry::{Election, ManualEntry, Ratio, Supplied};
 use fifolio_core::ordering::{BatchAge, Leg, OrderKey, RecordPosition};
 use fifolio_core::storage::{
-    BatchId, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, RecordFilter, RecordHandle,
-    RecordStatus, StorageError, TransactionId,
+    BatchId, Creation, DEFAULT_DATABASE_PATH, Database, ManualEntryId, Placement, RecordFilter,
+    RecordHandle, RecordStatus, StorageError, TransactionId,
 };
 use fifolio_core::transaction::{
     Buy, BuyOrigin, DateProvenance, Derivation, Expiration, Sell, Split, Transaction, TransferIn,
@@ -3034,4 +3034,270 @@ async fn re_supplying_a_record_leaves_its_content_as_first_stored() {
         .expect("the record is stored");
     assert_eq!(read.record(), &original);
     assert_eq!(read.owner(), second);
+}
+
+/// The text a caller sends for the identity of the record `reference`.
+fn cited(reference: &str) -> String {
+    cite(reference).as_str().to_owned()
+}
+
+fn stock_election(shares: rust_decimal::Decimal) -> Supplied {
+    Supplied::Election(Election::Stock {
+        shares: Quantity::new(shares),
+    })
+}
+
+/// Creating the same entry again answers the stored one and stores nothing: the same account,
+/// security, supplied value and cited identities, a quantity comparing as a number. Any of them
+/// differing, the order of the identities, a disposal's target, an exchange's target or a ratio's
+/// stated terms included, is another entry [SRV-048] (DEC-121, DEC-124, provisional), [TST-004].
+#[tokio::test]
+async fn creating_the_same_manual_entry_again_answers_the_stored_one() {
+    let (_db, database) = open().await;
+    let (_, batch) = place(&database).await;
+    store_record(&database, batch, "r1", &[]).await;
+    store_record(&database, batch, "r2", &[]).await;
+    let entries = database.manual_entries();
+    let both = [cited("r1"), cited("r2")];
+
+    let first = entries
+        .create(&account(), &isin(), &stock_election(dec!(12.5)), &both)
+        .await
+        .expect("create");
+    let replayed = entries
+        .create(&account(), &isin(), &stock_election(dec!(12.50)), &both)
+        .await
+        .expect("replay");
+
+    let Creation::Created(id) = first else {
+        panic!("the first creation stores the entry, got {first:?}");
+    };
+    assert_eq!(replayed, Creation::Existing(id));
+    assert_eq!(entries.list().await.expect("list").len(), 1);
+
+    let reversed = [cited("r2"), cited("r1")];
+    let elsewhere = Account::new("Saxo", "69900/2000000");
+    database
+        .accounts()
+        .insert(&elsewhere)
+        .await
+        .expect("a second account");
+    let disposal = |quantity, target: Option<Isin>| Supplied::Disposal {
+        quantity: Quantity::new(quantity),
+        target,
+    };
+    let other_security = Isin::new("NL0011821202");
+    let ratio = |numerator, denominator| {
+        Ratio::new(
+            NonZeroU32::new(numerator).expect("a non-zero numerator"),
+            NonZeroU32::new(denominator).expect("a non-zero denominator"),
+        )
+    };
+    let exchange = |target, ratio| Supplied::Exchange { target, ratio };
+    let variants = [
+        (account(), isin(), stock_election(dec!(13)), &both[..]),
+        (
+            account(),
+            other_security.clone(),
+            stock_election(dec!(12.5)),
+            &both[..],
+        ),
+        (elsewhere, isin(), stock_election(dec!(12.5)), &both[..]),
+        (
+            account(),
+            isin(),
+            Supplied::Election(Election::Cash),
+            &both[..],
+        ),
+        (account(), isin(), stock_election(dec!(12.5)), &both[..1]),
+        (account(), isin(), stock_election(dec!(12.5)), &reversed[..]),
+        // Each disposal differs from the one before it in a single field, so a comparison
+        // that skipped the target or the quantity would answer the earlier one.
+        (account(), isin(), disposal(dec!(100), None), &both[..]),
+        (
+            account(),
+            isin(),
+            disposal(dec!(100), Some(other_security.clone())),
+            &both[..],
+        ),
+        (
+            account(),
+            isin(),
+            disposal(dec!(90), Some(other_security.clone())),
+            &both[..],
+        ),
+        // Ratios compare as the stated pair, so 4:2 is another entry than 2:1 (DEC-124,
+        // provisional); each split and exchange differs from the one before it in one field.
+        (account(), isin(), Supplied::Split(ratio(2, 1)), &both[..]),
+        (account(), isin(), Supplied::Split(ratio(4, 2)), &both[..]),
+        (account(), isin(), Supplied::Split(ratio(3, 1)), &both[..]),
+        (account(), isin(), exchange(isin(), ratio(1, 1)), &both[..]),
+        (
+            account(),
+            isin(),
+            exchange(other_security, ratio(1, 1)),
+            &both[..],
+        ),
+    ];
+    let expected = variants.len() + 1;
+    for (holder, security, supplied, answers) in variants {
+        let creation = entries
+            .create(&holder, &security, &supplied, answers)
+            .await
+            .expect("create");
+        assert!(
+            matches!(creation, Creation::Created(other) if other != id),
+            "{holder:?} {supplied:?} citing {answers:?} is another entry, got {creation:?}"
+        );
+    }
+    assert_eq!(entries.list().await.expect("list").len(), expected);
+}
+
+/// A new entry names at least one record, every one stored and none twice, in a stored account;
+/// each refusal stores nothing. An entry already stored is recognized even while it waits, so a
+/// replay does not trip over its own absent records (DEC-122, DEC-125, provisional), [SRV-025],
+/// [SRV-048], [TST-004].
+#[tokio::test]
+async fn a_manual_entry_is_created_only_against_stored_records() {
+    let (_db, database) = open().await;
+    let entries = database.manual_entries();
+    let cash = Supplied::Election(Election::Cash);
+
+    assert!(matches!(
+        entries
+            .create(&account(), &isin(), &cash, &[cited("r1")])
+            .await,
+        Err(StorageError::UnknownAccount { .. })
+    ));
+    let (_, batch) = place(&database).await;
+    assert!(matches!(
+        entries.create(&account(), &isin(), &cash, &[]).await,
+        Err(StorageError::ManualEntryAnswersNothing)
+    ));
+    store_record(&database, batch, "r1", &[]).await;
+    match entries
+        .create(&account(), &isin(), &cash, &[cited("r1"), cited("absent")])
+        .await
+    {
+        Err(StorageError::UnknownRecord { identity }) => assert_eq!(identity, cited("absent")),
+        other => panic!("an absent record must be refused, got {other:?}"),
+    }
+    match entries
+        .create(&account(), &isin(), &cash, &[cited("r1"), cited("r1")])
+        .await
+    {
+        Err(StorageError::ManualEntryAnswersRepeated { identity }) => {
+            assert_eq!(identity, cited("r1"));
+        }
+        other => panic!("a record named twice must be refused, got {other:?}"),
+    }
+    assert_eq!(entries.list().await.expect("list"), []);
+
+    // Stored while its record was present, then waiting once the batch is undone.
+    let id = entries
+        .create(&account(), &isin(), &cash, &[cited("r1")])
+        .await
+        .expect("create")
+        .id();
+    database
+        .import_batches()
+        .delete(batch)
+        .await
+        .expect("undo the import");
+    assert_eq!(entries.waiting().await.expect("waiting").len(), 1);
+    assert_eq!(
+        entries
+            .create(&account(), &isin(), &cash, &[cited("r1")])
+            .await
+            .expect("replay"),
+        Creation::Existing(id)
+    );
+}
+
+/// Every entry is listed for export, oldest first; deleting one removes it and the identities
+/// it names and leaves the others; an absent entry cannot be deleted [SRV-026], [SRV-053],
+/// [TST-004].
+#[tokio::test]
+async fn manual_entries_are_listed_and_deleted_one_by_one() {
+    let (db, database) = open().await;
+    let (_, batch) = place(&database).await;
+    store_record(&database, batch, "r1", &[]).await;
+    let entries = database.manual_entries();
+    let cash = Supplied::Election(Election::Cash);
+    let stock = stock_election(dec!(3));
+    let first = entries
+        .create(&account(), &isin(), &cash, &[cited("r1")])
+        .await
+        .expect("create")
+        .id();
+    let second = entries
+        .create(&account(), &isin(), &stock, &[cited("r1")])
+        .await
+        .expect("create")
+        .id();
+
+    assert_eq!(
+        entries.list().await.expect("list"),
+        [
+            (
+                first,
+                ManualEntry::new(account(), isin(), cash, [cite("r1")])
+            ),
+            (
+                second,
+                ManualEntry::new(account(), isin(), stock.clone(), [cite("r1")])
+            ),
+        ]
+    );
+
+    entries.delete(first).await.expect("delete");
+    assert_eq!(
+        entries.list().await.expect("list"),
+        [(
+            second,
+            ManualEntry::new(account(), isin(), stock, [cite("r1")])
+        )]
+    );
+    let answers: i64 = query("select count(*) from manual_entry_answer")
+        .fetch_one(&raw(&db).await)
+        .await
+        .expect("count")
+        .get(0);
+    assert_eq!(answers, 1, "the deleted entry's identities go with it");
+    match entries.delete(first).await {
+        Err(StorageError::UnknownManualEntry { entry }) => assert_eq!(entry, first),
+        other => panic!("an absent entry cannot be deleted, got {other:?}"),
+    }
+}
+
+/// Two concurrent creations of one entry store it once: one answers it created, the other
+/// finds it stored, since the lookup and the insert share one write lock [SRV-048] (DEC-121,
+/// provisional), [TST-004]. The race is run several times, each with its own entry, because a
+/// single run need not interleave the two lookups.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_creations_of_one_manual_entry_store_it_once() {
+    let (_db, database) = open().await;
+    let (_, batch) = place(&database).await;
+    store_record(&database, batch, "r1", &[]).await;
+    let entries = database.manual_entries();
+    let answers = [cited("r1")];
+    let (holder, security) = (account(), isin());
+    let rounds = 1..=10;
+
+    for shares in rounds.clone() {
+        let supplied = stock_election(rust_decimal::Decimal::from(shares));
+        let create = || entries.create(&holder, &security, &supplied, &answers);
+
+        let (left, right) = tokio::join!(create(), create());
+
+        let mut outcomes = [left.expect("create"), right.expect("create")];
+        outcomes.sort_by_key(|creation| matches!(creation, Creation::Existing(_)));
+        match outcomes {
+            [Creation::Created(created), Creation::Existing(existing)] => {
+                assert_eq!(created, existing);
+            }
+            other => panic!("one creation stores, the other finds it, got {other:?}"),
+        }
+    }
+    assert_eq!(entries.list().await.expect("list").len(), rounds.count());
 }

@@ -13,6 +13,7 @@
 
 pub mod accounts;
 pub mod imports;
+pub mod manual_entries;
 pub mod problem;
 pub mod securities;
 pub mod source_records;
@@ -97,6 +98,7 @@ fn api() -> OpenApiRouter<AppState> {
         .routes(routes!(openapi_json))
         .merge(accounts::routes())
         .merge(imports::routes())
+        .merge(manual_entries::routes())
         .merge(securities::routes())
         .merge(source_records::routes())
 }

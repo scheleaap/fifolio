@@ -1644,3 +1644,441 @@ async fn no_route_edits_a_source_record() {
         }
     }
 }
+
+/// The identity text of the Saxo account's record `reference`, as a client sends it.
+fn saxo_identity(reference: &str) -> String {
+    identify(
+        &Account::new("Saxo", "69900/1000000"),
+        &IdentitySource::BrokerReference(reference),
+    )
+    .as_str()
+    .to_owned()
+}
+
+/// A stock election of `shares` against Philips, answering the Saxo records `references`.
+fn stock_entry(shares: &str, references: &[&str]) -> Value {
+    json!({
+        "account": saxo(),
+        "security": "NL0000009538",
+        "supplied": {"kind": "election_stock", "shares": shares},
+        "answers": references.iter().map(|reference| saxo_identity(reference)).collect::<Vec<_>>(),
+    })
+}
+
+/// A manual entry is created with 201 and listed for export as stored; posting the same entry
+/// again, as a replayed export does, answers 200 with the stored entry and stores nothing, while
+/// an entry differing in what was supplied is another entry [SRV-025], [SRV-026], [SRV-048]
+/// (DEC-121, provisional), [TST-005].
+#[tokio::test]
+async fn a_manual_entry_is_created_once_however_often_it_is_posted() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    harness.owned_record(batch, "r1").await;
+    harness.owned_record(batch, "r2").await;
+
+    let created = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("12.5", &["r1", "r2"]),
+        )
+        .await;
+    let replayed = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("12.50", &["r1", "r2"]),
+        )
+        .await;
+
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let mut expected = stock_entry("12.5", &["r1", "r2"]);
+    expected["id"] = created.body["id"].clone();
+    assert!(expected["id"].is_i64(), "{}", created.body);
+    assert_eq!(created.body, expected);
+    assert_eq!(replayed.status, StatusCode::OK, "{}", replayed.body);
+    assert_eq!(
+        replayed.body, expected,
+        "the stored entry, as first written"
+    );
+    assert_eq!(
+        harness.request(Method::GET, "/manual-entries").await.body,
+        json!([expected])
+    );
+    // Nine decimals would be refused as a new entry, but the match comes before the scale
+    // check, so a replay stating the stored number with more digits is still recognized.
+    let longer = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("12.500000000", &["r1", "r2"]),
+        )
+        .await;
+    assert_eq!(longer.status, StatusCode::OK, "{}", longer.body);
+    assert_eq!(longer.body, expected);
+    assert_eq!(harness.count("manual_entry").await, 1);
+
+    let other = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("13", &["r1", "r2"]),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::CREATED, "{}", other.body);
+    assert_eq!(harness.count("manual_entry").await, 2);
+}
+
+/// Every supplied shape travels as its own `kind`, quantities as decimal strings, and reads
+/// back as posted [SRV-025], [SRV-026], [DOM-097], [TST-005].
+#[tokio::test]
+async fn every_supplied_shape_is_created_and_listed() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    harness.owned_record(batch, "r1").await;
+    let shapes = [
+        json!({"kind": "election_stock", "shares": "3"}),
+        json!({"kind": "election_cash"}),
+        json!({"kind": "split", "ratio": {"numerator": 1, "denominator": 3}}),
+        json!({"kind": "exchange", "target": "CA8934631091",
+               "ratio": {"numerator": 2, "denominator": 1}}),
+        json!({"kind": "disposal", "quantity": "100", "target": "CA8934631091"}),
+        json!({"kind": "disposal", "quantity": "0.5", "target": null}),
+    ];
+
+    for supplied in &shapes {
+        let body = json!({
+            "account": saxo(),
+            "security": "NL0000009538",
+            "supplied": supplied,
+            "answers": [saxo_identity("r1")],
+        });
+        let created = harness.json(Method::POST, "/manual-entries", &body).await;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        assert_eq!(&created.body["supplied"], supplied);
+    }
+
+    let listed = harness.request(Method::GET, "/manual-entries").await.body;
+    assert_eq!(
+        listed
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|entry| entry["supplied"].clone())
+            .collect::<Vec<_>>(),
+        shapes
+    );
+}
+
+/// A manual entry naming an unstored account or record, naming none or one twice, or carrying a
+/// quantity that is not a decimal above zero at its scale, is refused as a problem and nothing is
+/// stored (DEC-122, DEC-123, DEC-125, provisional), [SRV-025], [ARC-010], [ARC-020], [TST-005].
+#[tokio::test]
+async fn a_manual_entry_that_cannot_be_stored_is_refused() {
+    let harness = Harness::new().await;
+
+    // The quantity is refused on reading the body, before the account is looked up (DEC-123).
+    let detail = harness
+        .json(Method::POST, "/manual-entries", &stock_entry("0", &["r1"]))
+        .await
+        .assert_problem(StatusCode::UNPROCESSABLE_ENTITY, ABOUT_BLANK)
+        .map(str::to_owned);
+    assert!(
+        detail.is_some_and(|detail| detail.contains("above zero")),
+        "a zero count is refused ahead of the unknown account"
+    );
+    harness
+        .json(Method::POST, "/manual-entries", &stock_entry("3", &["r1"]))
+        .await
+        .assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-account");
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    harness.owned_record(batch, "r1").await;
+    let detail = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("3", &["r1", "absent"]),
+        )
+        .await
+        .assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-record")
+        .map(str::to_owned);
+    assert!(
+        detail.is_some_and(|detail| detail.contains(&saxo_identity("absent"))),
+        "the refusal names the absent record"
+    );
+    harness
+        .json(Method::POST, "/manual-entries", &stock_entry("3", &[]))
+        .await
+        .assert_problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:fifolio:problem:manual-entry-answers-nothing",
+        );
+    let detail = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("3", &["r1", "r1"]),
+        )
+        .await
+        .assert_problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:fifolio:problem:manual-entry-answers-repeated",
+        )
+        .map(str::to_owned);
+    assert!(
+        detail.is_some_and(|detail| detail.contains(&saxo_identity("r1"))),
+        "the refusal names the repeated record"
+    );
+    harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("3.000000005", &["r1"]),
+        )
+        .await
+        .assert_problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:fifolio:problem:unscaled-value",
+        );
+    let detail = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("3,5", &["r1"]),
+        )
+        .await
+        .assert_problem(StatusCode::UNPROCESSABLE_ENTITY, ABOUT_BLANK)
+        .map(str::to_owned);
+    assert!(
+        detail.is_some_and(|detail| detail.contains("shares")),
+        "the refusal names the field"
+    );
+    let mut zero_ratio = stock_entry("3", &["r1"]);
+    zero_ratio["supplied"] = json!({"kind": "split", "ratio": {"numerator": 0, "denominator": 1}});
+    harness
+        .json(Method::POST, "/manual-entries", &zero_ratio)
+        .await
+        .assert_problem(StatusCode::UNPROCESSABLE_ENTITY, ABOUT_BLANK);
+    // A JSON number could only have been read through floating point [ARC-006].
+    let mut number = stock_entry("3", &["r1"]);
+    number["supplied"]["shares"] = json!(3);
+    harness
+        .json(Method::POST, "/manual-entries", &number)
+        .await
+        .assert_problem(StatusCode::UNPROCESSABLE_ENTITY, ABOUT_BLANK);
+    // A count of nothing or less is refused, in either quantity-carrying shape (DEC-123).
+    let disposal_of = |quantity: &str| {
+        let mut entry = stock_entry("3", &["r1"]);
+        entry["supplied"] = json!({"kind": "disposal", "quantity": quantity, "target": null});
+        entry
+    };
+    let non_positive = [
+        stock_entry("-3", &["r1"]),
+        stock_entry("0", &["r1"]),
+        stock_entry("-0.00000001", &["r1"]),
+        disposal_of("-100"),
+    ];
+    for entry in &non_positive {
+        let detail = harness
+            .json(Method::POST, "/manual-entries", entry)
+            .await
+            .assert_problem(StatusCode::UNPROCESSABLE_ENTITY, ABOUT_BLANK)
+            .map(str::to_owned);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("above zero")),
+            "the refusal of {entry} says why"
+        );
+    }
+    let detail = harness
+        .json(Method::POST, "/manual-entries", &disposal_of("0"))
+        .await
+        .assert_problem(StatusCode::UNPROCESSABLE_ENTITY, ABOUT_BLANK)
+        .map(str::to_owned);
+    assert!(
+        detail.is_some_and(|detail| detail.contains("quantity") && detail.contains("above zero")),
+        "the disposal's refusal names its own field and says why"
+    );
+    harness
+        .json(Method::POST, "/manual-entries", &disposal_of("0.000000005"))
+        .await
+        .assert_problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:fifolio:problem:unscaled-value",
+        );
+    // One step past the largest value at the 8-decimal scale no longer fits a decimal; it is
+    // refused, not rounded to 7 decimals and stored as another number [ARC-010].
+    for beyond in [
+        "792281625142643375935.43950336",
+        "792281625142643375935.439503355",
+    ] {
+        let detail = harness
+            .json(
+                Method::POST,
+                "/manual-entries",
+                &stock_entry(beyond, &["r1"]),
+            )
+            .await
+            .assert_problem(StatusCode::UNPROCESSABLE_ENTITY, ABOUT_BLANK)
+            .map(str::to_owned);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("is not a decimal")),
+            "{beyond} is refused as no decimal"
+        );
+    }
+
+    assert_eq!(harness.count("manual_entry").await, 0);
+
+    // The smallest positive quantity sits exactly at the 8-decimal scale [ARC-020]: both
+    // bounds admit it.
+    let smallest = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("0.00000001", &["r1"]),
+        )
+        .await;
+    assert_eq!(smallest.status, StatusCode::CREATED, "{}", smallest.body);
+    assert_eq!(smallest.body["supplied"]["shares"], "0.00000001");
+    let smallest = harness
+        .json(Method::POST, "/manual-entries", &disposal_of("0.00000001"))
+        .await;
+    assert_eq!(smallest.status, StatusCode::CREATED, "{}", smallest.body);
+    assert_eq!(smallest.body["supplied"]["quantity"], "0.00000001");
+    let largest = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("792281625142643375935.43950335", &["r1"]),
+        )
+        .await;
+    assert_eq!(largest.status, StatusCode::CREATED, "{}", largest.body);
+    assert_eq!(
+        largest.body["supplied"]["shares"],
+        "792281625142643375935.43950335"
+    );
+    assert_eq!(harness.count("manual_entry").await, 3);
+}
+
+/// Undoing the import an entry answered leaves the entry standing, listed as waiting with the
+/// identities it expects, and still recognized when its export is replayed; only deleting the
+/// entry removes it, after which it is neither listed nor deletable again, and an id never stored
+/// or not a number is refused as a problem [SRV-026], [SRV-053],
+/// [SRV-048], [SRV-021], [DOM-109], [TST-005].
+#[tokio::test]
+async fn only_deleting_a_manual_entry_removes_it() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    harness.owned_record(batch, "r1").await;
+    harness.owned_record(batch, "r3").await;
+    let other = harness.saxo_batch("2025.xlsx").await;
+    harness.owned_record(other, "r2").await;
+    let waiting_one = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("3", &["r1", "r2"]),
+        )
+        .await
+        .body;
+    let complete = harness
+        .json(Method::POST, "/manual-entries", &stock_entry("4", &["r2"]))
+        .await
+        .body;
+    // Cites both records of the batch undone below, against file order, so `missing` must
+    // follow the entry's own order and list every absent identity [DOM-109].
+    let waiting_all = harness
+        .json(
+            Method::POST,
+            "/manual-entries",
+            &stock_entry("5", &["r3", "r1"]),
+        )
+        .await
+        .body;
+    assert_eq!(
+        harness
+            .request(Method::GET, "/manual-entries/waiting")
+            .await
+            .body,
+        json!([])
+    );
+
+    let undone = harness
+        .request(Method::DELETE, &format!("/imports/{batch}"))
+        .await;
+
+    assert_eq!(undone.status, StatusCode::NO_CONTENT, "{}", undone.body);
+    assert_eq!(
+        harness.request(Method::GET, "/manual-entries").await.body,
+        json!([waiting_one, complete, waiting_all])
+    );
+    assert_eq!(
+        harness
+            .request(Method::GET, "/manual-entries/waiting")
+            .await
+            .body,
+        json!([
+            {"entry": waiting_one, "missing": [saxo_identity("r1")]},
+            {"entry": waiting_all, "missing": [saxo_identity("r3"), saxo_identity("r1")]},
+        ])
+    );
+    assert_eq!(
+        harness
+            .json(
+                Method::POST,
+                "/manual-entries",
+                &stock_entry("3", &["r1", "r2"])
+            )
+            .await
+            .status,
+        StatusCode::OK,
+        "a replayed export recognizes the waiting entry"
+    );
+
+    let uri = format!("/manual-entries/{}", waiting_one["id"]);
+    let deleted = harness.request(Method::DELETE, &uri).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+    assert_eq!(
+        harness.request(Method::GET, "/manual-entries").await.body,
+        json!([complete, waiting_all])
+    );
+    assert_eq!(
+        harness
+            .request(Method::GET, "/manual-entries/waiting")
+            .await
+            .body,
+        json!([{"entry": waiting_all, "missing": [saxo_identity("r3"), saxo_identity("r1")]}])
+    );
+    harness.request(Method::DELETE, &uri).await.assert_problem(
+        StatusCode::NOT_FOUND,
+        "urn:fifolio:problem:unknown-manual-entry",
+    );
+    harness
+        .request(Method::DELETE, "/manual-entries/999")
+        .await
+        .assert_problem(
+            StatusCode::NOT_FOUND,
+            "urn:fifolio:problem:unknown-manual-entry",
+        );
+    harness
+        .request(Method::DELETE, "/manual-entries/abc")
+        .await
+        .assert_problem(StatusCode::BAD_REQUEST, ABOUT_BLANK);
+}
+
+/// No route edits a manual entry: a mistake is corrected by deleting it and supplying a new one
+/// [SRV-027], [SRV-053], [TST-005].
+#[tokio::test]
+async fn no_route_edits_a_manual_entry() {
+    let harness = Harness::new().await;
+
+    for method in [Method::PUT, Method::PATCH] {
+        harness
+            .json(method, "/manual-entries/1", &stock_entry("3", &["r1"]))
+            .await
+            .assert_problem(StatusCode::METHOD_NOT_ALLOWED, ABOUT_BLANK);
+    }
+}
