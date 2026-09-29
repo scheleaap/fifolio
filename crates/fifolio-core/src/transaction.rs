@@ -524,6 +524,16 @@ impl Opening {
         }
     }
 
+    /// The opening's fees, which allocation spreads as the buy fee, apart from its cost
+    /// [DOM-059].
+    #[must_use]
+    pub fn fees(&self) -> Valued<Money> {
+        match self {
+            Self::Buy(buy) => buy.fees(),
+            Self::TransferIn(transfer_in) => transfer_in.fees(),
+        }
+    }
+
     #[must_use]
     pub fn trade_date(&self) -> NaiveDate {
         self.derivation().trade_date()
@@ -545,6 +555,17 @@ impl Closing {
             Self::Sell(sell) => sell.derivation(),
             Self::Expiration(expiration) => expiration.derivation(),
             Self::TransferOut(transfer_out) => transfer_out.derivation(),
+        }
+    }
+
+    /// Every closing carries its fees, so one formula spreads them all as the sell fee
+    /// [DOM-105]. The gross is not read here: a `transfer_out` stores none (FIF-080, DOM-112).
+    #[must_use]
+    pub fn fees(&self) -> Valued<Money> {
+        match self {
+            Self::Sell(sell) => sell.fees(),
+            Self::Expiration(expiration) => expiration.fees(),
+            Self::TransferOut(transfer_out) => transfer_out.fees(),
         }
     }
 

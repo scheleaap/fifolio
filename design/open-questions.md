@@ -84,3 +84,5 @@ built on it.
 * **FIF-061** (whether "between" an opening and a position includes either end) → DEC-097
 * **FIF-013** (a closing of nothing; a parcel already over-allocated) → DEC-098
 * **FIF-013** (remaining quantity: rounded exact difference, or difference of rounded sides) → DEC-099
+* **FIF-014** (closing-side divisor: stated quantity, or its view at the quantity scale) → DEC-100
+* **FIF-014** (whether a last share may be negative, or a running total pass the parent) → DEC-101

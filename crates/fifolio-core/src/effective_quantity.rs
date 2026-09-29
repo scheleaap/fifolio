@@ -183,7 +183,7 @@ pub fn unattributed_quantity<'a>(
 }
 
 /// A decimal as the rational it denotes, exactly: mantissa over ten to the scale.
-fn exact(value: Decimal) -> BigRational {
+pub(crate) fn exact(value: Decimal) -> BigRational {
     BigRational::new(
         BigInt::from(value.mantissa()),
         BigInt::from(10).pow(value.scale()),

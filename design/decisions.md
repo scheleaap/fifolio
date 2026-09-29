@@ -722,3 +722,27 @@ exhausted. This follows DEC-091's "allocation sums are checked at that scale". A
 taken: never allocating more than the exact remainder, which leaves a residue the rounded view
 still shows as open, so the proposal and FIF-014's check would disagree about the same parcel.
 [DEC-099, DEC-091, DEC-098, DOM-056, DOM-064]
+
+**DEC-100 — Provisional: the closing side divides by the closing's stated quantity.** DOM-059
+divides proceeds and sell fee by `c.quantity`; DEC-091 compares quantities at the 8-decimal scale
+but says nothing of a divisor. The closing side divides by the quantity the closing states, as
+booked, not by its view at the quantity scale, and the allocations must sum to that view
+(DOM-065) or no figures are given. The two part only for a closing stated finer than 8 decimals,
+by a relative difference below 1e-8, and the last share absorbs the drift either way, so the
+shares still sum to the parent. Alternative not taken: dividing by the rounded view, which makes
+the shares proportional to the allocated quantities exactly but reads a formula that says
+`c.quantity` as something else. [DEC-100, DEC-091, DOM-059, DOM-065]
+
+**DEC-101 — Provisional: the last share may be negative, and a running total may pass the
+parent.** DOM-061 rounds each share independently and has the last absorb the drift; it sets no
+bound on either. When the earlier shares round up, the last share is the parent less more than
+the parent, and is negative: a fee of 0.03 over six equal allocations is 0.005 a share, which
+rounds to 0.01 five times, so the last share is -0.02. On the closing side a negative sell fee
+share raises that row's gain; on the opening side a parcel not yet exhausted may already have
+handed out more fee than it has, and its exhausting allocation gives the excess back. The shares
+still sum exactly to the parent, and the overshoot is below half a cent per earlier share. This
+is the literal reading of DOM-061 and DOM-062. Alternative not taken: clamping the last share at
+zero and spreading the excess over the earlier shares, which makes those shares no longer rounded
+independently and, on the opening side, changes the figures of earlier closings, already
+attributed and possibly reported, when a later closing exhausts the parcel. [DEC-101, DOM-061,
+DOM-062, DOM-063, DOM-125]

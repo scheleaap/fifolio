@@ -421,13 +421,15 @@ Done in revision 71: migration `0007_split_ratio.sql` stores a split's integer r
 Notes: New in this revision, replacing the "quantity adjustment" half of the retired FIF-018. DOM-103 is the reason effective quantity is parameterized by position at all: measuring as of today halves the cost of everything sold before a split.
 
 ## FIF-014 Allocation figure derivation and the drift rule
-Status: todo
+Status: done
 Requirements: DOM-058, DOM-059, DOM-060, DOM-061, DOM-062, DOM-063, DOM-084, DOM-093, DOM-105, DOM-125
 Depends on: FIF-013, FIF-061, FIF-004, FIF-054
 Acceptance: allocated cost, buy fee, proceeds, sell fee and gain computed on demand from the parent transactions, exactly as the formulas in `domain.md` state, with the opening side divided by its effective quantity **as of the closing** and the closing side by the closing's own quantity; every closing variant carries `eur_gross` and `eur_fees` so one formula reads them all, and `split` carries neither; each share rounded to 2 decimals independently with drift absorbed by the last share, opening-side last being the allocation that exhausts the parcel and closing-side last being the last allocation of that closing in canonical order; sell fees never spread beyond their own closing; **a gain is arithmetic on the four rounded shares**, not computed exactly and rounded afterwards, so every allocation reconciles to its own columns. Unit tests include a division that is exact, one leaving one cent, and one leaving many, and one where rounding-then-subtracting and subtracting-then-rounding differ, asserting the former.
 Notes: Blocked in revision 2 on DOM-059, DOM-105 and DOM-112; the first two are now decided. DOM-112 (a `transfer_out`'s `eur_gross` derived from its own allocations) moved to FIF-080 in revision 3, so this item covers the cash closings only.
 DOM-084 moved here from FIF-008 in revision 15: allocation shares derive from the native/EUR pair the same way and are never stored independently, which is only assertable once allocations exist.
 DOM-125 is new in revision 14 (DEC-066). It belongs here, with the rounding rule it qualifies, and not with the reports: its second half — a total is the sum of the rounded rows — is a consequence the report items FIF-030 and FIF-031 inherit by summing what this item produces, and neither is built yet. It costs up to two cents against the exact figure per allocation, deliberately; say so in the code comment, or someone will "fix" it.
+Revision 72: named next to build; FIF-013, FIF-061, FIF-004 and FIF-054 are done. Divide the opening side by `effective_quantity` as of the closing's `OrderKey` (exact `BigRational`, DOM-103), and take the drift-absorbing "last" allocations in the same canonical order `fifo.rs` uses (row id breaking an `OrderKey` tie, DEC-095). Allocation quantities are at the 8-decimal scale (DEC-091); an opening is exhausted when `unattributed_quantity` reaches zero on that scale, which is what makes its allocation the opening-side last. Pure, no database, like FIF-013.
+Done in revision 72: `allocation.rs` `opening_shares` and `closing_shares` derive cost, buy fee, proceeds and sell fee on demand from the parents, each share an exact rational quotient rounded once to 2 decimals with the last absorbing the drift (opening side: the exhausting allocation; closing side: the last in canonical order, DEC-095); the closing side divides by the closing's stated quantity (provisional DEC-100); a last share may be negative (provisional DEC-101); a gain is arithmetic on the four rounded shares (DOM-125). Cash closings only; `transfer_out` is FIF-080's. Pure, no database.
 
 ## FIF-080 Transfer out has no proceeds and no gain
 Status: todo
@@ -1367,6 +1369,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 72.** A status reconciliation. `design/` changed in `88597d5` only by adding the
+provisional DEC-098 and DEC-099 and listing them under "Provisionally answered"; no requirement id
+added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines, and the 5 items
+carrying one are exactly the 5 `blocked` (checked by script).
+
+* **Completed: FIF-013**, committed as `88597d5` (`fifo.rs`), on the provisional DEC-098 and
+  DEC-099, relying on DEC-091, DEC-095 and DEC-097.
+* No item added, split, retired, blocked or unblocked. 101 items: **51 `done`, 45 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-014.** Its dependencies FIF-013, FIF-061, FIF-004 and FIF-054 are `done`,
+  and none of its requirements is blocked. Also ready in scope: FIF-035, FIF-041.
 
 **Revision 71.** A status reconciliation. `design/` changed in `aa69414` only by adding the
 provisional DEC-097 and listing it under "Provisionally answered"; no requirement id added or
