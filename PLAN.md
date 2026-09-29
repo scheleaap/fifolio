@@ -1133,13 +1133,15 @@ Revision 76: named next to build; FIF-015 and FIF-061 are done and none of DOM-0
 Done in revision 76: `acquisitions.rs` lists every opening, `buy` or `transfer_in`, in canonical order with date, account, security, effective and remaining quantity as of today (DOM-118), effective unit price, fees and realized gain/loss summed from `allocation.rs`'s per-allocation gains (DOM-076, DOM-077); an emitted `transfer_in` names its inherited opening, stored by migration `0009` on `emitted_transfer_in` and written in `attribution.rs`'s approval transaction (DOM-096); the account and year filters select rows without changing a figure (DOM-079). Provisional decisions DEC-107 (year filter) and DEC-108 (link nulled when the parent is deleted). Integration tests in `crates/fifolio-core/tests/acquisitions.rs`.
 
 ## FIF-082 Acquisition report: per-disposal detail lines
-Status: todo
+Status: done
 Requirements: DOM-078
 Depends on: FIF-031, FIF-014
 Acceptance: beneath each opening, every attributed disposal is listed with its date, quantity consumed, allocated proceeds, allocated sell fee, allocated cost, allocated buy fee and gain/loss.
 Blocked by (until revision 69): DOM-078 is on the undecided list.
 Notes: Split out of FIF-031 in revision 3.
 Revision 69: unblocked by the provisional DEC-093. Acceptance amended: a `transfer_out` is not a disposal and has no line; the parcels it carried appear under the disposals that later consume their emitted `transfer_in` records, with the inherited cost and buy fee. If DEC-093 is overridden on ratification, this item reopens.
+Revision 77: named next to build; FIF-031 and FIF-014 are done and DOM-078 is on no `Blocks:` line (OQ-011 provisionally answered by DEC-093). Extends `acquisitions.rs`: each opening row gains its disposal lines, one per allocation to an attributed disposal, taking every figure from `allocation.rs`'s per-allocation derivation (the same shares FIF-030 and FIF-031 sum), never recomputed. Each line carries its disposal's date, so the year is visible (DEC-107); the year filter still selects rows and changes neither the row nor its lines. Under an emitted `transfer_in`, its lines are the disposals consuming it, with the inherited cost and buy fee it carries; under the parent opening, the allocation to the `transfer_out` has no line (DEC-093). Integration tests extend `crates/fifolio-core/tests/acquisitions.rs`.
+Done in revision 77: each `acquisitions.rs` row carries its disposal lines, one per allocation to an attributed disposal in canonical order, with the disposal's date, quantity consumed, and allocated proceeds, sell fee, cost, buy fee and gain/loss taken from `allocation.rs`'s `Figures` (DOM-078); the lines reconcile to the row's gain and to the income tax overview (DOM-125); a `transfer_out` has no line and its parcel's disposals appear under the emitted `transfer_in` (DEC-093); the year filter changes no line (DEC-107). Provisional decision DEC-109 (quantity consumed in the units current at the disposal). Integration tests in `crates/fifolio-core/tests/acquisitions.rs`.
 
 ## FIF-032 Server binary, arguments and OpenAPI
 Status: done
@@ -1377,6 +1379,24 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 77.** A status reconciliation. `design/` changed in `5f45c9b` only by adding the
+provisional DEC-107 (the acquisition report's year filter changes no figure) and DEC-108 (an emitted
+`transfer_in`'s parent link is nulled on the parent's deletion), both listed under "Provisionally
+answered"; no requirement id added or removed. `open-questions.md` names the same **7** ids on
+`Blocks:` lines, and the 5 items carrying one are exactly the 5 `blocked`.
+
+* **Completed: FIF-031**, committed as `5f45c9b` (`acquisitions.rs`, migration `0009`). Its item
+  text already recorded this; only the history lagged. DEC-107 and DEC-108 are its provisional
+  decisions; neither invalidates completed work.
+* No item added, split, retired, blocked or unblocked. 101 items: **56 `done`, 40 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-082, 035, 085, 070, 090, 036, 071, 086, 037, 072, 038, 087, 073,
+  039, 040, 041 remain `todo`; none carries a blocked requirement, so each waits only on
+  dependencies inside that list.
+* **Next to build: FIF-082.** Its dependencies FIF-031 and FIF-014 are `done`. Also ready in
+  scope: FIF-035, FIF-041.
 
 **Revision 76.** A status reconciliation. `design/` did not change in `859a4c7`; no requirement id
 added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines (DOM-092, DOM-114,

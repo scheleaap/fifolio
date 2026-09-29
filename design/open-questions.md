@@ -93,3 +93,4 @@ built on it.
 * **FIF-063** (an emitted record of zero or fewer units) → DEC-106
 * **FIF-031** (whether a year-filtered row's gain is that year's or the opening's whole) → DEC-107
 * **FIF-031** (what an emitted record names once its parent opening is deleted) → DEC-108
+* **FIF-082** (the units a disposal line's quantity consumed is shown in) → DEC-109

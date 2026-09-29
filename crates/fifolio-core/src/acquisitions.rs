@@ -1,6 +1,6 @@
 //! The acquisition report: every opening transaction, what remains of it and what it has realized
-//! [DOM-076], [DOM-077], with no tax law applied to it [DOM-001]. The per-disposal lines beneath
-//! each opening are FIF-082's [DOM-078].
+//! [DOM-076], [DOM-077], with no tax law applied to it [DOM-001], and beneath each opening the
+//! disposals it was attributed to [DOM-078].
 //!
 //! # Rows
 //!
@@ -26,12 +26,23 @@
 //! sum of rounded rows [DOM-125]. An allocation to a `transfer_out` realizes nothing [DOM-093]: its
 //! basis travels with the emitted `transfer_in`, whose own row realizes it when it is sold.
 //!
+//! # Disposal lines
+//!
+//! One per allocation of the opening to an attributed disposal, in the disposals' canonical order
+//! [DOM-078]. Every figure is that allocation's, exactly as [`crate::allocation`] derives it and as
+//! the row's gain sums it, so the lines reconcile to the row to the cent [DOM-125]. The quantity
+//! consumed is the allocation's as stored, in the units current at the disposal [DOM-103], so it
+//! reads as the sale does (DEC-109, provisional). A `transfer_out` is not a disposal and has no
+//! line (DEC-093); the parcel it carried is listed under its emitted `transfer_in`, whose lines
+//! carry the cost and buy fee it inherited.
+//!
 //! # Filters
 //!
 //! Optional account, as the income tax overview's [DOM-073]; optional year, selecting the openings
 //! with at least one allocation to a closing of that year, a `transfer_out` included [DOM-079]. A
 //! filter selects rows and never changes a figure: a selected row's gain is every realized gain
-//! of that opening, and its quantities are today's (DEC-107, provisional).
+//! of that opening, its quantities are today's, and its lines are all of its disposals, each
+//! dated so its year is visible (DEC-107, provisional).
 
 use std::collections::{HashMap, hash_map::Entry};
 
@@ -39,6 +50,7 @@ use chrono::{Datelike, NaiveDate};
 use sqlx::SqliteConnection;
 use thiserror::Error;
 
+use crate::allocation::Figures;
 use crate::decimal::{EffectivePrice, Money, Quantity, Scaled};
 use crate::effective_quantity::{effective_quantity, unattributed_quantity};
 use crate::entities::{Account, Isin, Order};
@@ -72,6 +84,7 @@ pub struct Row {
     fees: Money,
     gain: Money,
     inherited_from: Option<TransactionId>,
+    disposals: Vec<Line>,
 }
 
 impl Row {
@@ -135,6 +148,64 @@ impl Row {
     pub fn inherited_from(&self) -> Option<TransactionId> {
         self.inherited_from
     }
+
+    /// The attributed disposals that consumed the opening, in canonical order [DOM-078].
+    #[must_use]
+    pub fn disposals(&self) -> &[Line] {
+        &self.disposals
+    }
+}
+
+/// One attributed disposal beneath an opening: one allocation's figures [DOM-078].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Line {
+    date: NaiveDate,
+    quantity: Quantity,
+    figures: Figures,
+}
+
+impl Line {
+    /// The disposal's trade date, whose year is the year the line belongs to [DOM-074].
+    #[must_use]
+    pub fn date(&self) -> NaiveDate {
+        self.date
+    }
+
+    /// The quantity the disposal took from the opening, in the units current at the disposal
+    /// [DOM-103] (DEC-109, provisional).
+    #[must_use]
+    pub fn quantity(&self) -> Quantity {
+        self.quantity
+    }
+
+    // Each figure is the allocation's share as derived, only padded to the money scale for
+    // display [ARC-009]; the share is already rounded to it [DOM-061].
+
+    #[must_use]
+    pub fn proceeds(&self) -> Money {
+        self.figures.proceeds().rounded()
+    }
+
+    #[must_use]
+    pub fn sell_fee(&self) -> Money {
+        self.figures.sell_fee().rounded()
+    }
+
+    #[must_use]
+    pub fn cost(&self) -> Money {
+        self.figures.cost().rounded()
+    }
+
+    #[must_use]
+    pub fn buy_fee(&self) -> Money {
+        self.figures.buy_fee().rounded()
+    }
+
+    /// Arithmetic on the four rounded shares [DOM-125]: raw gain/loss, no tax law [DOM-001].
+    #[must_use]
+    pub fn gain(&self) -> Money {
+        self.figures.gain().rounded()
+    }
 }
 
 /// Why the report cannot be produced. It is refused whole rather than produced with a row
@@ -162,7 +233,7 @@ pub enum ReportError {
 /// [`ReportError::Unmeasurable`] naming the opening, or [`ReportError::Storage`].
 pub async fn report(database: &Database, filter: &Filter) -> Result<Vec<Row>, ReportError> {
     let mut tx = database.begin().await?;
-    let gains = realized(&mut tx, filter.account.as_ref()).await?;
+    let mut lines = disposal_lines(&mut tx, filter.account.as_ref()).await?;
     let openings = TransactionRepository::openings_in(&mut tx, filter.account.as_ref()).await?;
 
     let mut splits: HashMap<(Account, Isin), Vec<Split>> = HashMap::new();
@@ -193,35 +264,53 @@ pub async fn report(database: &Database, filter: &Filter) -> Result<Vec<Row>, Re
                     .await?,
             ),
         };
-        let gain = gains.get(&stored.id).copied().unwrap_or_else(Money::zero);
-        rows.push(row(stored, &opening, pair_splits, &allocated, gain)?);
+        let disposals = lines.remove(&stored.id).unwrap_or_default();
+        rows.push(row(stored, &opening, pair_splits, &allocated, disposals)?);
     }
     Ok(rows)
 }
 
-/// The realized gain of every opening of `account`, or of every account, that an attributed
-/// disposal consumed: the sum of its allocations' gains [DOM-125]. Every disposal is read, not
-/// only those of a filtered year, since the filter never changes a figure (DEC-107).
+/// The disposal lines of every opening of `account`, or of every account, that an attributed
+/// disposal consumed, each opening's in canonical order [DOM-078]. Every disposal is read, not
+/// only those of a filtered year, since the filter never changes a row (DEC-107).
 ///
-/// Only disposals: a `transfer_out` realizes nothing [DOM-093], and an unattributed disposal
-/// has no allocations yet.
-async fn realized(
+/// Only disposals: a `transfer_out` realizes nothing [DOM-093] and has no line (DEC-093), and an
+/// unattributed disposal has no allocations yet.
+async fn disposal_lines(
     connection: &mut SqliteConnection,
     account: Option<&Account>,
-) -> Result<HashMap<TransactionId, Money>, ReportError> {
-    let mut gains: HashMap<TransactionId, Money> = HashMap::new();
+) -> Result<HashMap<TransactionId, Vec<Line>>, ReportError> {
+    let mut lines: HashMap<TransactionId, Vec<Line>> = HashMap::new();
     for disposal in AttributionRepository::disposals_in(&mut *connection, account).await? {
         let Some(attribution) = disposal.attribution else {
             continue;
         };
+        // Each opening appears once per attribution (DEC-103), so its quantity is keyed by it.
+        let consumed: HashMap<TransactionId, Quantity> =
+            AttributionRepository::allocations_in(&mut *connection, attribution)
+                .await?
+                .iter()
+                .map(|allocation| (allocation.opening(), allocation.quantity()))
+                .collect();
         for (opening, figures) in
             income_tax::figures(&mut *connection, &disposal, attribution).await?
         {
-            let total = gains.entry(opening).or_insert_with(Money::zero);
-            *total = Money::new(total.get() + figures.gain().get());
+            let quantity =
+                consumed
+                    .get(&opening)
+                    .copied()
+                    .ok_or_else(|| StorageError::CorruptValue {
+                        field: "opening_transaction_id",
+                        value: opening.to_string(),
+                    })?;
+            lines.entry(opening).or_default().push(Line {
+                date: disposal.trade_date,
+                quantity,
+                figures,
+            });
         }
     }
-    Ok(gains)
+    Ok(lines)
 }
 
 /// Whether an opening with allocations to closings at `allocated` belongs in a report of `year`:
@@ -246,13 +335,14 @@ fn today() -> OrderKey {
 }
 
 /// The row of `opening`, stored as `stored`, through `splits` of its pair, with `allocated`
-/// against it and `gain` realized [DOM-077], [DOM-118].
+/// against it and `disposals` beneath it [DOM-077], [DOM-078], [DOM-118]. Its gain is the sum of
+/// its lines' gains, so the two cannot disagree [DOM-125].
 fn row(
     stored: StoredOpening,
     opening: &Opening,
     splits: &[Split],
     allocated: &[(Quantity, OrderKey)],
-    gain: Money,
+    disposals: Vec<Line>,
 ) -> Result<Row, ReportError> {
     let unmeasurable = || ReportError::Unmeasurable { opening: stored.id };
     let now = today();
@@ -263,6 +353,7 @@ fn row(
     let effective_unit_price = effective
         .unit_price(opening.gross().eur())
         .ok_or_else(unmeasurable)?;
+    let gain = Money::new(disposals.iter().map(|line| line.figures.gain().get()).sum());
     Ok(Row {
         opening: stored.id,
         date: opening.trade_date(),
@@ -275,6 +366,7 @@ fn row(
         // At the money scale, so an opening that has realized nothing reads `0.00`.
         gain: gain.rounded(),
         inherited_from: stored.inherited_from,
+        disposals,
     })
 }
 
@@ -288,6 +380,7 @@ mod tests {
     use rust_decimal_macros::dec;
     use vec1::vec1;
 
+    use crate::allocation::{ClosingShares, OpeningShares};
     use crate::decimal::QuotedPrice;
     use crate::identity::{IdentitySource, identify};
     use crate::manual_entry::Ratio;
@@ -358,6 +451,18 @@ mod tests {
         }
     }
 
+    /// A disposal line of 4 on 10 March 2024 with these shares.
+    fn line(proceeds: Decimal, sell_fee: Decimal, cost: Decimal, buy_fee: Decimal) -> Line {
+        Line {
+            date: date(2024, 10),
+            quantity: Quantity::new(dec!(4)),
+            figures: Figures::new(
+                OpeningShares::for_test(Money::new(cost), Money::new(buy_fee)),
+                ClosingShares::for_test(Money::new(proceeds), Money::new(sell_fee)),
+            ),
+        }
+    }
+
     /// Buy 10 for 1000, sell 4, split 2:1: as of today the parcel is 20 at 50 with 12 remaining,
     /// the 4 sold rescaled to 8 in today's units, so the two quantities share one scale [DOM-118],
     /// [DOM-077], [DOM-064].
@@ -372,7 +477,7 @@ mod tests {
             &opening,
             &splits,
             &allocated,
-            Money::new(dec!(12.34)),
+            vec![line(dec!(20.00), dec!(1.00), dec!(4.00), dec!(2.66))],
         )
         .expect("measurable");
 
@@ -384,6 +489,35 @@ mod tests {
         assert_eq!(row.date(), date(2024, 1));
         assert_eq!(row.account(), &account());
         assert_eq!(row.security(), &isin());
+        assert_eq!(row.disposals().len(), 1);
+    }
+
+    /// The row's gain is the sum of its lines' gains, each arithmetic on its own rounded shares,
+    /// and a line reads its allocation's figures unchanged [DOM-078], [DOM-125].
+    #[test]
+    fn the_gain_sums_the_lines() {
+        let opening = buy(dec!(10), dec!(1000.00), dec!(0.00));
+        let lines = vec![
+            line(dec!(20.00), dec!(1.00), dec!(4.00), dec!(2.66)),
+            line(dec!(3.00), dec!(0.50), dec!(4.00), dec!(0.01)),
+        ];
+
+        let row = row(stored(None), &opening, &[], &[], lines).expect("measurable");
+
+        assert_eq!(row.gain().get().to_string(), "10.83");
+        let first = &row.disposals()[0];
+        assert_eq!(
+            [
+                first.proceeds(),
+                first.sell_fee(),
+                first.cost(),
+                first.buy_fee(),
+                first.gain()
+            ]
+            .map(|money| money.get().to_string()),
+            ["20.00", "1.00", "4.00", "2.66", "12.34"]
+        );
+        assert_eq!(row.disposals()[1].gain().get().to_string(), "-1.51");
     }
 
     /// A split on the far side of every disposal still applies: "today" is after everything
@@ -393,7 +527,7 @@ mod tests {
         let opening = buy(dec!(9), dec!(900.00), dec!(0.00));
         let splits = [split(2099, 31, 1, 3)];
 
-        let row = row(stored(None), &opening, &splits, &[], Money::zero()).expect("measurable");
+        let row = row(stored(None), &opening, &splits, &[], vec![]).expect("measurable");
 
         assert_eq!(row.effective_quantity(), Quantity::new(dec!(3)));
         assert_eq!(row.remaining_quantity(), Quantity::new(dec!(3)));
@@ -407,7 +541,7 @@ mod tests {
         let opening = buy(dec!(1), dec!(10.00), dec!(0.00));
         let parent = TransactionId::new(3);
 
-        let row = row(stored(Some(parent)), &opening, &[], &[], Money::zero()).expect("measurable");
+        let row = row(stored(Some(parent)), &opening, &[], &[], vec![]).expect("measurable");
 
         assert_eq!(row.gain().get().to_string(), "0.00");
         assert_eq!(row.inherited_from(), Some(parent));
@@ -420,7 +554,7 @@ mod tests {
         let opening = buy(dec!(10), dec!(1000.00), dec!(0.00));
         let allocated = [(Quantity::new(dec!(1)), key(2023, 1))];
 
-        match row(stored(None), &opening, &[], &allocated, Money::zero()) {
+        match row(stored(None), &opening, &[], &allocated, vec![]) {
             Err(ReportError::Unmeasurable { opening }) => {
                 assert_eq!(opening, TransactionId::new(7))
             }

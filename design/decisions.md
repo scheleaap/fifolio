@@ -835,3 +835,14 @@ Alternatives not taken: refusing the parcel's deletion while an emitted record d
 which adds a deletion rule DOM-069 and DOM-094 do not state; and keeping the id, which SQLite may
 reuse for another transaction, so the report could name the wrong purchase. [DEC-108, DOM-096,
 DOM-069, DOM-094, DEC-105]
+
+**DEC-109 — Provisional: a disposal line's quantity consumed is the allocation's, in the units
+current at the disposal.** DOM-078 lists "quantity consumed" per disposal line but not in which
+units, and the opening row above it reports its quantities as of today (DOM-118). A line shows the
+allocation's quantity as stored, in the units current at the disposal (DOM-103), so it matches the
+sale's own stated quantity and the broker's confirmation of it, and is the figure its cost share was
+divided by; the line's date says when those units applied. This is also what the attribution view
+shows as quantity consumed (CLI-041). Alternative not taken: rescaling it through later splits to
+today's units, which lines it up with the row's remaining quantity but shows a quantity no sale ever
+stated, and makes a line change when a split is added after it. [DEC-109, DOM-078, DOM-103,
+DOM-118]
