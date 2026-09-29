@@ -2535,6 +2535,113 @@ async fn no_route_edits_a_transaction() {
     }
 }
 
+/// What a route may do to the transaction table, as far as SRV-034 is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransactionEffect {
+    /// Builds transactions only by derivation from the source records it is given.
+    DerivesFromSourceRecords,
+    /// Inserts no transaction (it may read or delete them).
+    CreatesNone,
+}
+
+/// No endpoint creates a transaction from nothing: every path and method in the routing table
+/// is classified here by hand, and only the allow-listed ones, each deriving from source
+/// records, may insert a transaction. A route added anywhere, under any method, fails this test
+/// until someone classifies it, so the rule does not rest on convention [SRV-034], [TST-005].
+///
+/// FIF-105's derive endpoint and FIF-073's `transfer_out` approval join the allow-list when
+/// built. Manual entries create no transaction (FIF-072) and stay off it.
+#[tokio::test]
+async fn no_route_creates_a_transaction_from_nothing() {
+    use TransactionEffect::{CreatesNone, DerivesFromSourceRecords};
+    let classified: BTreeMap<(&str, &str), TransactionEffect> = [
+        (("/accounts", "get"), CreatesNone),
+        (("/accounts", "post"), CreatesNone),
+        (("/accounts/{broker}/{id}", "delete"), CreatesNone),
+        (("/accounts/{broker}/{id}", "get"), CreatesNone),
+        (("/accounts/{broker}/{id}", "put"), CreatesNone),
+        (("/imports", "get"), CreatesNone),
+        (("/imports", "post"), DerivesFromSourceRecords),
+        (("/imports/{batch}", "delete"), CreatesNone),
+        (("/imports/{batch}", "get"), CreatesNone),
+        (("/manual-entries", "get"), CreatesNone),
+        (("/manual-entries", "post"), CreatesNone),
+        (("/manual-entries/waiting", "get"), CreatesNone),
+        (("/manual-entries/{id}", "delete"), CreatesNone),
+        (("/openapi.json", "get"), CreatesNone),
+        (("/securities", "get"), CreatesNone),
+        (("/securities", "post"), CreatesNone),
+        (("/securities/{isin}", "delete"), CreatesNone),
+        (("/securities/{isin}", "get"), CreatesNone),
+        (("/securities/{isin}", "put"), CreatesNone),
+        (("/securities/{isin}/reviewed", "post"), CreatesNone),
+        (("/source-records", "get"), CreatesNone),
+        (("/source-records/{identity}", "get"), CreatesNone),
+        (("/transactions", "get"), CreatesNone),
+        (("/transactions/{id}", "delete"), CreatesNone),
+        (("/transactions/{id}", "get"), CreatesNone),
+    ]
+    .into_iter()
+    .collect();
+
+    let spec = serde_json::to_value(fifolio_server::openapi()).expect("the spec serializes");
+    // A path item's other keys, such as `parameters`, are not methods.
+    let http_methods = [
+        "get", "put", "post", "delete", "options", "head", "patch", "trace",
+    ];
+    let served: Vec<(&str, &str)> = spec["paths"]
+        .as_object()
+        .expect("paths")
+        .iter()
+        .flat_map(|(path, item)| {
+            item.as_object()
+                .expect("a path item")
+                .keys()
+                .map(String::as_str)
+                .filter(|key| http_methods.contains(key))
+                .map(move |method| (path.as_str(), method))
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let unclassified: Vec<_> = served
+        .iter()
+        .filter(|route| !classified.contains_key(route))
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "classify each new route's transaction effect: {unclassified:?}"
+    );
+    // Both directions, so a removed route cannot leave a stale allow-list entry behind.
+    assert_eq!(
+        served,
+        classified.keys().copied().collect::<Vec<_>>(),
+        "the classification names exactly the routes served"
+    );
+
+    let allowed: Vec<_> = classified
+        .iter()
+        .filter(|(_, effect)| **effect == DerivesFromSourceRecords)
+        .map(|(route, _)| *route)
+        .collect();
+    assert_eq!(allowed, [("/imports", "post")]);
+
+    // The classification of the manual entry route checked against behavior: creating one
+    // leaves the transaction table empty.
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+    let batch = harness.saxo_batch("2024.xlsx").await;
+    harness.owned_record(batch, "r1").await;
+    let created = harness
+        .json(Method::POST, "/manual-entries", &stock_entry("3", &["r1"]))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        listed_ids(&harness.request(Method::GET, "/transactions").await),
+        Vec::<i64>::new()
+    );
+}
+
 impl Harness {
     /// A buy of Apple in a second account, on the first account's buy date, derived by that
     /// account's own batch: what an account filter must leave out.

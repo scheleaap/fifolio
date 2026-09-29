@@ -1284,12 +1284,14 @@ Notes: Split out of FIF-072 in revision 85, because restoring the transaction re
 Revision 86: dependency moved from FIF-038 to FIF-105, where the derivation it reuses now lives.
 
 ## FIF-087 No endpoint creates a transaction from nothing
-Status: todo
+Status: done
 Requirements: SRV-034
 Depends on: FIF-038, FIF-081
 Acceptance: the HTTP surface offers no route that constructs a transaction other than by derivation from source records, asserted by a test over the routing table rather than by convention.
 Notes: Split out of FIF-038 in revision 3.
 Unblocked in revision 47 (OQ-002 closed by DEC-079), with FIF-081.
+Revision 87: named next to build. Both dependencies, FIF-038 and FIF-081, are `done`; SRV-034 is on no `Blocks:` line. FIF-038's `no_route_edits_a_transaction` (`crates/fifolio-server/tests/http_surface.rs`) pins only `/transactions` (GET, and GET/DELETE by id; POST there is a 405). What remains is the workspace-wide half: walk every path and method in `fifolio_server::openapi()` and assert, against an explicit allow-list, that each route able to insert a transaction does so only by derivation from source records (today the import endpoint; FIF-105's derive endpoint and FIF-073's `transfer_out` approval join the list when built, each with its source records as input). A new POST anywhere must fail the test until it is classified. Manual entries (FIF-072) create no transaction and must stay off the list.
+Done in revision 87's build: `no_route_creates_a_transaction_from_nothing` (`crates/fifolio-server/tests/http_surface.rs`) classifies every path and method in `fifolio_server::openapi()` by its transaction effect and asserts the classification names exactly the routes served, in both directions, so a new or removed route fails until classified. Only `POST /imports` derives transactions from source records; creating a manual entry is checked to leave the transaction table empty (SRV-034). No provisional decision.
 
 ## FIF-073 Transfer out approval emits its transfer ins
 Status: todo
@@ -1412,6 +1414,21 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 87.** A status reconciliation after an interrupted session (laptop crash). `design/`
+changed since revision 86 only by the provisional DEC-126 recorded with FIF-038 (`80fd3b2`); no
+requirement id added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines,
+and the 5 items carrying one are exactly the 5 `blocked`. Working tree clean apart from the
+untracked `docs/`, so no partial build was lost.
+
+* **Completed: FIF-038** (`80fd3b2`). Its status already read `done`. DEC-126 invalidates no
+  completed work.
+* No item added, split, dropped or newly blocked.
+* 103 items: **67 `done`, 31 `todo`, 5 `blocked`**. Coverage: **352** live ids, each on exactly one
+  item; uncovered only the retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope: FIF-087, 073, 039, 040, 041 remain `todo`. FIF-105 and FIF-104 (not on this run's
+  scope list) wait on FIF-100.
+* **Next to build: FIF-087.** FIF-073, FIF-039 and FIF-041 are also ready; FIF-040 waits on FIF-039.
 
 **Revision 86.** A status reconciliation after an interrupted session (laptop crash). `design/`
 changed since revision 85 only by the provisional DEC-121 to DEC-125 recorded against FIF-072; no
@@ -2929,6 +2946,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 87: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `80fd3b2`. One hundred and three items: 67 `done`, 31 `todo`, 5 `blocked`.
 
 Revision 86: **352** live ids, each exactly once, re-verified by script against `design/` at
 `89259e1`; SRV-031 and SRV-032 moved from FIF-038 to FIF-105. One hundred and three items: 66
