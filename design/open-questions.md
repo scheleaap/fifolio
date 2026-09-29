@@ -82,3 +82,5 @@ built on it.
 * **FIF-076** (a transaction's `order` from records of several files; batch age) → DEC-094, DEC-095
 * **FIF-076** (whether undo-then-re-import restores batch age as well) → DEC-096
 * **FIF-061** (whether "between" an opening and a position includes either end) → DEC-097
+* **FIF-013** (a closing of nothing; a parcel already over-allocated) → DEC-098
+* **FIF-013** (remaining quantity: rounded exact difference, or difference of rounded sides) → DEC-099

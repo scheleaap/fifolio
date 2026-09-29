@@ -6,6 +6,7 @@ pub mod decimal;
 pub mod ecb;
 pub mod effective_quantity;
 pub mod entities;
+pub mod fifo;
 pub mod fx;
 pub mod identity;
 pub mod import;

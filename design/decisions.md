@@ -698,3 +698,27 @@ Alternative not taken: an inclusive upper bound. It changes nothing for a closin
 shares a position with a split, but would make "as of the split" mean "after it", and answering a
 pre-opening position with the stated quantity would give a plausible figure for a question with no
 answer. [DEC-097, DOM-089, DOM-103]
+
+**DEC-098 — Provisional: the FIFO proposal refuses a closing of nothing and an over-allocated
+parcel.** Asked to propose for a closing whose stated quantity is zero or negative, the engine
+refuses rather than returning an empty proposal, treating it as the data problem DOM-114 names for
+an expiration of nothing. Meeting a candidate opening whose remaining effective quantity, at the
+quantity scale, is below zero, it refuses and names the opening rather than skipping it as
+exhausted, since DOM-064 is already broken there and a proposal would build on wrong figures.
+Alternative not taken: an empty proposal for a zero closing, which DOM-065 would accept as a sum of
+nothing equal to nothing but which records an attribution for a transaction that closed nothing;
+and treating a negative remainder as zero, which hides a broken invariant behind a plausible
+proposal. [DEC-098, DOM-056, DOM-064, DOM-065, DOM-114]
+
+**DEC-099 — Provisional: a parcel's remaining quantity is the difference of its rounded sides.**
+DEC-091's remaining quantity is the opening's effective quantity as of the position, taken at the
+quantity scale, less the sum of the allocations against it, each rescaled to that position
+exactly and the sum taken at the quantity scale; it is not the exact difference rounded once. The
+two readings part only at a halfway tie: 12.34567891 through a one-for-two is 6.172839455, which
+views as 6.17283946, and once 6.17283946 is allocated the exact difference -0.000000005 rounds to
+-0.00000001. Under that reading the FIFO proposal's own allocation would break DOM-064 and every
+later proposal for the account and security would be refused; under this one the parcel is
+exhausted. This follows DEC-091's "allocation sums are checked at that scale". Alternative not
+taken: never allocating more than the exact remainder, which leaves a residue the rounded view
+still shows as open, so the proposal and FIF-014's check would disagree about the same parcel.
+[DEC-099, DEC-091, DEC-098, DOM-056, DOM-064]

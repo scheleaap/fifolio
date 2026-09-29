@@ -142,6 +142,46 @@ pub fn effective_quantity<'a>(
     })
 }
 
+/// What remains unattributed of `opening` as of `at`, at the quantity scale: its effective
+/// quantity there less every quantity already allocated against it [DOM-064].
+///
+/// Each of `allocated` is a quantity together with the position of the closing it was allocated
+/// to. An allocation states its quantity in the units current at its own closing, so subtracting
+/// it as stated would compare different unit scales; it is rescaled to `at` first, by the ratio
+/// of the opening's effective quantities at the two positions. That ratio is exactly the splits
+/// strictly between the two (DEC-097), whichever way round they lie.
+///
+/// The effective quantity and the rescaled allocation sum are each exact, and each is taken
+/// through [`EffectiveQuantity::at_quantity_scale`] before one is subtracted from the other
+/// (DEC-099, provisional). Rounding the exact difference instead disagrees at a halfway tie:
+/// 12.34567891 through a one-for-two is 6.172839455, which views as 6.17283946, yet once
+/// 6.17283946 is allocated the exact difference of -0.000000005 rounds to -0.00000001, and the
+/// parcel would read as over-allocated by the very figure the proposal offered.
+///
+/// `None` when `at` or any allocation's position precedes the opening, the parcel not existing
+/// there; when the opening states no quantity, leaving nothing to rescale by; or when either side
+/// lies beyond what a decimal holds.
+#[must_use]
+pub fn unattributed_quantity<'a>(
+    opening: &Opening,
+    splits: impl IntoIterator<Item = &'a Split> + Clone,
+    at: OrderKey,
+    allocated: impl IntoIterator<Item = (Quantity, OrderKey)>,
+) -> Option<Quantity> {
+    let now = effective_quantity(opening, splits.clone(), at)?;
+    let consumed = allocated
+        .into_iter()
+        .try_fold(BigRational::zero(), |sum, (quantity, closed_at)| {
+            let then = effective_quantity(opening, splits.clone(), closed_at)?;
+            (!then.0.is_zero()).then(|| sum + exact(quantity.get()) * &now.0 / &then.0)
+        })
+        .map(EffectiveQuantity)?;
+    now.at_quantity_scale()?
+        .get()
+        .checked_sub(consumed.at_quantity_scale()?.get())
+        .map(|remaining| Quantity::new(remaining.normalize()))
+}
+
 /// A decimal as the rational it denotes, exactly: mantissa over ten to the scale.
 fn exact(value: Decimal) -> BigRational {
     BigRational::new(
@@ -559,6 +599,72 @@ mod tests {
         let zero = EffectiveQuantity(BigRational::zero());
 
         assert_eq!(zero.unit_price(Money::new(dec!(1.00))), None);
+    }
+
+    /// Buy 10, sell 4, split 2:1: 4 of the pre-split units are 8 after it, so 12 remain, not 16
+    /// [DOM-064]. Before the split the same allocation leaves 6.
+    #[test]
+    fn an_allocation_is_rescaled_to_the_position_asked_about() {
+        let opening = buy(1, dec!(10), dec!(1000.00));
+        let splits = [split(10, 2, 1)];
+        let allocated = [(Quantity::new(dec!(4)), key(5, 0))];
+
+        let after =
+            unattributed_quantity(&opening, &splits, key(20, 0), allocated).expect("after the buy");
+        assert_eq!(after, Quantity::new(dec!(12)));
+        let before =
+            unattributed_quantity(&opening, &splits, key(6, 0), allocated).expect("after the buy");
+        assert_eq!(before, Quantity::new(dec!(6)));
+    }
+
+    /// 10 through a one-for-three is 10/3; after 3.33333333 is allocated the 1/3 × 1e-8 left
+    /// is below the quantity scale, so the parcel is exhausted (DEC-091) [DOM-064], [DOM-113].
+    #[test]
+    fn a_remainder_below_the_quantity_scale_views_as_zero() {
+        let opening = buy(1, dec!(10), dec!(1000.00));
+        let splits = [split(2, 1, 3)];
+        let allocated = [(Quantity::new(dec!(3.33333333)), key(5, 0))];
+
+        let remaining =
+            unattributed_quantity(&opening, &splits, key(6, 0), allocated).expect("after the buy");
+        assert_eq!(remaining, Quantity::zero());
+    }
+
+    /// 12.34567891 through a one-for-two is 6.172839455 exactly, a halfway tie that views as
+    /// 6.17283946. Allocating that view exhausts the parcel rather than over-allocating it by the
+    /// rounded -0.000000005 (DEC-091, DEC-099) [DOM-064].
+    #[test]
+    fn allocating_a_halfway_view_exhausts_the_parcel() {
+        let opening = buy(1, dec!(12.34567891), dec!(1234.57));
+        let splits = [split(2, 1, 2)];
+        let allocated = [(Quantity::new(dec!(6.17283946)), key(5, 0))];
+
+        assert_eq!(
+            unattributed_quantity(&opening, &splits, key(5, 0), []),
+            Some(Quantity::new(dec!(6.17283946)))
+        );
+        assert_eq!(
+            unattributed_quantity(&opening, &splits, key(6, 0), allocated),
+            Some(Quantity::zero())
+        );
+    }
+
+    /// An allocation to a closing before the opening, or any position before it, has no answer
+    /// (DEC-097).
+    #[test]
+    fn a_position_before_the_opening_has_no_remainder() {
+        let opening = buy(5, dec!(10), dec!(1000.00));
+
+        assert_eq!(unattributed_quantity(&opening, &[], key(1, 0), []), None);
+        assert_eq!(
+            unattributed_quantity(
+                &opening,
+                &[],
+                key(9, 0),
+                [(Quantity::new(dec!(1)), key(2, 0))]
+            ),
+            None
+        );
     }
 
     /// Split properties over generated quantities and ratios [TST-010].

@@ -393,11 +393,13 @@ Acceptance: a security with any pending source record is blocked from attributio
 Notes: Split out of FIF-012 and FIF-015 in revision 2 and blocked then; all three ids left the undecided list in revision 3. DOM-049 and DOM-067 state the same block from two sides, which is why they are one item. Still gated on FIF-058 (DOM-101), which defines consumption.
 
 ## FIF-013 FIFO proposal engine
-Status: todo
+Status: done
 Requirements: DOM-056, DOM-057
 Depends on: FIF-076, FIF-056, FIF-061
 Acceptance: given an account, a security and a closing transaction, the engine consumes the oldest openings with unattributed effective quantity remaining, in canonical order, until the closed quantity is covered, splitting the final opening; if the available unattributed quantity is short, it returns a shortfall naming the missing quantity instead of a proposal. Pure function over transactions and existing allocations, unit tested with no database.
 Notes: Revision 3 splits the expiration rule (DOM-092, DOM-114) into FIF-079, and moves the ordering dependency from FIF-006 to FIF-076, which is where canonical order now lives.
+Revision 71: named next to build; FIF-076, FIF-056 and FIF-061 are done. Measure remaining quantity through `EffectiveQuantity::at_quantity_scale` as of the closing's `OrderKey` (DEC-091, DEC-097), so exhaustion and the shortfall use the same 8-decimal view FIF-014 and FIF-078 will; the effective-quantity calculation refuses a position preceding the opening, so only openings before the closing are candidates.
+Done in revision 72: `fifo.rs` `propose` consumes the oldest candidate openings in canonical order (row id breaking an `OrderKey` tie, DEC-095) until the closing's quantity is covered, splitting the last, or returns the shortfall (DOM-057); `effective_quantity::unattributed_quantity` gives a parcel's remainder as of the closing, each prior allocation rescaled from its own closing, as the difference of the two sides at the quantity scale (provisional DEC-099). A closing of nothing and an over-allocated parcel are refused (provisional DEC-098). Pure, no database.
 
 ## FIF-079 Expiration quantity
 Status: blocked
@@ -1365,6 +1367,19 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 71.** A status reconciliation. `design/` changed in `aa69414` only by adding the
+provisional DEC-097 and listing it under "Provisionally answered"; no requirement id added or
+removed. `open-questions.md` names the same **7** ids on `Blocks:` lines, and the 5 items carrying
+one are exactly the 5 `blocked` (checked by script).
+
+* **Completed: FIF-061**, committed as `aa69414` (migration `0007_split_ratio.sql`), on the
+  provisional DEC-091 and DEC-097.
+* No item added, split, retired, blocked or unblocked. 101 items: **50 `done`, 46 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* **Next to build: FIF-013.** Its dependencies FIF-076, FIF-056 and FIF-061 are `done`, and neither
+  DOM-056 nor DOM-057 is blocked. Also ready in scope: FIF-035, FIF-041.
 
 **Revision 70.** A status reconciliation. `design/` changed in `8293c03` only by adding the
 provisional DEC-094 to DEC-096 and listing them under "Provisionally answered" in
