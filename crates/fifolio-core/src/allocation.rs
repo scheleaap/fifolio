@@ -123,6 +123,12 @@ pub struct OpeningShares {
 }
 
 impl OpeningShares {
+    /// Shares as given, so a consumer's arithmetic is testable without deriving them.
+    #[cfg(test)]
+    pub(crate) fn for_test(cost: Money, buy_fee: Money) -> Self {
+        Self { cost, buy_fee }
+    }
+
     #[must_use]
     pub fn cost(&self) -> Money {
         self.cost
@@ -142,6 +148,12 @@ pub struct ClosingShares {
 }
 
 impl ClosingShares {
+    /// Shares as given, so a consumer's arithmetic is testable without deriving them.
+    #[cfg(test)]
+    pub(crate) fn for_test(proceeds: Money, sell_fee: Money) -> Self {
+        Self { proceeds, sell_fee }
+    }
+
     #[must_use]
     pub fn proceeds(&self) -> Money {
         self.proceeds

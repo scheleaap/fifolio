@@ -24,6 +24,7 @@ use sqlx::sqlite::{SqliteArguments, SqliteConnection, SqlitePool};
 use sqlx::{Row, Sqlite, query};
 
 use crate::decimal::Quantity;
+use crate::entities::{Account, Isin};
 use crate::ordering::OrderKey;
 use crate::storage::codec::{at_scale, quantity as read_quantity};
 use crate::storage::transactions::{TransactionId, is_closing, order_key};
@@ -277,22 +278,82 @@ impl<'a> AttributionRepository<'a> {
             return Ok(None);
         };
 
-        let allocations = query(
-            "select opening_transaction_id, quantity from attribution_allocation
-             where attribution_id = ? order by ordinal",
-        )
-        .bind(attribution.get())
-        .fetch_all(&mut *connection)
-        .await?
-        .iter()
-        .map(allocation_from_row)
-        .collect::<Result<Vec<_>, _>>()?;
+        let allocations = Self::allocations_in(&mut connection, attribution).await?;
 
         Ok(Some(Attribution {
             closing,
             allocations,
         }))
     }
+
+    /// The allocations of `attribution`, in the order they were approved in.
+    pub(crate) async fn allocations_in(
+        connection: &mut SqliteConnection,
+        attribution: AttributionId,
+    ) -> Result<Vec<Allocation>, StorageError> {
+        query(
+            "select opening_transaction_id, quantity from attribution_allocation
+             where attribution_id = ? order by ordinal",
+        )
+        .bind(attribution.get())
+        .fetch_all(connection)
+        .await?
+        .iter()
+        .map(allocation_from_row)
+        .collect()
+    }
+
+    /// Every disposal of `account`, or of every account when `None`, with the attribution it
+    /// carries if one was approved [DOM-117], in canonical order.
+    ///
+    /// A disposal is a `sell` or an `expiration`: a `transfer_out` realizes nothing [DOM-095],
+    /// so it is left out here rather than filtered by every reader.
+    pub(crate) async fn disposals_in(
+        connection: &mut SqliteConnection,
+        account: Option<&Account>,
+    ) -> Result<Vec<Disposal>, StorageError> {
+        query(
+            "select t.id, t.trade_date, p.account_broker, p.account_id, p.security_isin,
+                    a.id as attribution_id
+             from transaction_record t
+                  join transaction_placement p on p.transaction_id = t.id
+                  left join attribution a on a.closing_transaction_id = t.id
+             where t.kind in ('sell', 'expiration')
+               and (?1 is null or (p.account_broker = ?1 and p.account_id = ?2))
+             order by t.trade_date, t.ordering, t.batch_age, t.leg, t.id",
+        )
+        .bind(account.map(Account::broker))
+        .bind(account.map(Account::id))
+        .fetch_all(connection)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(Disposal {
+                closing: TransactionId::new(row.get("id")),
+                trade_date: row.get("trade_date"),
+                account: Account::new(
+                    row.get::<String, _>("account_broker"),
+                    row.get::<String, _>("account_id"),
+                ),
+                security: Isin::new(row.get::<String, _>("security_isin")),
+                attribution: row
+                    .get::<Option<i64>, _>("attribution_id")
+                    .map(AttributionId::new),
+            })
+        })
+        .collect()
+    }
+}
+
+/// A stored disposal as a report reads it: where it belongs, when it happened, and whether it
+/// is attributed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Disposal {
+    pub(crate) closing: TransactionId,
+    pub(crate) trade_date: NaiveDate,
+    pub(crate) account: Account,
+    pub(crate) security: Isin,
+    pub(crate) attribution: Option<AttributionId>,
 }
 
 fn allocation_from_row(row: &SqliteRow) -> Result<Allocation, StorageError> {

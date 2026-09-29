@@ -1115,11 +1115,13 @@ ISIN, so no value reaches `bond` [IMP-TR-020, IMP-TR-021]. `cargo test --workspa
 0 failed**.
 
 ## FIF-030 Income tax overview report
-Status: todo
+Status: done
 Requirements: DOM-001, DOM-073, DOM-074, DOM-075, DOM-095, DOM-117, DOM-121
 Depends on: FIF-015
 Acceptance: gain/loss aggregated per year (the year of the disposal) and per account, with columns year, account, proceeds, sell fees, cost, buy fees, gain/loss and **a count of outstanding disposals**, the count being a column rather than a second block so every output format keeps one record shape, and a non-zero count saying in plain words that the year is incomplete wherever the format has room for a sentence; optional account filter and optional tax year filter, unfiltered meaning all accounts and all years; only attributed disposals contribute, and an unattributed one is reported as outstanding rather than counted at zero; a `transfer_out` realizes nothing and contributes no row; the figures are raw gain/loss with no tax-law treatment applied.
 Notes: Blocked in revision 2 on DOM-095 and DOM-117, both of which left the undecided list in revision 3. DOM-121 is new in revision 7 (DEC-058); the count column is what keeps DOM-117 from being a silent understatement, so the two are one item. FIF-046's `insta` snapshots and FIF-040's endpoint both carry the extra column.
+Revision 75: named next to build; FIF-015 is done and none of DOM-001, DOM-073, DOM-074, DOM-075, DOM-095, DOM-117, DOM-121 is on a `Blocks:` line. A domain-level report over storage, no HTTP (FIF-040 exposes it). Figures sum `allocation.rs`'s per-allocation derived shares (`proceeds`, `sell_fee`, `cost`, `buy_fee`, `gain`) of stored attributions (`storage/attributions.rs`), never recomputed from pooled totals. "Outstanding" is a closing with no approved attribution; an `expiration` cannot be approved (DEC-102), so it counts as outstanding in its disposal year. A `transfer_out` is excluded from both figures and the count (DOM-095). The plain-words sentence belongs to the formats that render it (FIF-046); this item exposes the count.
+Done in revision 75: `income_tax.rs` `overview` sums, per year of disposal and per account, the EUR shares and gains `allocation.rs` derives for every allocation of every attributed disposal, with the outstanding count as a column of the same row (DOM-117, DOM-121); a `transfer_out` adds neither figures nor a count (DOM-095); the account and tax year filters select rows without changing a figure (DOM-073). No new decisions. Integration tests in `crates/fifolio-core/tests/income_tax.rs`.
 
 ## FIF-031 Acquisition report
 Status: todo
@@ -1373,6 +1375,23 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 75.** A status reconciliation. `design/` changed in `9ba55b3` only by adding the
+provisional DEC-105 and DEC-106 and listing them under "Provisionally answered"; no requirement id
+added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines (DOM-092, DOM-114,
+IMP-SAXO-013, ARC-008, DOM-038, DOM-104, IMP-SAXO-026), and the 5 items carrying one are exactly the
+5 `blocked`.
+
+* **Completed: FIF-063**, committed as `9ba55b3` (`transfer.rs`, `attribution.rs`), on the
+  provisional DEC-105 and DEC-106.
+* No item added, split, retired, blocked or unblocked. 101 items: **54 `done`, 42 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-030, 031, 082, 035, 085, 070, 090, 036, 071, 086, 037, 072, 038,
+  087, 073, 039, 040, 041 remain `todo`; none carries a blocked requirement, so each waits only on
+  dependencies inside that list.
+* **Next to build: FIF-030.** Its dependency FIF-015 is `done`. Also ready in scope: FIF-031,
+  FIF-035, FIF-041.
 
 **Revision 74.** A status reconciliation. `design/` changed in `07f2433` only by adding the
 provisional DEC-102 to DEC-104 and listing them under "Provisionally answered"; no requirement id

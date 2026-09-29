@@ -69,6 +69,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use crate::entities::RecordIdentity;
 use crate::ordering::RecordPosition;
 
+pub(crate) use attributions::Disposal;
 pub use attributions::{Allocation, Attribution, AttributionId, AttributionRepository};
 pub use entities::{
     AccountRepository, BatchId, ImportBatchRepository, SecurityRepository, SourceRecordRepository,
