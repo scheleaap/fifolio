@@ -113,10 +113,20 @@ impl<'a> AccountRepository<'a> {
     }
 
     pub async fn find(&self, broker: &str, id: &str) -> Result<Option<Account>, StorageError> {
+        Self::find_in(&mut *self.pool.acquire().await?, broker, id).await
+    }
+
+    /// [`Self::find`] inside the caller's SQLite transaction, so that an import checks its
+    /// target account in the transaction that stores into it.
+    pub(crate) async fn find_in(
+        connection: &mut SqliteConnection,
+        broker: &str,
+        id: &str,
+    ) -> Result<Option<Account>, StorageError> {
         let row = query("select broker, id from account where broker = ? and id = ?")
             .bind(broker)
             .bind(id)
-            .fetch_optional(self.pool)
+            .fetch_optional(connection)
             .await?;
         Ok(row.map(|row| account_from_row(&row, "broker", "id")))
     }
@@ -238,6 +248,33 @@ impl<'a> SecurityRepository<'a> {
             _ => StorageError::Database(error),
         })?;
         Ok(())
+    }
+
+    /// Stores `security` unless its ISIN is stored already, inside the caller's SQLite
+    /// transaction, answering whether it was stored.
+    ///
+    /// A security already stored is left exactly as it is: an import that names it again
+    /// neither renames it nor sets its flags again, since the user may have corrected and
+    /// reviewed it since [SRV-011], [SRV-057], [DOM-006].
+    pub(crate) async fn insert_if_absent_in(
+        connection: &mut SqliteConnection,
+        security: &Security,
+    ) -> Result<bool, StorageError> {
+        let inserted = query(
+            "insert into security (isin, name, security_type, quotation, auto_created,
+                                   needs_review)
+             values (?, ?, ?, ?, ?, ?)
+             on conflict (isin) do nothing",
+        )
+        .bind(security.isin().as_str())
+        .bind(security.name())
+        .bind(security_type_code(security.security_type()))
+        .bind(quotation_code(security.quotation()))
+        .bind(security.is_auto_created())
+        .bind(security.needs_review())
+        .execute(connection)
+        .await?;
+        Ok(inserted.rows_affected() == 1)
     }
 
     pub async fn find(&self, isin: &Isin) -> Result<Option<Security>, StorageError> {
@@ -450,6 +487,40 @@ impl<'a> SourceRecordRepository<'a> {
         ))
     }
 
+    /// Stores `record` as owned by `batch` unless a record of its identity is stored already,
+    /// inside the caller's SQLite transaction, answering whether it was stored.
+    ///
+    /// This is import's idempotence [DOM-022], [SRV-015]: the identity is already scoped to the
+    /// account [DOM-024], so a row imported again finds its record and writes nothing. The
+    /// stored record keeps its owner and its first supplier; moving ownership to the newer batch
+    /// is SRV-052's (FIF-071).
+    pub(crate) async fn insert_if_absent_in(
+        connection: &mut SqliteConnection,
+        batch: BatchId,
+        record: &SourceRecord,
+    ) -> Result<bool, StorageError> {
+        let parsed =
+            serde_json::to_string(record.parsed()).map_err(|_| StorageError::CorruptValue {
+                field: "parsed",
+                value: String::new(),
+            })?;
+
+        let inserted = query(
+            "insert into source_record (identity, ordering, raw, parsed, batch_id, first_batch_id)
+             values (?, ?, ?, ?, ?, ?)
+             on conflict (identity) do nothing",
+        )
+        .bind(record.identity().as_str())
+        .bind(i64::from(record.order().get()))
+        .bind(record.raw())
+        .bind(parsed)
+        .bind(batch.get())
+        .bind(batch.get())
+        .execute(connection)
+        .await?;
+        Ok(inserted.rows_affected() == 1)
+    }
+
     /// A handle on the record `identity` names, if it is stored now, carrying the position the
     /// canonical order reads [DOM-111]: its `order` and the age of the oldest batch that supplied
     /// it.
@@ -513,6 +584,15 @@ impl<'a> ImportBatchRepository<'a> {
     }
 
     pub async fn insert(&self, batch: &ImportBatch) -> Result<BatchId, StorageError> {
+        Self::insert_in(&mut *self.pool.acquire().await?, batch).await
+    }
+
+    /// [`Self::insert`] inside the caller's SQLite transaction, so that a batch and the records
+    /// it owns commit or fail together.
+    pub(crate) async fn insert_in(
+        connection: &mut SqliteConnection,
+        batch: &ImportBatch,
+    ) -> Result<BatchId, StorageError> {
         let counts = batch.counts();
         let inserted = query(
             "insert into import_batch
@@ -528,7 +608,7 @@ impl<'a> ImportBatchRepository<'a> {
         .bind(i64::from(counts.derived))
         .bind(i64::from(counts.pending))
         .bind(i64::from(counts.non_position))
-        .execute(self.pool)
+        .execute(connection)
         .await?;
 
         Ok(BatchId::new(inserted.last_insert_rowid()))

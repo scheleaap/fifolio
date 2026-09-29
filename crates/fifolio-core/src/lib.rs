@@ -13,6 +13,7 @@ pub mod fifo;
 pub mod fx;
 pub mod identity;
 pub mod import;
+pub mod import_service;
 pub mod income_tax;
 pub mod manual_entry;
 pub mod ordering;

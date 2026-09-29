@@ -12,6 +12,7 @@
 //! Every error response is a problem document; see [`problem`] [ARC-020].
 
 pub mod accounts;
+pub mod imports;
 pub mod problem;
 pub mod securities;
 
@@ -94,6 +95,7 @@ fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(openapi_json))
         .merge(accounts::routes())
+        .merge(imports::routes())
         .merge(securities::routes())
 }
 

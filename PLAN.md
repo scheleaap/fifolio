@@ -1173,12 +1173,13 @@ while writing an account back to its own key is not refused [SRV-008]; migration
 `cargo test --workspace`: **649 passed, 0 failed**.
 
 ## FIF-035 Import endpoint
-Status: todo
+Status: done
 Requirements: SRV-012, SRV-013, SRV-014, SRV-015, SRV-016, SRV-018, SRV-049
 Depends on: FIF-034, FIF-029
 Acceptance: the caller supplies target account, format and file; formats are Saxo NL XLSX and Trade Republic DE CSV; unknown ISINs are auto-created and flagged; re-posting the same file changes nothing; non-position rows are counted and not stored; the response **names every unrecognized row type it met with how many rows carried it**; a sell exceeding holdings imports fine and surfaces only at attribution.
 Notes: Revision 3 splits the counted summary (SRV-017) into FIF-085, it being undecided; SRV-049's naming of unrecognized types is decided and stays here. Revision 69 (recorded in `6921150` under a duplicate "Revision 58" label; user: server first, importers later): no longer waits on FIF-023. Until the Saxo importer can classify rows, a Saxo file sent to the endpoint is refused as a format not yet supported, naming FIF-023; Trade Republic imports work end to end.
 Revision 47: a failed row now refuses the whole import (SRV-058). FIF-099 builds that in core. Here it is one more refusal mapped to problem+json, naming every failed row.
+Done in revision 77: the endpoint takes the target account, format and filename as query parameters and the file as the body (SRV-012); a Trade Republic DE CSV imports end to end through `import_service.rs`, and a Saxo NL XLSX is refused as not supported yet, naming FIF-023 (SRV-013); the unknown securities that stored rows name are auto-created and flagged for review, and one ISIN stated with two types is a failed row (SRV-014, DEC-110); posting a file again writes no record or security, only a batch that owns nothing (SRV-015, DEC-111); non-position rows are counted and not stored (SRV-016); the response names every unrecognized row type with its count (SRV-049); a sell exceeding holdings imports (SRV-018); a file with failed rows is refused as problem+json naming every one (SRV-058). Provisional decisions DEC-110 and DEC-111. Tests in `crates/fifolio-core/tests/import_service.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-085 Import response summary counts
 Status: todo

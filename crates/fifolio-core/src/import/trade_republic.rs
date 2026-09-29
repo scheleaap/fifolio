@@ -50,7 +50,7 @@ use thiserror::Error;
 
 use super::reader::{DelimitedReader, ReadError, RowReader, SourceRow};
 use super::{Importer, RowClassification, RowError, RowIdentity};
-use crate::entities::SourceFormat;
+use crate::entities::{Security, SourceFormat};
 use crate::ordering::{FileDirection, RowOrderingKey};
 
 /// The 23 headers, in the order the export writes them [IMP-TR-001].
@@ -243,6 +243,13 @@ impl Importer for TradeRepublic {
         rows.iter()
             .map(|row| classification::classify(row).map_err(row_error))
             .collect()
+    }
+
+    fn security(&self, row: &SourceRow) -> Result<Option<Security>, RowError> {
+        match security::Instrument::read(row).map_err(row_error)? {
+            security::Instrument::Security(security) => Ok(Some(security)),
+            security::Instrument::None => Ok(None),
+        }
     }
 }
 
@@ -886,13 +893,17 @@ mod tests {
         buy_with(transaction_id, &[])
     }
 
-    /// A buy carrying `extra` columns besides its own.
+    /// A buy carrying `extra` columns besides its own. Its instrument columns are populated as
+    /// every export populates them on a row naming a security, since a stored row's security is
+    /// read [IMP-TR-020].
     fn buy_with(transaction_id: &str, extra: &[(&str, &str)]) -> Vec<String> {
         let own = [
             ("datetime", "2024-05-02T06:01:14.891Z"),
             ("date", "2024-05-02"),
             ("category", "TRADING"),
             ("type", "BUY"),
+            ("asset_class", "STOCK"),
+            ("name", "Fixture Instrument 09"),
             ("symbol", "XF0000000152"),
             ("shares", "35.0000000000"),
             ("price", "75.090000"),
@@ -1049,6 +1060,66 @@ mod tests {
         assert!(
             matches!(not_utf_8, ImportError::Read(ReadError::NotUtf8 { .. })),
             "{not_utf_8:?}"
+        );
+    }
+
+    /// A stored row's security is auto-created from its instrument columns and flagged for
+    /// review; a dividend, which is not stored, contributes no security even though it names
+    /// an instrument (DEC-110) [SRV-014], [SRV-016], [IMP-TR-020], [DOM-006], [DOM-126].
+    #[test]
+    fn a_stored_row_names_its_security_as_auto_created() {
+        let dividend = line(&[
+            ("datetime", "2024-05-03T06:01:14.891Z"),
+            ("date", "2024-05-03"),
+            ("category", "CASH"),
+            ("type", "DIVIDEND"),
+            ("asset_class", "STOCK"),
+            ("name", "Dividend Payer"),
+            ("symbol", "XF0000000160"),
+            ("amount", "12.50"),
+            ("currency", "EUR"),
+            ("transaction_id", "b"),
+        ]);
+
+        let import = import_lines(&[buy("a"), dividend]).expect("the file imports");
+
+        let [security] = import.securities() else {
+            panic!("one security, not {:?}", import.securities());
+        };
+        assert_eq!(security.isin().as_str(), "XF0000000152");
+        assert_eq!(security.name(), "Fixture Instrument 09");
+        assert_eq!(
+            security.security_type(),
+            crate::entities::SecurityType::Stock
+        );
+        assert!(security.is_auto_created());
+        assert!(security.needs_review());
+    }
+
+    /// A stored row whose `asset_class` is outside the table is a failed row, named with the
+    /// ISIN, so it refuses the import together with every other failed row [IMP-TR-020],
+    /// [IMP-TR-021], [SRV-058].
+    #[test]
+    fn a_stored_row_of_an_unmapped_asset_class_is_a_failed_row() {
+        let bond = buy_with("bond", &[("asset_class", "BOND")]);
+
+        let refusal = import_lines(&[buy("a"), bond]).expect_err("BOND maps to nothing");
+
+        let ImportError::Refused { grounds } = &refusal else {
+            panic!("a refusal, not {refusal}");
+        };
+        let [Ground::FailedRows { failures }] = grounds.as_slice() else {
+            panic!("one failed-rows ground, not {grounds:?}");
+        };
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].position, 1);
+        assert_eq!(
+            failures[0].error.reason(),
+            TradeRepublicError::UnknownAssetClass {
+                value: "BOND".to_owned(),
+                isin: "XF0000000152".to_owned(),
+            }
+            .to_string()
         );
     }
 }

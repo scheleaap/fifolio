@@ -94,3 +94,5 @@ built on it.
 * **FIF-031** (whether a year-filtered row's gain is that year's or the opening's whole) → DEC-107
 * **FIF-031** (what an emitted record names once its parent opening is deleted) → DEC-108
 * **FIF-082** (the units a disposal line's quantity consumed is shown in) → DEC-109
+* **FIF-035** (which rows supply auto-created securities; one ISIN of two types) → DEC-110
+* **FIF-035** (whether posting a file again creates a batch) → DEC-111

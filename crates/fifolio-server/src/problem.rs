@@ -11,13 +11,14 @@
 //! Every mapping below is an exhaustive `match` with no wildcard arm, so a variant added to a
 //! core error does not compile until it is given a type: each variant maps to exactly one type
 //! because the compiler checks it. A wrapper that only forwards another error
-//! ([`IngestError`]'s two arms) is not a class of its own and takes the type of what it wraps.
+//! ([`IngestError`]'s and [`ImportFileError`]'s two arms) is not a class of its own and takes the
+//! type of what it wraps.
 //!
 //! That guarantee covers the core errors a handler can hold. A format's own error
 //! (`SaxoError`, `TradeRepublicError`) is not among them and has no type here: the server
-//! imports through `fifolio_core::import::import`, whose [`Importer`] trait answers only
-//! `RowError` and [`ImportError`], so a format error reaches a handler as an [`ImportError`]
-//! or not at all. The signature is what enforces it.
+//! imports through `fifolio_core::import_service::import_file`, which reads the file through
+//! `fifolio_core::import::import`, whose [`Importer`] trait answers only `RowError` and
+//! [`ImportError`], so a format error reaches a handler as an [`ImportError`] or not at all. The signature is what enforces it.
 //!
 //! [`Importer`]: fifolio_core::import::Importer
 //!
@@ -37,6 +38,7 @@ use axum::response::{IntoResponse, Response};
 use fifolio_core::ecb::{FeedError, IngestError};
 use fifolio_core::fx::RateError;
 use fifolio_core::import::{Ground, ImportError};
+use fifolio_core::import_service::ImportFileError;
 use fifolio_core::storage::StorageError;
 use serde::{Serialize, Serializer};
 use utoipa::ToSchema;
@@ -83,6 +85,7 @@ pub enum ProblemType {
     FailedRows,
     SeveralGrounds,
     ImporterDefect,
+    FormatNotSupported,
     RateBeforeSeries,
     RateUnavailable,
     RateStale,
@@ -221,6 +224,11 @@ impl ProblemType {
                 S::INTERNAL_SERVER_ERROR,
                 "The importer lost track of the file's rows",
             ),
+            Self::FormatNotSupported => (
+                "format-not-supported",
+                S::UNPROCESSABLE_ENTITY,
+                "The file's format cannot be imported yet",
+            ),
             Self::RateBeforeSeries => (
                 "rate-before-series",
                 S::UNPROCESSABLE_ENTITY,
@@ -342,6 +350,15 @@ impl From<&FeedError> for ProblemType {
     }
 }
 
+impl From<&ImportFileError> for ProblemType {
+    fn from(error: &ImportFileError) -> Self {
+        match error {
+            ImportFileError::Import(error) => error.into(),
+            ImportFileError::Storage(error) => error.into(),
+        }
+    }
+}
+
 impl From<&IngestError> for ProblemType {
     fn from(error: &IngestError) -> Self {
         match error {
@@ -410,7 +427,14 @@ macro_rules! problem_from {
     )*};
 }
 
-problem_from!(StorageError, ImportError, RateError, FeedError, IngestError);
+problem_from!(
+    StorageError,
+    ImportError,
+    ImportFileError,
+    RateError,
+    FeedError,
+    IngestError
+);
 
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
@@ -612,6 +636,11 @@ mod tests {
             ProblemType::ImporterDefect,
             "urn:fifolio:problem:importer-defect",
             500,
+        ),
+        (
+            ProblemType::FormatNotSupported,
+            "urn:fifolio:problem:format-not-supported",
+            422,
         ),
         (
             ProblemType::RateBeforeSeries,
@@ -943,6 +972,17 @@ mod tests {
                 scale: 6
             })),
             ProblemType::UnscaledValue
+        );
+        assert_eq!(
+            ProblemType::from(&ImportFileError::Import(refused(vec![failed()]))),
+            ProblemType::FailedRows
+        );
+        assert_eq!(
+            ProblemType::from(&ImportFileError::Storage(StorageError::UnknownAccount {
+                broker: "Trade Republic".into(),
+                id: "DE0001".into(),
+            })),
+            ProblemType::UnknownAccount
         );
     }
 

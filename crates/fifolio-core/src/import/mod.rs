@@ -34,10 +34,10 @@
 //!
 //! # Failures
 //!
-//! A row whose ordering key, account, identity or classification cannot be read is a failed
-//! row, and any failed row refuses the import as a whole [SRV-058] (DEC-074, DEC-087): skipping
-//! it would leave a batch owning part of a file, and without a row's key the file has no total
-//! order, so every row's `order` would depend on which rows were dropped. Every row is still
+//! A row whose ordering key, account, identity, classification or security cannot be read is a
+//! failed row, and any failed row refuses the import as a whole [SRV-058] (DEC-074, DEC-087):
+//! skipping it would leave a batch owning part of a file, and without a row's key the file has no
+//! total order, so every row's `order` would depend on which rows were dropped. Every row is still
 //! tried first, so that the refusal names every failed row and one round of fixes suffices. For
 //! the same reason the year and account guards do not stop at their own refusal: every ground a
 //! file is refused on is reported together [SRV-059] (DEC-088).
@@ -52,7 +52,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::Datelike;
 
-use crate::entities::{Account, ImportCounts, Order, SourceFormat, SourceRecord};
+use crate::entities::{
+    Account, ImportCounts, Order, Security, SecurityType, SourceFormat, SourceRecord,
+};
 use crate::identity::{IdentitySource, identify};
 use crate::manual_entry::{ManualEntry, Supplied};
 use crate::ordering::{FileDirection, RowOrderingKey, assign_orders};
@@ -229,6 +231,7 @@ pub struct Import {
     stored: Vec<StoredRecord>,
     counts: ImportCounts,
     unrecognized: BTreeMap<String, u32>,
+    securities: Vec<Security>,
 }
 
 impl Import {
@@ -264,6 +267,15 @@ impl Import {
     #[must_use]
     pub fn unrecognized_types(&self) -> &BTreeMap<String, u32> {
         &self.unrecognized
+    }
+
+    /// The securities the stored rows name, one per ISIN, in the order the file first names
+    /// them, each auto-created and flagged for review [SRV-014], [DOM-006], [DOM-126]. Which of
+    /// them are unknown is storage's to say; a row that is not stored names none here
+    /// (DEC-110, provisional).
+    #[must_use]
+    pub fn securities(&self) -> &[Security] {
+        &self.securities
     }
 }
 
@@ -316,6 +328,20 @@ pub trait Importer {
         Ok(None)
     }
 
+    /// The security `row` names, auto-created from the row and flagged for review, or `None`
+    /// when it names none [SRV-014], [DOM-006].
+    ///
+    /// Asked only of a row that is stored, as its identity is: a row that is not stored leaves
+    /// nothing behind, a security included (DEC-110, provisional). The default names none.
+    ///
+    /// # Errors
+    ///
+    /// When the row names a security that cannot be read, which makes it a failed row
+    /// [SRV-058].
+    fn security(&self, _row: &SourceRow) -> Result<Option<Security>, RowError> {
+        Ok(None)
+    }
+
     /// What each row of the file is [DOM-043], one answer per row in the order given.
     ///
     /// It takes the whole file because a classification can depend on a row's neighbours: a
@@ -331,8 +357,8 @@ pub trait Importer {
 /// [`ImportError`] when the file cannot be read, or [`ImportError::Refused`] naming every
 /// ground that applies [SRV-059]: its trade dates span more than one year [IMP-001]; it names
 /// an account other than `account`, or more than one [IMP-003]; any row's ordering key,
-/// account, identity or classification cannot be read, in which case every such row is named
-/// [SRV-058].
+/// account, identity, classification or security cannot be read, in which case every such row is
+/// named [SRV-058].
 pub fn import(
     importer: &dyn Importer,
     account: &Account,
@@ -393,9 +419,25 @@ pub fn import(
         });
     }
 
+    // The type each stored row states, read apart from its other values so that a row failing
+    // for another reason still sets its ISIN's type for the rows after it (DEC-110).
+    let stated: Vec<Option<(Isin, SecurityType)>> = rows
+        .iter()
+        .zip(&classifications)
+        .map(|(row, classification)| match classification {
+            Ok(RowClassification::DerivedAutomatically | RowClassification::Pending) => importer
+                .security(row)
+                .ok()
+                .flatten()
+                .map(|security| (security.isin().clone(), security.security_type())),
+            _ => None,
+        })
+        .collect();
+
     // A row is still classified and identified when its key is unreadable, but it is named once,
     // for the first value that failed in reading order: its key, its account, its
-    // classification, then its identity, which is only asked of a row that is stored.
+    // classification, then its identity and its security, which are only asked of a row that is
+    // stored.
     let outcomes: Vec<Result<(RowOrderingKey, Outcome), RowError>> = rows
         .iter()
         .zip(keys)
@@ -409,16 +451,15 @@ pub fn import(
                 RowClassification::NonPosition(NonPositionReason::UnrecognizedType(name)) => {
                     Ok(Outcome::NonPosition(Some(name)))
                 }
-                RowClassification::DerivedAutomatically => importer
-                    .identity(row)
-                    .map(|identity| Outcome::Store(StoredAs::DerivedAutomatically, identity)),
-                RowClassification::Pending => importer
-                    .identity(row)
-                    .map(|identity| Outcome::Store(StoredAs::Pending, identity)),
+                RowClassification::DerivedAutomatically => {
+                    stored(importer, row, StoredAs::DerivedAutomatically)
+                }
+                RowClassification::Pending => stored(importer, row, StoredAs::Pending),
             });
             key.and_then(|key| named.and_then(|_| outcome.map(|outcome| (key, outcome))))
         })
         .collect();
+    let outcomes = refuse_mixed_security_types(outcomes, stated);
 
     let failures: Vec<RowFailure> = outcomes
         .iter()
@@ -455,6 +496,7 @@ pub fn import(
     let mut stored = Vec::new();
     let mut counts = ImportCounts::default();
     let mut unrecognized = BTreeMap::new();
+    let mut securities: Vec<Security> = Vec::new();
 
     for ((row, order), outcome) in rows.iter().zip(orders).zip(outcomes) {
         match outcome {
@@ -464,7 +506,14 @@ pub fn import(
                     *unrecognized.entry(name).or_insert(0) += 1;
                 }
             }
-            Outcome::Store(stored_as, identity) => {
+            Outcome::Store(stored_as, identity, security) => {
+                // The first row naming an ISIN supplies the security; a later one naming it again
+                // under another name adds nothing, the ISIN being the key [DOM-071].
+                if let Some(security) = security
+                    && !securities.iter().any(|seen| seen.isin() == security.isin())
+                {
+                    securities.push(security);
+                }
                 stored.push(StoredRecord {
                     record: record(account, order, row, &identity),
                     stored_as,
@@ -482,7 +531,57 @@ pub fn import(
         stored,
         counts,
         unrecognized,
+        securities,
     })
+}
+
+/// What a stored row came to: its identity and the security it names.
+fn stored(
+    importer: &dyn Importer,
+    row: &SourceRow,
+    stored_as: StoredAs,
+) -> Result<Outcome, RowError> {
+    let identity = importer.identity(row)?;
+    let security = importer.security(row)?;
+    Ok(Outcome::Store(stored_as, identity, security))
+}
+
+/// Fails every row that states a security's ISIN with another type than an earlier row did.
+///
+/// One instrument cannot be two types, the type decides the quotation, and keeping either would
+/// book a cost basis that may be out by a factor of a hundred. This is the rule the Saxo reader
+/// already applies (`SaxoError::MixedSecurityType`), taken as a failed row here so that it is
+/// named with every other [SRV-058] (DEC-110, provisional). The first row stating an ISIN sets
+/// its type even when that row has failed for another reason, which keeps its own failure: a row
+/// is named once.
+fn refuse_mixed_security_types(
+    outcomes: Vec<Result<(RowOrderingKey, Outcome), RowError>>,
+    stated: Vec<Option<(Isin, SecurityType)>>,
+) -> Vec<Result<(RowOrderingKey, Outcome), RowError>> {
+    let mut first: BTreeMap<Isin, SecurityType> = BTreeMap::new();
+    outcomes
+        .into_iter()
+        .zip(stated)
+        .map(|(outcome, stated)| {
+            let Some((isin, security_type)) = stated else {
+                return outcome;
+            };
+            match first.get(&isin) {
+                Some(&earlier) if earlier != security_type => outcome.and_then(|_| {
+                    Err(RowError::new(format!(
+                        "the security {} is stated as {earlier:?} on an earlier row and as \
+                         {security_type:?} on this one",
+                        isin.as_str(),
+                    )))
+                }),
+                Some(_) => outcome,
+                None => {
+                    first.insert(isin, security_type);
+                    outcome
+                }
+            }
+        })
+        .collect()
 }
 
 /// What one row came to, once its identity was needed.
@@ -492,7 +591,7 @@ pub fn import(
 /// An unrecognized type's name is, because the import reports it [SRV-049].
 enum Outcome {
     NonPosition(Option<String>),
-    Store(StoredAs, RowIdentity),
+    Store(StoredAs, RowIdentity, Option<Security>),
 }
 
 fn record(
@@ -659,6 +758,26 @@ mod tests {
                     other => Err(RowError::new(format!("unknown kind {other:?}"))),
                 })
                 .collect()
+        }
+
+        /// A row names a security when it carries an `isin`, of the type its `stype` states;
+        /// the sample files without those columns name none.
+        fn security(&self, row: &SourceRow) -> Result<Option<Security>, RowError> {
+            let isin = row.field("isin").unwrap_or_default();
+            if isin.is_empty() {
+                return Ok(None);
+            }
+            let security_type = match row.field("stype") {
+                Some("stock") => SecurityType::Stock,
+                Some("bond") => SecurityType::Bond,
+                other => return Err(RowError::new(format!("unknown type {other:?}"))),
+            };
+            Ok(Some(Security::auto_created(
+                Isin::new(isin),
+                row.field("name").unwrap_or_default(),
+                security_type,
+                crate::quotation::quotation_for(security_type),
+            )))
         }
     }
 
@@ -1169,5 +1288,151 @@ mod tests {
             ]
         );
         assert!(entry(&[]).answers().is_empty());
+    }
+
+    /// The securities the stored rows name are collected once per ISIN, the first row naming
+    /// one supplying its name; a pending row supplies one as a derived row does, and a row
+    /// that is not stored names none (DEC-110, provisional) [SRV-014], [DOM-071].
+    #[test]
+    fn the_stored_rows_securities_are_collected_once_per_isin() {
+        let content = "id,date,kind,isin,stype,name\n\
+                       a,2024-01-02,buy,XF0000000001,stock,First name\n\
+                       b,2024-01-03,cash dividend,XF0000000003,stock,Dividend payer\n\
+                       c,2024-01-04,split,XF0000000001,stock,Second name\n\
+                       d,2024-01-05,buy,XF0000000002,bond,A bond\n\
+                       e,2024-01-06,buy,,,\n\
+                       f,2024-01-07,split,XF0000000004,stock,Only pending\n";
+
+        let import = run(content);
+
+        let named: Vec<(&str, &str, SecurityType)> = import
+            .securities()
+            .iter()
+            .map(|security| {
+                assert!(security.is_auto_created());
+                assert!(security.needs_review());
+                (
+                    security.isin().as_str(),
+                    security.name(),
+                    security.security_type(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("XF0000000001", "First name", SecurityType::Stock),
+                ("XF0000000002", "A bond", SecurityType::Bond),
+                ("XF0000000004", "Only pending", SecurityType::Stock),
+            ]
+        );
+    }
+
+    /// A stored row whose security cannot be read is a failed row; a row that is not stored is
+    /// never asked for its security, so the same cells on it refuse nothing [SRV-058]
+    /// (DEC-110, provisional).
+    #[test]
+    fn an_unreadable_security_on_a_stored_row_is_a_failed_row() {
+        let content = "id,date,kind,isin,stype,name\n\
+                       a,2024-01-02,buy,XF0000000001,warrant,A warrant\n\
+                       b,2024-01-03,cash dividend,XF0000000003,warrant,A warrant\n";
+
+        let error = import(&FakeImporter::new(), &account(), content.as_bytes())
+            .expect_err("the buy's security cannot be read");
+
+        assert_eq!(
+            error,
+            ImportError::Refused {
+                grounds: vec![Ground::FailedRows {
+                    failures: vec![RowFailure {
+                        position: 0,
+                        error: RowError::new("unknown type Some(\"warrant\")"),
+                    }],
+                }],
+            }
+        );
+    }
+
+    /// An ISIN stated with two types fails every later row that disagrees with the first, named
+    /// with every other failed row, since keeping either type could misquote the security by a
+    /// factor of a hundred [SRV-058] (DEC-110, provisional).
+    #[test]
+    fn one_isin_stated_with_two_types_fails_the_disagreeing_row() {
+        let content = "id,date,kind,isin,stype,name\n\
+                       a,2024-01-02,buy,XF0000000001,stock,An instrument\n\
+                       b,2024-01-03,buy,XF0000000001,bond,An instrument\n\
+                       c,2024-01-04,split,XF0000000001,stock,An instrument\n\
+                       d,2024-01-05,split,XF0000000001,bond,An instrument\n";
+
+        let error = import(&FakeImporter::new(), &account(), content.as_bytes())
+            .expect_err("one ISIN cannot be two types");
+
+        let disagrees = |position| RowFailure {
+            position,
+            error: RowError::new(
+                "the security XF0000000001 is stated as Stock on an earlier row and as Bond on \
+                 this one",
+            ),
+        };
+        assert_eq!(
+            error,
+            ImportError::Refused {
+                grounds: vec![Ground::FailedRows {
+                    failures: vec![disagrees(1), disagrees(3)],
+                }],
+            }
+        );
+    }
+
+    /// A row that fails for another reason still states its security's type, so the first row
+    /// naming an ISIN sets it even then, and one round of fixes clears every disagreement
+    /// [SRV-058] (DEC-110, provisional), (DEC-074), (DEC-087).
+    #[test]
+    fn a_failed_row_still_sets_the_security_type() {
+        let content = "id,date,kind,isin,stype,name\n\
+                       ,2024-01-02,buy,XF0000000001,stock,An instrument\n\
+                       b,2024-01-03,buy,XF0000000001,bond,An instrument\n\
+                       c,2024-01-04,buy,XF0000000001,stock,An instrument\n";
+
+        let error = import(&FakeImporter::new(), &account(), content.as_bytes())
+            .expect_err("the first row has no id and the second disagrees with it");
+
+        assert_eq!(
+            error,
+            ImportError::Refused {
+                grounds: vec![Ground::FailedRows {
+                    failures: vec![
+                        RowFailure {
+                            position: 0,
+                            error: RowError::new("no id"),
+                        },
+                        RowFailure {
+                            position: 1,
+                            error: RowError::new(
+                                "the security XF0000000001 is stated as Stock on an earlier row \
+                                 and as Bond on this one"
+                            ),
+                        },
+                    ],
+                }],
+            }
+        );
+    }
+
+    /// Only stored rows state a security's type, so a row that is not stored may state another
+    /// one for the same ISIN without failing (DEC-110) [SRV-014], [SRV-058].
+    #[test]
+    fn a_row_not_stored_does_not_state_a_security_type() {
+        let content = "id,date,kind,isin,stype,name\n\
+                       a,2024-01-02,buy,XF0000000001,stock,An instrument\n\
+                       b,2024-01-03,cash dividend,XF0000000001,bond,An instrument\n";
+
+        let import = import(&FakeImporter::new(), &account(), content.as_bytes())
+            .expect("the cash dividend states no type");
+
+        let [security] = import.securities() else {
+            panic!("one security, not {:?}", import.securities());
+        };
+        assert_eq!(security.security_type(), SecurityType::Stock);
     }
 }

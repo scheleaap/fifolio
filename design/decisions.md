@@ -846,3 +846,24 @@ shows as quantity consumed (CLI-041). Alternative not taken: rescaling it throug
 today's units, which lines it up with the row's remaining quantity but shows a quantity no sale ever
 stated, and makes a line change when a split is added after it. [DEC-109, DOM-078, DOM-103,
 DOM-118]
+
+**DEC-110 — Provisional: an import auto-creates the securities its stored rows name, and one ISIN
+stated with two types is a failed row.** SRV-014 creates "unknown ISINs" without saying which rows
+supply them. A security is read, like a row's identity, only from a row that is stored, and one not
+yet stored is created auto-created and needing review (DOM-006, DOM-126); a non-position row
+leaves nothing behind (SRV-016), a security included. A security already stored is left exactly as
+it is. The first stored row naming an ISIN supplies the name; a later row stating that ISIN with
+another type fails, and is named with every other failed row (SRV-058), which is the rule the Saxo
+reader already applies to its own files, since the type decides the quotation (DOM-036). Alternative not taken:
+creating a security for every row naming one, a cash dividend included, which reads rows the import
+otherwise never reads for anything but their classification and leaves securities needing review
+that no record refers to. [DEC-110, SRV-014, SRV-016, SRV-058, DOM-006, DOM-126]
+
+**DEC-111 — Provisional: posting a file again writes a batch that owns nothing.** FIF-035's
+acceptance says re-posting the same file changes nothing; SRV-019 says every import creates a
+batch, and SRV-052 moves ownership to the newer batch on re-import. A file posted again writes no
+source record and no security and changes none that is stored (SRV-015, DOM-022), but does create
+its batch, recording the file's counts; until SRV-052 is built (FIF-071) that batch owns nothing,
+and deleting it removes nothing. Alternative not taken: creating no batch when an import adds no
+record, which reads "changes nothing" literally but contradicts SRV-019 and leaves SRV-052 no newer
+batch to move ownership to. [DEC-111, SRV-015, SRV-019, SRV-052, DOM-022]

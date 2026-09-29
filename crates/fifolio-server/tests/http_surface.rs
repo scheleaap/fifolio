@@ -31,7 +31,7 @@ use tower::ServiceExt;
 /// The server as a request sees it, over a database of its own.
 struct Harness {
     /// Held so the directory outlives the router; dropping it removes the database.
-    _dir: TempDb,
+    dir: TempDb,
     database: Database,
     router: Router,
 }
@@ -46,7 +46,7 @@ impl Harness {
             .expect("open the temporary database");
         let router = fifolio_server::router(database.clone());
         Self {
-            _dir: dir,
+            dir,
             database,
             router,
         }
@@ -102,6 +102,30 @@ impl Harness {
                 .expect("build the request"),
         )
         .await
+    }
+
+    /// Posts `file` to `/imports` with `query` as its parameters, the way a client sends a file.
+    async fn post_file(&self, query: &str, file: Vec<u8>) -> Reply {
+        self.send(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/imports?{query}"))
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .body(Body::from(file))
+                .expect("build the request"),
+        )
+        .await
+    }
+
+    /// How many rows `table` holds; the names are this file's own constants, never input.
+    async fn count(&self, table: &'static str) -> i64 {
+        let pool = sqlx::SqlitePool::connect(&self.dir.url())
+            .await
+            .expect("connect");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from {table}")))
+            .fetch_one(&pool)
+            .await
+            .expect("count")
     }
 
     /// One batch of `account` owning one source record whose parsed fields are `fields`, the
@@ -686,6 +710,7 @@ async fn the_endpoints_are_documented() {
         "/securities",
         "/securities/{isin}",
         "/securities/{isin}/reviewed",
+        "/imports",
     ] {
         assert!(spec["paths"].get(path).is_some(), "{path} is undocumented");
     }
@@ -693,4 +718,284 @@ async fn the_endpoints_are_documented() {
         spec["components"]["schemas"]["SecurityTypeBody"]["enum"],
         json!(["stock", "bond", "etf", "fund", "derivative", "other"])
     );
+}
+
+/// The query naming the Trade Republic account every import case targets.
+const TRADE_REPUBLIC: &str = "broker=Trade%20Republic&account=DE0001";
+
+async fn with_trade_republic_account() -> Harness {
+    let harness = Harness::new().await;
+    let created = harness
+        .json(
+            Method::POST,
+            "/accounts",
+            &json!({"broker": "Trade Republic", "id": "DE0001"}),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    harness
+}
+
+fn trade_republic_fixture(name: &str) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/trade-republic")
+        .join(name);
+    std::fs::read(&path).unwrap_or_else(|_| panic!("read the fixture {}", path.display()))
+}
+
+/// A Trade Republic export of the given rows, each naming only the columns it populates.
+fn trade_republic_export(rows: &[&[(&str, &str)]]) -> Vec<u8> {
+    use fifolio_core::import::trade_republic::HEADERS;
+    let quoted = |values: Vec<&str>| format!("\"{}\"\n", values.join("\",\""));
+    let body: String = rows
+        .iter()
+        .map(|row| {
+            quoted(
+                HEADERS
+                    .iter()
+                    .map(|header| {
+                        row.iter()
+                            .find(|(name, _)| name == header)
+                            .map_or("", |(_, value)| *value)
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    format!("{}{body}", quoted(HEADERS.to_vec())).into_bytes()
+}
+
+/// A Trade Republic cash row of `kind` naming no security.
+fn cash_row<'a>(kind: &'a str, transaction_id: &'a str) -> Vec<(&'a str, &'a str)> {
+    vec![
+        ("datetime", "2024-05-03T06:01:14.891Z"),
+        ("date", "2024-05-03"),
+        ("category", "CASH"),
+        ("type", kind),
+        ("amount", "12.50"),
+        ("currency", "EUR"),
+        ("transaction_id", transaction_id),
+    ]
+}
+
+/// A Trade Republic file posted with its account, format and name imports end to end: its buys
+/// are stored in a batch of their own, its cash rows are counted and not stored, and the ISINs it
+/// names are created flagged auto-created and needing review [SRV-012], [SRV-013], [SRV-014],
+/// [SRV-016], [TST-005].
+#[tokio::test]
+async fn a_trade_republic_file_imports_end_to_end() {
+    let harness = with_trade_republic_account().await;
+
+    let reply = harness
+        .post_file(
+            &format!(
+                "{TRADE_REPUBLIC}&format=trade_republic_de_csv\
+                 &filename=transactions_2022-01-01_2022-12-31.csv"
+            ),
+            trade_republic_fixture("transactions_2022-01-01_2022-12-31.csv"),
+        )
+        .await;
+
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    let batch = reply.body["batch"].as_i64().expect("the batch id");
+    assert_eq!(reply.body["unrecognized_types"], json!([]));
+    let stored = harness
+        .database
+        .import_batches()
+        .find(fifolio_core::storage::BatchId::new(batch))
+        .await
+        .expect("the lookup")
+        .expect("the batch is stored");
+    assert_eq!(stored.filename(), "transactions_2022-01-01_2022-12-31.csv");
+    assert_eq!(stored.format(), SourceFormat::TradeRepublicDeCsv);
+    // The fixture's two buys, and none of its five cash rows.
+    assert_eq!(harness.count("source_record").await, 2);
+
+    let securities = harness.request(Method::GET, "/securities").await;
+    let flags: Vec<(&str, &str, bool, bool)> = securities
+        .body
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|security| {
+            (
+                security["isin"].as_str().expect("an ISIN"),
+                security["security_type"].as_str().expect("a type"),
+                security["auto_created"] == true,
+                security["needs_review"] == true,
+            )
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            ("XF0000000079", "fund", true, true),
+            ("XF0000000152", "stock", true, true),
+        ]
+    );
+}
+
+/// Posting the same file again succeeds and changes no stored record or security
+/// (DEC-111, provisional) [SRV-015], [TST-005].
+#[tokio::test]
+async fn posting_the_same_file_again_changes_nothing() {
+    let harness = with_trade_republic_account().await;
+    let query = format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv&filename=a.csv");
+    let file = trade_republic_fixture("transactions_2023-01-01_2023-12-31.csv");
+    let first = harness.post_file(&query, file.clone()).await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.body);
+    let records = harness.count("source_record").await;
+    let securities = harness.request(Method::GET, "/securities").await.body;
+
+    let second = harness.post_file(&query, file).await;
+
+    assert_eq!(second.status, StatusCode::CREATED, "{}", second.body);
+    assert_eq!(harness.count("source_record").await, records);
+    assert_eq!(
+        harness.request(Method::GET, "/securities").await.body,
+        securities
+    );
+}
+
+/// The response names every unrecognized row type the file carried, with how many rows carried
+/// it, ordered by type; none of those rows is stored [SRV-049], [SRV-016], [IMP-TR-014].
+#[tokio::test]
+async fn the_response_names_every_unrecognized_row_type_with_its_count() {
+    let harness = with_trade_republic_account().await;
+    let file = trade_republic_export(&[
+        // SAVEBACK comes first in the file, so the reply's order is by type and not by first
+        // appearance.
+        &cash_row("SAVEBACK", "a"),
+        &cash_row("CARD_TRANSACTION", "b"),
+        &cash_row("CARD_TRANSACTION", "c"),
+        &cash_row("INTEREST_PAYMENT", "d"),
+    ]);
+
+    let reply = harness
+        .post_file(
+            &format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv&filename=a.csv"),
+            file,
+        )
+        .await;
+
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    assert_eq!(
+        reply.body["unrecognized_types"],
+        json!([
+            {"row_type": "CASH/CARD_TRANSACTION", "rows": 2},
+            {"row_type": "CASH/SAVEBACK", "rows": 1},
+        ])
+    );
+    assert_eq!(harness.count("source_record").await, 0);
+}
+
+/// A file with failed rows is refused whole as a problem whose detail names every failed row,
+/// and nothing is stored [SRV-058], [ARC-020], [TST-005].
+#[tokio::test]
+async fn a_file_with_failed_rows_is_refused_naming_every_one() {
+    let harness = with_trade_republic_account().await;
+    // BOND maps to no security type (DEC-077), so each bond buy is a failed row.
+    let bond = |isin, transaction_id| {
+        vec![
+            ("datetime", "2024-05-02T06:01:14.891Z"),
+            ("date", "2024-05-02"),
+            ("category", "TRADING"),
+            ("type", "BUY"),
+            ("asset_class", "BOND"),
+            ("name", "A bond"),
+            ("symbol", isin),
+            ("shares", "35.0000000000"),
+            ("price", "75.090000"),
+            ("amount", "-2628.150000"),
+            ("fee", "-1.00"),
+            ("currency", "EUR"),
+            ("transaction_id", transaction_id),
+        ]
+    };
+    let file = trade_republic_export(&[
+        &bond("XF0000000301", "x"),
+        &cash_row("CUSTOMER_INBOUND", "a"),
+        &bond("XF0000000302", "y"),
+    ]);
+
+    let reply = harness
+        .post_file(
+            &format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv&filename=a.csv"),
+            file,
+        )
+        .await;
+
+    let detail = reply
+        .assert_problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:fifolio:problem:failed-rows",
+        )
+        .expect("a detail");
+    assert!(detail.starts_with("2 rows could not be read"), "{detail}");
+    for isin in ["XF0000000301", "XF0000000302"] {
+        assert!(detail.contains(isin), "{detail}");
+    }
+    for table in ["import_batch", "source_record", "security"] {
+        assert_eq!(harness.count(table).await, 0, "{table}");
+    }
+}
+
+/// A Saxo file is refused as a format not supported yet, naming the item that makes it
+/// importable, until the Saxo importer can classify its rows [SRV-013], [ARC-020]. This is an
+/// interim refusal: SRV-013's Saxo half is deferred to FIF-023 and is not covered here.
+#[tokio::test]
+async fn a_saxo_file_is_refused_as_not_supported_yet() {
+    let harness = Harness::new().await;
+    harness.json(Method::POST, "/accounts", &saxo()).await;
+
+    let reply = harness
+        .post_file(
+            "broker=Saxo&account=69900%2F1000000&format=saxo_nl_xlsx&filename=a.xlsx",
+            b"an XLSX file".to_vec(),
+        )
+        .await;
+
+    let detail = reply
+        .assert_problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:fifolio:problem:format-not-supported",
+        )
+        .expect("a detail");
+    assert!(detail.contains("FIF-023"), "{detail}");
+    assert_eq!(harness.count("import_batch").await, 0);
+}
+
+/// An import into an account that is not stored is a 404; one missing a parameter, or naming a
+/// format that does not exist, is refused as a problem too: the account and format are never
+/// inferred [SRV-012], [ARC-020].
+#[tokio::test]
+async fn an_unknown_account_or_an_incomplete_request_is_refused() {
+    let harness = with_trade_republic_account().await;
+    let file = trade_republic_fixture("transactions_2022-01-01_2022-12-31.csv");
+
+    harness
+        .post_file(
+            "broker=Trade%20Republic&account=nobody&format=trade_republic_de_csv&filename=a.csv",
+            file.clone(),
+        )
+        .await
+        .assert_problem(StatusCode::NOT_FOUND, "urn:fifolio:problem:unknown-account");
+    for incomplete in [
+        format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv"),
+        "broker=Trade%20Republic&format=trade_republic_de_csv&filename=a.csv".to_owned(),
+        "account=DE0001&format=trade_republic_de_csv&filename=a.csv".to_owned(),
+        format!("{TRADE_REPUBLIC}&filename=a.csv"),
+    ] {
+        harness
+            .post_file(&incomplete, file.clone())
+            .await
+            .assert_problem(StatusCode::BAD_REQUEST, ABOUT_BLANK);
+    }
+    harness
+        .post_file(
+            &format!("{TRADE_REPUBLIC}&format=comdirect_csv&filename=a.csv"),
+            file,
+        )
+        .await
+        .assert_problem(StatusCode::BAD_REQUEST, ABOUT_BLANK);
 }
