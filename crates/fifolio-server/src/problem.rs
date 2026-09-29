@@ -1002,6 +1002,55 @@ mod tests {
         );
     }
 
+    /// An account refusal, as the import endpoint's `import_file` returns it, leaves as a 422
+    /// problem+json naming both accounts; combined with another ground it is one
+    /// `several-grounds` problem naming each (DEC-113, provisional) [SRV-056], [SRV-059],
+    /// [ARC-020], [ARC-021]. No file the endpoint accepts states an account yet, so this is as
+    /// near the wire as the account guard can be reached (DEC-114, provisional).
+    #[tokio::test]
+    async fn an_account_refusal_names_both_accounts_on_the_wire() {
+        let cases = [
+            (
+                refused(vec![mismatch()]),
+                serde_json::json!({
+                    "type": "urn:fifolio:problem:account-mismatch",
+                    "title": "The file names a different account than the target",
+                    "status": 422,
+                    "detail": "the file names account 40100/9000001, but the import targets \
+                               account 40100/9000002",
+                }),
+            ),
+            (
+                refused(vec![accounts()]),
+                serde_json::json!({
+                    "type": "urn:fifolio:problem:multiple-accounts",
+                    "title": "The file carries rows from more than one account",
+                    "status": 422,
+                    "detail": "the file carries rows from more than one account: \
+                               40100/9000001, 40100/9000002",
+                }),
+            ),
+            (
+                refused(vec![years(), mismatch(), failed()]),
+                serde_json::json!({
+                    "type": "urn:fifolio:problem:several-grounds",
+                    "title": "The file was refused on more than one ground",
+                    "status": 422,
+                    "detail": "the file carries trade dates in more than one calendar year: \
+                               2023, 2024. the file names account 40100/9000001, but the import \
+                               targets account 40100/9000002. 1 rows could not be read: row 1: \
+                               unknown kind",
+                }),
+            ),
+        ];
+        for (error, expected) in cases {
+            let response = Problem::from(ImportFileError::Import(error)).into_response();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], CONTENT_TYPE);
+            assert_eq!(json_body(response).await, expected);
+        }
+    }
+
     /// `about:blank` is titled with the status phrase, and an absent detail is omitted rather
     /// than sent as null [ARC-020].
     #[test]

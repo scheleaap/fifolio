@@ -1080,6 +1080,44 @@ async fn a_multi_year_file_with_a_failed_row_is_refused_naming_every_ground() {
     }
 }
 
+/// A Trade Republic file states no account, so it is not checked: the same file imports into
+/// two accounts of different ids, and each keeps records of its own [SRV-056], [TST-005]
+/// (DEC-075). The refusal of a file naming another account is not reachable here yet: the only
+/// format stating one is Saxo, refused as not supported yet (DEC-114, provisional).
+#[tokio::test]
+async fn a_trade_republic_file_is_not_checked_against_the_account() {
+    let harness = with_trade_republic_account().await;
+    let other = harness
+        .json(
+            Method::POST,
+            "/accounts",
+            &json!({"broker": "Trade Republic", "id": "an unrelated id"}),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::CREATED, "{}", other.body);
+    let file = trade_republic_fixture("transactions_2022-01-01_2022-12-31.csv");
+
+    for account in ["DE0001", "an%20unrelated%20id"] {
+        let reply = harness
+            .post_file(
+                &format!(
+                    "broker=Trade%20Republic&account={account}\
+                     &format=trade_republic_de_csv&filename=a.csv"
+                ),
+                file.clone(),
+            )
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::CREATED,
+            "{account}: {}",
+            reply.body
+        );
+    }
+    // The fixture's two buys, once per account: identity is scoped to the account [DOM-023].
+    assert_eq!(harness.count("source_record").await, 4);
+}
+
 /// A Saxo file is refused as a format not supported yet, naming the item that makes it
 /// importable, until the Saxo importer can classify its rows [SRV-013], [ARC-020]. This is an
 /// interim refusal: SRV-013's Saxo half is deferred to FIF-023 and is not covered here.

@@ -886,3 +886,17 @@ failed row among them. Alternative not taken: an RFC 9457 extension member listi
 own type, which would let a client branch on the grounds without reading the detail, but adds a
 response member no requirement asks for, and can be added later without breaking a caller.
 [DEC-113, SRV-051, SRV-059, ARC-020, ARC-021]
+
+**DEC-114 — Provisional: the account refusal is tested at the endpoint once a format stating an
+account can reach it.** SRV-056 has the import endpoint refuse a file whose account differs from
+the target, or which names several, as problem+json. The core guard does this (IMP-003, FIF-089),
+and its grounds map to `account-mismatch` and `multiple-accounts` (ARC-021). But the only format
+stating an account is Saxo, and the endpoint refuses a Saxo file as a format not supported yet
+until its rows can be classified (FIF-023), so no request can reach the guard today. FIF-090
+therefore tests over HTTP what is reachable, that a Trade Republic file is not checked, and pins
+the problem+json the endpoint's error path makes of each account ground, alone and with others
+(DEC-113), one step short of the wire. The HTTP case for a Saxo file naming another account, or
+several, is owed by the item that first serves a Saxo import at the endpoint. Alternatives not
+taken: lifting the Saxo refusal, which would store rows unclassified, the guess the interim
+refusal exists to prevent; and giving the router an importer seam for tests, production
+abstraction no requirement asks for. [DEC-114, SRV-056, SRV-013, IMP-003, ARC-021]

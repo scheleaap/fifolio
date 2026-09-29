@@ -1201,13 +1201,15 @@ Revision 79: the Ground-to-problem-type mapping (`multiple-calendar-years`) alre
 Done in revision 79: posting a file with trade dates in two calendar years to the import endpoint is refused with a `multiple-calendar-years` problem+json; the same file with a failed row among its rows is refused with one `several-grounds` problem whose detail names the years and the failed row (SRV-051, SRV-059, provisional DEC-113). Tests in `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-090 Account-mismatch refusal at the endpoint
-Status: todo
+Status: done
 Requirements: SRV-056
 Depends on: FIF-070, FIF-089
 Acceptance: where the format states an account id it is checked against the target account, and a mismatch, or a file carrying rows from more than one account, refuses the import naming both, as problem+json. A Trade Republic file, which states none, is not checked.
 Notes: Split out of FIF-070 in revision 8.
 Unblocked in revision 47 with FIF-089 (DEC-075). It still waits on FIF-070 and FIF-089.
 Revision 58: an account refusal combined with other grounds (SRV-059, FIF-103) reaches the caller with every ground; FIF-103 arrives through FIF-070.
+Revision 80: named next to build. Both dependencies are done. The Ground-to-problem-type mapping (`account-mismatch`, `multiple-accounts`) exists in `fifolio-server/src/problem.rs` with unit tests; what remains is HTTP tests in `http_surface.rs`. A combined refusal is one `several-grounds` problem naming every ground (provisional DEC-113, as in FIF-070).
+Done in revision 80: a Trade Republic file, which states no account, is not checked: it imports into two accounts of different ids over HTTP. The account refusal is pinned one step short of the wire: the endpoint's error path renders `account-mismatch` and `multiple-accounts` as 422 problem+json naming both accounts, and a combined refusal as one `several-grounds` problem (SRV-056, SRV-059, DEC-113). No served format states an account yet (Saxo is refused as not supported until FIF-023), so the HTTP case for a Saxo file naming another account is owed by the item that first serves a Saxo import (provisional DEC-114). Tests in `crates/fifolio-server/src/problem.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-036 Import batch endpoints
 Status: todo
@@ -1383,6 +1385,26 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 80.** A status reconciliation after an interrupted session. `design/` changed in
+`c776fa4` only by adding the provisional DEC-113 (a refusal on several grounds is one
+`several-grounds` problem whose detail names every ground), listed under "Provisionally answered"
+against FIF-070; no requirement id added or removed. `open-questions.md` names the same **7** ids on
+`Blocks:` lines, and the 5 items carrying one are exactly the 5 `blocked`.
+
+* **Completed: FIF-070** (`c776fa4`). Its item text already recorded this; only the history lagged.
+  DEC-113 invalidates no completed work: FIF-103's core refusal already carries every ground, and
+  DEC-113 only fixes how the server renders them.
+* No item added, split, retired, blocked or unblocked. 101 items: **60 `done`, 36 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-090, 036, 071, 086, 037, 072, 038, 087, 073, 039, 040, 041 remain
+  `todo`; none carries a blocked requirement, so each waits only on dependencies inside that list.
+* **Next to build: FIF-090.** Its dependencies FIF-070 and FIF-089 are `done`; the
+  `account-mismatch` and `multiple-accounts` problem types already exist in
+  `fifolio-server/src/problem.rs`, so what remains is HTTP tests in `http_surface.rs` (mismatch,
+  several accounts, combined with another ground per DEC-113, and a Trade Republic file unchecked).
+  Also ready in scope: FIF-036, FIF-037, FIF-041.
 
 **Revision 79.** A status reconciliation after an interrupted session. `design/` changed in
 `c3447f7` only by adding the provisional DEC-112 (a batch keeps its three row counts; the
@@ -2773,6 +2795,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 80: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `c776fa4`. One hundred and one items: 60 `done`, 36 `todo`, 5 `blocked`.
 
 Revision 78: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `8f89f39`. One hundred and one items: 58 `done`, 38 `todo`, 5 `blocked`.

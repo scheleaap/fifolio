@@ -98,3 +98,4 @@ built on it.
 * **FIF-035** (whether posting a file again creates a batch) → DEC-111
 * **FIF-085** (whether a batch stores the auto-created count too) → DEC-112
 * **FIF-070** (how a refusal on several grounds carries each ground to the caller) → DEC-113
+* **FIF-090** (testing the account refusal while no served format states an account) → DEC-114
