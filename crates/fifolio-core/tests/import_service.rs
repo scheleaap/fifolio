@@ -16,6 +16,7 @@ use fifolio_core::identity::{IdentitySource, identify};
 use fifolio_core::import::trade_republic::{HEADERS, TradeRepublic};
 use fifolio_core::import::{Ground, ImportError};
 use fifolio_core::import_service::{ImportFileError, Imported, import_file};
+use fifolio_core::ordering::BatchAge;
 use fifolio_core::storage::{Database, StorageError};
 use fifolio_test_support::TempDb;
 use sqlx::sqlite::SqlitePool;
@@ -105,6 +106,15 @@ impl Fixture {
             .fetch_one(&self.pool)
             .await
             .expect("count")
+    }
+
+    /// How many records `batch` owns.
+    async fn owned_by(&self, batch: i64) -> i64 {
+        sqlx::query_scalar("select count(*) from source_record where batch_id = ?")
+            .bind(batch)
+            .fetch_one(&self.pool)
+            .await
+            .expect("count the owned records")
     }
 
     /// Every stored record's identity, owning batch and first batch, in identity order.
@@ -276,10 +286,11 @@ async fn an_import_leaves_a_stored_security_alone() {
     );
 }
 
-/// Posting a file again changes no stored record or security: no record is added, each keeps
-/// its owner and first supplier, and a security the user corrected and reviewed in between stays
-/// corrected and reviewed. The second import still creates a batch of its own, which owns
-/// nothing (DEC-111, provisional) [SRV-015], [DOM-022], [SRV-019].
+/// Posting a file again changes no stored security and no record but its owner: no record is
+/// added, each moves to the second batch and keeps its first supplier, and a security the user
+/// corrected and reviewed in between stays corrected and reviewed. The second import creates a
+/// batch of its own (DEC-111, provisional), which now owns every record the file states, and the
+/// first owns nothing [SRV-015], [DOM-022], [SRV-019], [SRV-052].
 #[tokio::test]
 async fn posting_a_file_again_changes_no_record_or_security() {
     let f = Fixture::new().await;
@@ -306,13 +317,25 @@ async fn posting_a_file_again_changes_no_record_or_security() {
         .await
         .expect("the second import");
 
-    assert_eq!(f.records().await, records);
     assert!(
         records
             .iter()
             .all(|(_, owner, first_batch)| *owner == first.batch().get()
                 && *first_batch == first.batch().get())
     );
+    assert_eq!(
+        f.records().await,
+        records
+            .iter()
+            .map(|(identity, _, first_batch)| (
+                identity.clone(),
+                second.batch().get(),
+                *first_batch
+            ))
+            .collect::<Vec<_>>(),
+        "every record moves to the second batch and keeps its first supplier"
+    );
+    assert_eq!(f.owned_by(first.batch().get()).await, 0);
     assert_eq!(
         f.database.securities().list().await.expect("the list"),
         securities
@@ -325,8 +348,9 @@ async fn posting_a_file_again_changes_no_record_or_security() {
 
 /// A later export of the same account overlaps the first: under another name, it stores only
 /// the row the first lacked, owned by its own batch, and creates only that row's security. The
-/// rows already stored keep their owner and first supplier, so re-posting is idempotent per
-/// record identity, not per file [SRV-015], [DOM-022], [SRV-014].
+/// rows already stored move to the later batch, their newest supplier, and keep their first
+/// supplier, so re-posting is idempotent per record identity, not per file [SRV-015],
+/// [DOM-022], [SRV-014], [SRV-052].
 #[tokio::test]
 async fn a_later_overlapping_export_stores_only_its_new_rows() {
     let f = Fixture::new().await;
@@ -353,10 +377,82 @@ async fn a_later_overlapping_export_stores_only_its_new_rows() {
             .unwrap_or_else(|| panic!("{transaction_id} is stored"))
     };
     assert_eq!(records.len(), 3);
-    assert_eq!(owner_of("a"), (first.batch().get(), first.batch().get()));
-    assert_eq!(owner_of("b"), (first.batch().get(), first.batch().get()));
+    assert_eq!(owner_of("a"), (second.batch().get(), first.batch().get()));
+    assert_eq!(owner_of("b"), (second.batch().get(), first.batch().get()));
     assert_eq!(owner_of("c"), (second.batch().get(), second.batch().get()));
     assert_eq!(second.created(), [Isin::new("XF0000000999")]);
+}
+
+/// A record belongs to every batch that supplied it and the newest owns it; each import that
+/// states a record again moves it to that import's batch, and a batch every one of whose records
+/// was stated again later owns nothing. The oldest supplier, which the canonical order reads,
+/// never moves [SRV-052], [DOM-111], (DEC-092, provisional).
+///
+/// A year is imported, re-imported, then overlapped by a later export that drops one of its rows
+/// and adds another, so each record ends up with a different set of suppliers.
+#[tokio::test]
+async fn ownership_moves_to_the_newest_supplier_and_the_oldest_stays() {
+    let f = Fixture::new().await;
+    let a = buy("a", "XF0000000152", "2024-05-02T06:01:14.891Z");
+    let b = buy("b", "XF0000000079", "2024-05-03T06:01:14.891Z");
+    let c = buy("c", "XF0000000999", "2024-05-04T06:01:14.891Z");
+    let year = export(&[&a, &b]);
+    let first = f.import_as("2024.csv", &year).await.expect("the year");
+    let second = f.import_as("2024.csv", &year).await.expect("the re-import");
+    let third = f
+        .import_as("later.csv", &export(&[&b, &c]))
+        .await
+        .expect("the later export");
+    let [first, second, third] = [first.batch(), second.batch(), third.batch()];
+
+    let records = f.database.source_records();
+    for (transaction_id, suppliers) in [
+        ("a", vec![first, second]),
+        ("b", vec![first, second, third]),
+        ("c", vec![third]),
+    ] {
+        assert_eq!(
+            records
+                .suppliers(&identity(transaction_id))
+                .await
+                .expect("the suppliers"),
+            suppliers,
+            "{transaction_id} belongs to every batch that supplied it, oldest first"
+        );
+    }
+    let mut expected = vec![
+        (identity("a").as_str().to_owned(), second.get(), first.get()),
+        (identity("b").as_str().to_owned(), third.get(), first.get()),
+        (identity("c").as_str().to_owned(), third.get(), third.get()),
+    ];
+    expected.sort();
+    assert_eq!(
+        f.records().await,
+        expected,
+        "the newest supplier owns each record, and the oldest is still its first"
+    );
+    assert_eq!(
+        f.owned_by(first.get()).await,
+        0,
+        "the replaced year owns nothing"
+    );
+    assert_eq!(
+        f.owned_by(second.get()).await,
+        1,
+        "only the row the later export dropped"
+    );
+    assert_eq!(f.owned_by(third.get()).await, 2);
+    assert_eq!(
+        records
+            .handle(&identity("b"))
+            .await
+            .expect("the handle")
+            .expect("b is stored")
+            .position()
+            .batch_age(),
+        BatchAge::new(first.get()),
+        "the age the canonical order reads is still the first import's"
+    );
 }
 
 /// Idempotence is scoped to the account [DOM-024]: the same file posted into a second account

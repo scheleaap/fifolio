@@ -2454,3 +2454,106 @@ async fn the_migration_fills_the_inherited_opening_of_earlier_emissions() {
     .collect();
     assert_eq!(inherited, vec![(11, Some(2)), (21, None), (31, None)]);
 }
+
+/// A record stored before the supplier relation existed takes its owner as its one supplier,
+/// since no re-import recorded what it supplied (DEC-117, provisional); a record no batch owns
+/// has none. A re-import afterwards adds itself beside that owner and takes the record over
+/// [SRV-052], [TST-004].
+#[tokio::test]
+async fn the_migration_fills_each_records_supplier_from_its_owner() {
+    let db = TempDb::new();
+    let earlier = tempfile::tempdir().expect("a directory for the earlier migrations");
+    let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    for name in [
+        "0001_initial.sql",
+        "0002_fx_rate.sql",
+        "0003_invariants.sql",
+        "0004_no_failed_count.sql",
+        "0005_needs_review.sql",
+        "0006_canonical_order.sql",
+        "0007_split_ratio.sql",
+        "0008_transfer_out_target.sql",
+        "0009_inherited_opening.sql",
+    ] {
+        std::fs::copy(migrations.join(name), earlier.path().join(name)).expect("copy a migration");
+    }
+    let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.path().display()))
+        .await
+        .expect("create the database");
+    sqlx::migrate::Migrator::new(earlier.path())
+        .await
+        .expect("read the earlier migrations")
+        .run(&pool)
+        .await
+        .expect("migrate to the schema before the supplier relation");
+    // Batch 2 is a re-import of batch 1's year, which under that schema owned nothing.
+    for statement in [
+        "insert into account (broker, id) values ('Saxo', '69900/1000000')",
+        "insert into import_batch
+             (id, account_broker, account_id, filename, format, imported_at,
+              derived, pending, non_position)
+         values (1, 'Saxo', '69900/1000000', '2024.xlsx', 'saxo_nl_xlsx',
+                 '2024-05-03T09:00:00Z', 1, 0, 0),
+                (2, 'Saxo', '69900/1000000', '2024.xlsx', 'saxo_nl_xlsx',
+                 '2024-05-04T09:00:00Z', 1, 0, 0),
+                (3, 'Saxo', '69900/1000000', '2024.xlsx', 'saxo_nl_xlsx',
+                 '2024-05-05T09:00:00Z', 1, 0, 0)",
+    ] {
+        query(statement)
+            .execute(&pool)
+            .await
+            .expect("insert under the earlier schema");
+    }
+    query(
+        "insert into source_record (identity, ordering, raw, parsed, batch_id, first_batch_id)
+         values (?, 0, '', '{}', 1, 1), (?, 1, '', '{}', null, 0)",
+    )
+    .bind(cite("owned").as_str())
+    .bind(cite("unowned").as_str())
+    .execute(&pool)
+    .await
+    .expect("write the records under the earlier schema");
+    pool.close().await;
+
+    let database = Database::open(db.path()).await.expect("migrate to current");
+    let records = database.source_records();
+    assert_eq!(
+        records.suppliers(&cite("owned")).await.expect("suppliers"),
+        [BatchId::new(1)],
+        "the owner is the only supplier anything states; the re-import is not guessed"
+    );
+    assert!(
+        records
+            .suppliers(&cite("unowned"))
+            .await
+            .expect("suppliers")
+            .is_empty()
+    );
+
+    let owned = records
+        .find(&cite("owned"))
+        .await
+        .expect("read the record")
+        .expect("the record is stored");
+    assert!(
+        !records
+            .supply(BatchId::new(3), &owned)
+            .await
+            .expect("supply it again")
+    );
+    assert_eq!(
+        records.suppliers(&cite("owned")).await.expect("suppliers"),
+        [BatchId::new(1), BatchId::new(3)]
+    );
+    assert_eq!(
+        records
+            .handle(&cite("owned"))
+            .await
+            .expect("read the handle")
+            .expect("the record is stored")
+            .position(),
+        RecordPosition::new(Order::new(0), BatchAge::new(1)),
+        "the first supplier stays put (DEC-092)"
+    );
+    database.close().await;
+}

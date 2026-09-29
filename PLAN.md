@@ -1229,13 +1229,15 @@ Blocked by (until revision 69): SRV-021 is on the undecided list. What "the reco
 Notes: Revision 69: unblocked by the provisional DEC-092. Acceptance amended: a record the deleted batch owns that a remaining batch also supplied is **not** removed; ownership returns to the newest remaining supplier, so undoing a re-import restores the previous import. Test: import a year, re-import it, delete the newer batch; every record and its derived transactions survive under the older batch. If DEC-092 is overridden on ratification, this item reopens.
 
 ## FIF-071 Batch ownership on re-import
-Status: todo
+Status: done
 Requirements: SRV-052
 Depends on: FIF-036
 Acceptance: a source record belongs to every batch that supplied it and the **newest** owns it; re-importing a year transfers ownership to the new batch and the superseded batches then own nothing.
 Blocked by (until revision 69): SRV-052 is on the undecided list.
 Notes: New in this revision. It decides what "the records a batch owns" in SRV-021 and SRV-022 means, so FIF-036 is only fully reviewable once this is settled.
 Revision 69: unblocked; OQ-007 is provisionally answered by DEC-092, which leaves SRV-052's rule as written. Storage needs the supplier relation (every batch that supplied a record), not only the owner in `source_record.batch_id`; the oldest supplier FIF-076 keys on must not move when this item moves ownership.
+Revision 82: named next to build. Its one dependency, FIF-036, is `done`, and SRV-052 is on no `Blocks:` line. Storage today keeps only the owner (`source_record.batch_id`) and the first supplier (`first_batch_id`); a re-posted record keeps both (`entities.rs`, insert path), so a re-import's batch owns nothing (DEC-111). What remains: the supplier relation (every batch that supplied a record), moving ownership to the newest supplier on re-import while `first_batch_id` stays put, and tests. `invariants.rs` `re_importing_a_year_leaves_the_canonical_order_unchanged` moves ownership in raw SQL "exactly as FIF-071 will"; it should switch to the real path. DEC-115's 501 stays until FIF-086; the existing core removal (`delete from source_record where batch_id = ?`) is FIF-086's to replace, not this item's.
+Done in revision 82's build: migration `0010_record_supplier.sql` adds `record_supplier`, every batch that supplied a record, filled from each stored record's owner (provisional DEC-117). An import now supplies each stated record through `SourceRecordRepository::supply`/`supply_in`: it stores the record if absent, records the batch as a supplier and makes it the owner, leaving `first_batch_id` as stored; `suppliers` lists a record's batches oldest first. Transactions keep the batch that derived them (provisional DEC-116), so SRV-022 refuses deleting a re-import while the replaced batch's transactions cite its records. `re_importing_a_year_leaves_the_canonical_order_unchanged` now goes through `supply`. Tests in `crates/fifolio-core/tests/import_service.rs`, `invariants.rs` and `storage.rs`. The core removal still deletes every record the batch owns, re-supplied or not, and still removes the transactions a batch derived though it owns none of their records; FIF-086 replaces it.
 
 ## FIF-037 Source record endpoints
 Status: todo
@@ -1387,6 +1389,22 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 82.** A status reconciliation after an interrupted session. `design/` changed since
+revision 81 only by adding the provisional DEC-115 (a batch deletion no refusal holds answers 501
+`batch-removal-not-supported` and removes nothing until FIF-086), listed under "Provisionally
+answered" against FIF-036; no requirement id added or removed. `open-questions.md` names the same
+**7** ids on `Blocks:` lines, and the 5 items carrying one are exactly the 5 `blocked`.
+
+* **Completed: FIF-036** (`780bdba`). Its item text already recorded this. DEC-115 invalidates no
+  completed work; it constrains FIF-086, which replaces the 501 with the removal.
+* No item added, split, retired, blocked or unblocked. 101 items: **62 `done`, 34 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-071, 086, 037, 072, 038, 087, 073, 039, 040, 041 remain `todo`;
+  none carries a blocked requirement, so each waits only on dependencies inside that list.
+* **Next to build: FIF-071.** Its dependency FIF-036 is `done`. FIF-086 waits on it; FIF-037
+  (dependency FIF-035, `done`) is also ready but comes later in document order.
 
 **Revision 81.** A status reconciliation after an interrupted session. `design/` changed since
 revision 80 only by adding the provisional DEC-114 (testing the account refusal while no served
@@ -2813,6 +2831,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 82: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `780bdba`. One hundred and one items: 62 `done`, 34 `todo`, 5 `blocked`.
 
 Revision 81: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `2a60a9d`. One hundred and one items: 61 `done`, 35 `todo`, 5 `blocked`.

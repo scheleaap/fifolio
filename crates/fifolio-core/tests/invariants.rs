@@ -633,14 +633,14 @@ async fn the_trade_date_outranks_the_order() {
 /// ownership moves to the newest supplier [SRV-052], the batch age the order reads is the oldest
 /// supplier's and does not move (DEC-092) [DOM-111], [DOM-066], [DOM-068], [TST-004].
 ///
-/// The move is made in SQL, exactly as FIF-071 will make it, since no repository moves ownership
-/// yet. Transactions store their position when written, so the stored key and the attribution
-/// order hold whether or not the record's age moves; what would flip, were the age read from the
+/// The re-import supplies the first batch's records again through the path an import takes.
+/// Transactions store their position when written, so the stored key and the attribution order
+/// hold whether or not the record's age moves; what would flip, were the age read from the
 /// owner, is the reread handle and the closing a re-import derives from it, which would sort
 /// after the one the middle batch supplied.
 #[tokio::test]
 async fn re_importing_a_year_leaves_the_canonical_order_unchanged() {
-    let (db, database, first) = open().await;
+    let (_db, database, first) = open().await;
     let middle = database
         .import_batches()
         .insert(&import("2024-q2.xlsx"))
@@ -685,16 +685,23 @@ async fn re_importing_a_year_leaves_the_canonical_order_unchanged() {
         .insert(&import("2024.xlsx"))
         .await
         .expect("the re-import");
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}", db.path().display()))
-        .await
-        .expect("open the database file directly");
-    sqlx::query("update source_record set batch_id = ? where batch_id = ?")
-        .bind(newest.get())
-        .bind(first.get())
-        .execute(&pool)
-        .await
-        .expect("move ownership to the re-import");
-    pool.close().await;
+    for record in [record_at("b1", 0), record_at("s1", 3)] {
+        let stored = database
+            .source_records()
+            .supply(newest, &record)
+            .await
+            .expect("the re-import supplies the record again");
+        assert!(!stored, "a record already stored is not stored twice");
+        assert_eq!(
+            database
+                .source_records()
+                .suppliers(record.identity())
+                .await
+                .expect("the suppliers"),
+            [first, newest],
+            "the re-import owns the record"
+        );
+    }
 
     let reread = database
         .source_records()
@@ -2197,4 +2204,47 @@ async fn checking_the_deletion_of_an_unstored_batch_is_refused_as_unknown() {
         database.import_batches().check_deletable(absent).await,
         Err(StorageError::UnknownBatch { batch }) if batch == absent
     ));
+}
+
+/// A re-import moves a record's ownership and nothing else: the transaction the first import
+/// derived from it stays that import's (DEC-116, provisional) [SRV-052]. So the re-import owns a
+/// record a transaction it did not derive cites, and checking its deletion is refused naming that
+/// transaction [SRV-022], [DOM-119], while the first import, which owns nothing now, is held by
+/// nothing [TST-004].
+#[tokio::test]
+async fn a_re_import_owns_the_record_but_not_the_transaction_derived_from_it() {
+    let (_db, database, first) = open().await;
+    let opening = store(
+        &database,
+        first,
+        isin(),
+        &buy(day(1), stored_record(&database, first, "r1").await),
+    )
+    .await;
+    let re_import = database
+        .import_batches()
+        .insert(&import("2024.xlsx"))
+        .await
+        .expect("the re-import");
+    database
+        .source_records()
+        .supply(re_import, &record("r1"))
+        .await
+        .expect("the re-import supplies the record again");
+
+    match database.import_batches().check_deletable(re_import).await {
+        Err(StorageError::BatchRecordsCited {
+            batch: refused,
+            transactions,
+        }) => {
+            assert_eq!(refused, re_import);
+            assert_eq!(transactions, vec![opening]);
+        }
+        other => panic!("the re-import owns a record another batch derived from, got {other:?}"),
+    }
+    database
+        .import_batches()
+        .check_deletable(first)
+        .await
+        .expect("the first import owns nothing another batch derived from");
 }

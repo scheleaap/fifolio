@@ -454,7 +454,7 @@ impl<'a> SourceRecordRepository<'a> {
     ///
     /// `batch` is also recorded as the first batch to supply the record, as a fact of its own:
     /// the canonical order reads that age, and it stays put when ownership moves (DEC-092)
-    /// [DOM-111].
+    /// [DOM-111]. It is the record's one supplier so far [SRV-052].
     ///
     /// The handle it answers with is what a transaction is then derived from [DOM-047]: a record
     /// that was not written yields none.
@@ -469,6 +469,7 @@ impl<'a> SourceRecordRepository<'a> {
                 value: String::new(),
             })?;
 
+        let mut tx = self.pool.begin().await?;
         query(
             "insert into source_record (identity, ordering, raw, parsed, batch_id, first_batch_id)
              values (?, ?, ?, ?, ?, ?)",
@@ -479,22 +480,43 @@ impl<'a> SourceRecordRepository<'a> {
         .bind(parsed)
         .bind(batch.get())
         .bind(batch.get())
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await?;
+        record_supplier(&mut tx, batch, record.identity()).await?;
+        tx.commit().await?;
         Ok(RecordHandle::new(
             record.identity().clone(),
             RecordPosition::new(record.order(), BatchAge::new(batch.get())),
         ))
     }
 
-    /// Stores `record` as owned by `batch` unless a record of its identity is stored already,
-    /// inside the caller's SQLite transaction, answering whether it was stored.
+    /// Records that `batch` supplied `record` and makes `batch` its owner, storing the record
+    /// first unless a record of its identity is stored already, answering whether it was stored.
     ///
     /// This is import's idempotence [DOM-022], [SRV-015]: the identity is already scoped to the
-    /// account [DOM-024], so a row imported again finds its record and writes nothing. The
-    /// stored record keeps its owner and its first supplier; moving ownership to the newer batch
-    /// is SRV-052's (FIF-071).
-    pub(crate) async fn insert_if_absent_in(
+    /// account [DOM-024], so a row imported again finds its record and writes no second one.
+    /// What a re-import changes is ownership: the record belongs to every batch that supplied it,
+    /// and the newest owns it [SRV-052]. `batch` is always the newest, since an import writes
+    /// its batch before its records and batch age is the id (DEC-095, provisional). The first
+    /// supplier stays as it was stored, so the canonical order does not move (DEC-092,
+    /// provisional) [DOM-111].
+    ///
+    /// Only the record moves: a transaction stays derived by the batch that derived it
+    /// (DEC-116, provisional).
+    pub async fn supply(
+        &self,
+        batch: BatchId,
+        record: &SourceRecord,
+    ) -> Result<bool, StorageError> {
+        let mut tx = self.pool.begin().await?;
+        let stored = Self::supply_in(&mut tx, batch, record).await?;
+        tx.commit().await?;
+        Ok(stored)
+    }
+
+    /// [`Self::supply`] inside the caller's SQLite transaction, so that an import's batch and
+    /// what it supplied commit or fail together.
+    pub(crate) async fn supply_in(
         connection: &mut SqliteConnection,
         batch: BatchId,
         record: &SourceRecord,
@@ -516,9 +538,29 @@ impl<'a> SourceRecordRepository<'a> {
         .bind(parsed)
         .bind(batch.get())
         .bind(batch.get())
-        .execute(connection)
+        .execute(&mut *connection)
         .await?;
+        record_supplier(connection, batch, record.identity()).await?;
+        query("update source_record set batch_id = ? where identity = ?")
+            .bind(batch.get())
+            .bind(record.identity().as_str())
+            .execute(&mut *connection)
+            .await?;
         Ok(inserted.rows_affected() == 1)
+    }
+
+    /// Every batch that supplied the record `identity` names, oldest first, so the last is its
+    /// owner [SRV-052]. Empty when no such record is stored.
+    pub async fn suppliers(&self, identity: &RecordIdentity) -> Result<Vec<BatchId>, StorageError> {
+        Ok(query(
+            "select batch_id from record_supplier where record_identity = ? order by batch_id",
+        )
+        .bind(identity.as_str())
+        .fetch_all(self.pool)
+        .await?
+        .iter()
+        .map(|row| BatchId::new(row.get("batch_id")))
+        .collect())
     }
 
     /// A handle on the record `identity` names, if it is stored now, carrying the position the
@@ -571,6 +613,24 @@ impl<'a> SourceRecordRepository<'a> {
             parsed,
         )))
     }
+}
+
+/// Records that `batch` supplied the record `identity` names [SRV-052]. A batch stating the
+/// same record twice supplied it once.
+async fn record_supplier(
+    connection: &mut SqliteConnection,
+    batch: BatchId,
+    identity: &RecordIdentity,
+) -> Result<(), StorageError> {
+    query(
+        "insert into record_supplier (record_identity, batch_id) values (?, ?)
+         on conflict do nothing",
+    )
+    .bind(identity.as_str())
+    .bind(batch.get())
+    .execute(connection)
+    .await?;
+    Ok(())
 }
 
 /// Import batches, keyed by a surrogate id [DOM-017].

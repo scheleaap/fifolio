@@ -914,3 +914,24 @@ first, as the core removal already refuses it. Alternatives not taken: calling t
 removal, which serves a deletion that loses records SRV-021 keeps; and answering success without
 removing, which tells the caller an undo happened when it did not. [DEC-115, SRV-021, SRV-022,
 SRV-052, DOM-072, DOM-119]
+
+**DEC-116 — Provisional: a re-import moves a record's ownership, not a transaction's deriver.**
+SRV-052 moves a source record's ownership to the newest batch that supplied it; it says nothing
+of the transactions derived from that record, which record the import that derived them
+(DOM-072, DOM-119). A re-import moves the record only: a transaction stays derived by the batch
+that derived it, since that is a fact of its history and a re-import derives nothing. So once a
+year is re-imported, the re-import owns records that transactions it did not derive cite, and
+SRV-022 refuses its deletion naming them, while the replaced batch owns nothing and is held only
+by its own attributed transactions. Alternative not taken: moving `derived_by_batch` to the
+re-import as well, which would let SRV-022 wave through the deletion of a batch whose records
+the older batch's transactions still depend on, before FIF-086 settles what that deletion
+returns to the older batch (DEC-092); refusing is the reading that loses nothing.
+[DEC-116, SRV-052, SRV-022, DOM-072, DOM-119, DEC-092]
+
+**DEC-117 — Provisional: records stored before the supplier relation have their owner as their
+only supplier.** Until FIF-071, posting a file again recorded nothing of what it supplied
+(DEC-111), so for records already stored the supplier relation can state only the owner, which
+was always the first supplier. A batch that re-imported them then keeps owning nothing, and a
+later re-import joins the owner as a second supplier. Alternative not taken: inferring earlier
+re-imports' suppliers from batches with a matching filename, format or account, which would
+guess at rows a file held and store the guess as fact. [DEC-117, SRV-052, DEC-111, DEC-092]

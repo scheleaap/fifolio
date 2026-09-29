@@ -100,3 +100,5 @@ built on it.
 * **FIF-070** (how a refusal on several grounds carries each ground to the caller) → DEC-113
 * **FIF-090** (testing the account refusal while no served format states an account) → DEC-114
 * **FIF-036** (what deleting a batch answers while batch removal is not built) → DEC-115
+* **FIF-071** (whether a re-import also moves a transaction's deriving batch) → DEC-116
+* **FIF-071** (the suppliers of records stored before the supplier relation) → DEC-117

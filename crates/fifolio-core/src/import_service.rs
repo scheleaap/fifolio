@@ -12,10 +12,11 @@
 //! # Posting a file again
 //!
 //! Records are matched on their identity, which is already scoped to the account [DOM-022],
-//! [DOM-024], so a file posted again writes no record and no security, and changes none that is
-//! stored [SRV-015]. It does write a batch of its own: every import creates one [SRV-019], and
-//! the newer batch is what SRV-052 later moves ownership to (FIF-071). Until then that batch owns
-//! nothing (DEC-111, provisional).
+//! [DOM-024], so a file posted again writes no record and no security, and changes nothing that
+//! is stored but a record's owner [SRV-015]. It does write a batch of its own: every import
+//! creates one [SRV-019] (DEC-111, provisional), and that batch supplies every record the file
+//! states and owns each of them, so the batches it replaced own nothing [SRV-052]. The
+//! oldest supplier, which the canonical order reads, does not move (DEC-092, provisional).
 //!
 //! # What is not checked here
 //!
@@ -123,7 +124,7 @@ pub async fn import_file(
     )
     .await?;
     for stored in import.stored() {
-        SourceRecordRepository::insert_if_absent_in(&mut tx, batch, stored.record()).await?;
+        SourceRecordRepository::supply_in(&mut tx, batch, stored.record()).await?;
     }
     tx.commit().await.map_err(StorageError::from)?;
 
