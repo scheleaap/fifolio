@@ -857,6 +857,43 @@ async fn posting_the_same_file_again_changes_nothing() {
     );
 }
 
+/// The response summarizes the file in four counts: its rows, derived, pending and
+/// non-position, add up to the fixture's rows with no failed count beside them, and the
+/// securities it auto-created are those not stored before, so a file posted again creates none
+/// (DEC-110, provisional) [SRV-017], [SRV-058], [SRV-014].
+#[tokio::test]
+async fn the_response_summarizes_the_files_rows_and_created_securities() {
+    let harness = with_trade_republic_account().await;
+    let query = format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv&filename=a.csv");
+    let file = trade_republic_fixture("transactions_2022-01-01_2022-12-31.csv");
+    // One line per row after the header: the fixture quotes no line break inside a field.
+    let rows = file
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .count()
+        - 1;
+
+    let first = harness.post_file(&query, file.clone()).await;
+    let second = harness.post_file(&query, file).await;
+
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.body);
+    // The fixture's two buys, and its five cash rows; the buys name two ISINs.
+    assert_eq!(
+        first.body["summary"],
+        json!({"derived": 2, "pending": 0, "non_position": 5, "securities_auto_created": 2})
+    );
+    let summary = &first.body["summary"];
+    let classified: u64 = ["derived", "pending", "non_position"]
+        .iter()
+        .map(|count| summary[count].as_u64().expect("a count"))
+        .sum();
+    assert_eq!(classified, u64::try_from(rows).expect("a row count"));
+    assert_eq!(
+        second.body["summary"],
+        json!({"derived": 2, "pending": 0, "non_position": 5, "securities_auto_created": 0})
+    );
+}
+
 /// The response names every unrecognized row type the file carried, with how many rows carried
 /// it, ordered by type; none of those rows is stored [SRV-049], [SRV-016], [IMP-TR-014].
 #[tokio::test]

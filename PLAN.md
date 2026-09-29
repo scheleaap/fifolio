@@ -1182,12 +1182,13 @@ Revision 47: a failed row now refuses the whole import (SRV-058). FIF-099 builds
 Done in revision 77: the endpoint takes the target account, format and filename as query parameters and the file as the body (SRV-012); a Trade Republic DE CSV imports end to end through `import_service.rs`, and a Saxo NL XLSX is refused as not supported yet, naming FIF-023 (SRV-013); the unknown securities that stored rows name are auto-created and flagged for review, and one ISIN stated with two types is a failed row (SRV-014, DEC-110); posting a file again writes no record or security, only a batch that owns nothing (SRV-015, DEC-111); non-position rows are counted and not stored (SRV-016); the response names every unrecognized row type with its count (SRV-049); a sell exceeding holdings imports (SRV-018); a file with failed rows is refused as problem+json naming every one (SRV-058). Provisional decisions DEC-110 and DEC-111. Tests in `crates/fifolio-core/tests/import_service.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-085 Import response summary counts
-Status: todo
+Status: done
 Requirements: SRV-017
 Depends on: FIF-035, FIF-099
 Acceptance: the import response reports four counts: derived automatically, pending, recognized as non-position, and securities auto-created. They reconcile against the rows of the fixture. There is no failed-to-parse count, because a failed row refuses the import (SRV-058, FIF-099).
 Notes: Split out of FIF-035 in revision 3. The same five counts are what a batch records (SRV-020, FIF-036), so the two should be reviewed together once this is settled.
 Unblocked in revision 47: DEC-074 closed OQ-012 and removed the fifth count from SRV-017. The batch's counts (SRV-020, FIF-036) should be the same four.
+Done in revision 78: the import response carries a `summary` with the derived, pending and non-position row counts, which add up to the file's rows with no failed count, and the securities the import auto-created, counting only those not stored before, so a file posted again counts none (SRV-017, DEC-110). The batch keeps its three row counts; the auto-created count is the response's alone (provisional DEC-112). Tests in `crates/fifolio-server/src/imports.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-070 Multi-year refusal at the endpoint
 Status: todo
@@ -1380,6 +1381,27 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 78.** A status reconciliation after an interrupted session. `design/` changed in
+`8f89f39` only by adding the provisional DEC-110 (an import auto-creates only the securities its
+stored rows name; one ISIN of two types is a failed row) and DEC-111 (posting a file again writes a
+batch that owns nothing), both listed under "Provisionally answered"; no requirement id added or
+removed. `open-questions.md` names the same **7** ids on `Blocks:` lines, and the 5 items carrying
+one are exactly the 5 `blocked`.
+
+* **Completed: FIF-082** (`f19b2bc`) and **FIF-035** (`8f89f39`). Their item text already recorded
+  this; only the history lagged. Neither provisional decision invalidates completed work.
+* Checked against the code: the import response (`fifolio-server/src/imports.rs`) returns the batch
+  id and the unrecognized types but none of SRV-017's four counts, so FIF-085 stays `todo`. The
+  batch row itself is already written by FIF-035 (DEC-111); FIF-036 exposes and reads it.
+* No item added, split, retired, blocked or unblocked. 101 items: **58 `done`, 38 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-085, 070, 090, 036, 071, 086, 037, 072, 038, 087, 073, 039, 040,
+  041 remain `todo`; none carries a blocked requirement, so each waits only on dependencies inside
+  that list.
+* **Next to build: FIF-085.** Its dependencies FIF-035 and FIF-099 are `done`. Also ready in
+  scope: FIF-070, FIF-036, FIF-037, FIF-041.
 
 **Revision 77.** A status reconciliation. `design/` changed in `5f45c9b` only by adding the
 provisional DEC-107 (the acquisition report's year filter changes no figure) and DEC-108 (an emitted
@@ -2728,6 +2750,9 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 78: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
+at `8f89f39`. One hundred and one items: 58 `done`, 38 `todo`, 5 `blocked`.
 
 Revision 69: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `6921150`. One hundred and one items: 48 `done`, 48 `todo`, 5 `blocked`.

@@ -96,3 +96,4 @@ built on it.
 * **FIF-082** (the units a disposal line's quantity consumed is shown in) → DEC-109
 * **FIF-035** (which rows supply auto-created securities; one ISIN of two types) → DEC-110
 * **FIF-035** (whether posting a file again creates a batch) → DEC-111
+* **FIF-085** (whether a batch stores the auto-created count too) → DEC-112

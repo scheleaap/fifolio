@@ -18,7 +18,7 @@ use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use chrono::Utc;
-use fifolio_core::entities::Account;
+use fifolio_core::entities::{Account, ImportCounts, Isin};
 use fifolio_core::import::Importer;
 use fifolio_core::import::trade_republic::TradeRepublic;
 use fifolio_core::import_service::import_file;
@@ -67,11 +67,44 @@ pub struct UnrecognizedTypeBody {
     pub rows: u32,
 }
 
+/// How the file's rows were classified, and how many securities the import created [SRV-017].
+///
+/// The three row counts add up to the file's rows: there is no failed count, because a file
+/// with a failed row is refused rather than imported [SRV-058] (DEC-074).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SummaryBody {
+    /// Rows that became a transaction directly.
+    pub derived: u32,
+    /// Rows that affect holdings but need something the file does not carry.
+    pub pending: u32,
+    /// Rows recognized as carrying no position effect, and so not stored [SRV-016]; the
+    /// unrecognized types' rows among them.
+    pub non_position: u32,
+    /// Securities this import created, auto-created and needing review [SRV-014]. One already
+    /// stored is not created again (DEC-110), so a file posted again counts none.
+    pub securities_auto_created: u32,
+}
+
+impl SummaryBody {
+    fn new(counts: ImportCounts, created: &[Isin]) -> Self {
+        Self {
+            derived: counts.derived,
+            pending: counts.pending,
+            non_position: counts.non_position,
+            // Each created security is named by a stored row, so this is at most the row count,
+            // itself a u32.
+            securities_auto_created: u32::try_from(created.len())
+                .expect("no more securities than rows"),
+        }
+    }
+}
+
 /// What an import did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ImportedBody {
     /// The import batch this import created [SRV-019].
     pub batch: i64,
+    pub summary: SummaryBody,
     /// Every unrecognized row type the file carried, ordered by type, so that a new broker type
     /// is visible on its first appearance [SRV-049]. Those rows are not stored.
     pub unrecognized_types: Vec<UnrecognizedTypeBody>,
@@ -136,11 +169,40 @@ async fn import(
             rows,
         })
         .collect();
+    let summary = SummaryBody::new(imported.import().counts(), imported.created());
     Ok((
         StatusCode::CREATED,
         Json(ImportedBody {
             batch: imported.batch().get(),
+            summary,
             unrecognized_types,
         }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each count reaches its own field: the endpoint's Trade Republic files yield no pending
+    /// row, so only distinct values here tell the fields apart [SRV-017].
+    #[test]
+    fn the_summary_carries_each_count_in_its_own_field() {
+        let counts = ImportCounts {
+            derived: 3,
+            pending: 2,
+            non_position: 5,
+        };
+        let created = [Isin::new("XF0000000079")];
+
+        assert_eq!(
+            SummaryBody::new(counts, &created),
+            SummaryBody {
+                derived: 3,
+                pending: 2,
+                non_position: 5,
+                securities_auto_created: 1,
+            }
+        );
+    }
 }

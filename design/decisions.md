@@ -867,3 +867,12 @@ its batch, recording the file's counts; until SRV-052 is built (FIF-071) that ba
 and deleting it removes nothing. Alternative not taken: creating no batch when an import adds no
 record, which reads "changes nothing" literally but contradicts SRV-019 and leaves SRV-052 no newer
 batch to move ownership to. [DEC-111, SRV-015, SRV-019, SRV-052, DOM-022]
+
+**DEC-112 — Provisional: a batch keeps three counts; the fourth summary count is the response's
+alone.** SRV-017's response summary has four counts; FIF-085's note says the batch's (SRV-020)
+"should be the same four", but DOM-017 lists a batch's counts as derived, pending and recognized as
+non-position. The batch stores those three, as it already does, and the response adds securities
+auto-created from the import itself, counting only those not stored before (DEC-110), so a file
+posted again counts none. Alternative not taken: storing an auto-created count on the batch, which
+contradicts DOM-017's field list, and records on the batch securities it does not own: undoing the
+batch removes its records, not the securities. [DEC-112, SRV-017, SRV-020, DOM-017]
