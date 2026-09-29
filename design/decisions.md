@@ -876,3 +876,13 @@ auto-created from the import itself, counting only those not stored before (DEC-
 posted again counts none. Alternative not taken: storing an auto-created count on the batch, which
 contradicts DOM-017's field list, and records on the batch securities it does not own: undoing the
 batch removes its records, not the securities. [DEC-112, SRV-017, SRV-020, DOM-017]
+
+**DEC-113 — Provisional: a refusal on several grounds is one `several-grounds` problem whose
+detail names every ground.** SRV-059 has the caller told every ground in one refusal, and ARC-021
+gives each error class a stable `type`; neither says how several grounds sit in one problem+json.
+A refusal on one ground takes that ground's own type (`multiple-calendar-years` for SRV-051); one
+on several takes `several-grounds`, and its `detail` names each ground in full, the years and every
+failed row among them. Alternative not taken: an RFC 9457 extension member listing each ground's
+own type, which would let a client branch on the grounds without reading the detail, but adds a
+response member no requirement asks for, and can be added later without breaking a caller.
+[DEC-113, SRV-051, SRV-059, ARC-020, ARC-021]

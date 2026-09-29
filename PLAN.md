@@ -1191,12 +1191,14 @@ Unblocked in revision 47: DEC-074 closed OQ-012 and removed the fifth count from
 Done in revision 78: the import response carries a `summary` with the derived, pending and non-position row counts, which add up to the file's rows with no failed count, and the securities the import auto-created, counting only those not stored before, so a file posted again counts none (SRV-017, DEC-110). The batch keeps its three row counts; the auto-created count is the response's alone (provisional DEC-112). Tests in `crates/fifolio-server/src/imports.rs` and `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-070 Multi-year refusal at the endpoint
-Status: todo
+Status: done
 Requirements: SRV-051
 Depends on: FIF-035, FIF-065, FIF-103
 Acceptance: posting a file whose rows carry trade dates in more than one calendar year is refused at the endpoint with its own problem type, the refusal reaching the caller rather than being swallowed into a generic parse failure.
 Notes: Blocked in revision 2 on SRV-056; it and IMP-003 both left the undecided list in revision 3, and SRV-056 re-entered it in revision 8 (OQ-015), so revision 8 splits it into FIF-090. Renamed accordingly; the year refusal is decided on both sides.
 Revision 58: now depends on FIF-103. A refusal carrying the years together with other grounds (SRV-059) must reach the caller with every ground, not only the years' problem type.
+Revision 79: the Ground-to-problem-type mapping (`multiple-calendar-years`) already exists in `fifolio-server/src/problem.rs` with unit tests; what remains is an HTTP test in `http_surface.rs` posting a multi-year file (alone and combined with another ground) to the import endpoint and asserting the problem+json reaches the caller.
+Done in revision 79: posting a file with trade dates in two calendar years to the import endpoint is refused with a `multiple-calendar-years` problem+json; the same file with a failed row among its rows is refused with one `several-grounds` problem whose detail names the years and the failed row (SRV-051, SRV-059, provisional DEC-113). Tests in `crates/fifolio-server/tests/http_surface.rs`.
 
 ## FIF-090 Account-mismatch refusal at the endpoint
 Status: todo
@@ -1381,6 +1383,27 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 79.** A status reconciliation after an interrupted session. `design/` changed in
+`c3447f7` only by adding the provisional DEC-112 (a batch keeps its three row counts; the
+auto-created count is the import response's alone), listed under "Provisionally answered"; no
+requirement id added or removed. `open-questions.md` names the same **7** ids on `Blocks:` lines,
+and the 5 items carrying one are exactly the 5 `blocked`.
+
+* **Completed: FIF-085** (`c3447f7`). Its item text already recorded this; only the history lagged.
+  DEC-112 is consistent with FIF-036's acceptance (batch counts) and invalidates no completed work.
+* Checked against the code: `fifolio-server/src/problem.rs` already maps the refusal grounds to the
+  `multiple-calendar-years`, `account-mismatch` and `multiple-accounts` problem types, unit tested
+  there, but no test in `fifolio-server/tests/http_surface.rs` posts a multi-year or mismatched file
+  to the import endpoint, so FIF-070 and FIF-090 stay `todo`.
+* No item added, split, retired, blocked or unblocked. 101 items: **59 `done`, 37 `todo`, 5
+  `blocked`**. Coverage unchanged: **352** live ids, each on exactly one item; uncovered only the
+  retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope for this run: FIF-070, 090, 036, 071, 086, 037, 072, 038, 087, 073, 039, 040, 041
+  remain `todo`; none carries a blocked requirement, so each waits only on dependencies inside that
+  list.
+* **Next to build: FIF-070.** Its dependencies FIF-035, FIF-065 and FIF-103 are `done`. Also ready
+  in scope: FIF-036, FIF-037, FIF-041.
 
 **Revision 78.** A status reconciliation after an interrupted session. `design/` changed in
 `8f89f39` only by adding the provisional DEC-110 (an import auto-creates only the securities its

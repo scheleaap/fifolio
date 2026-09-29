@@ -97,3 +97,4 @@ built on it.
 * **FIF-035** (which rows supply auto-created securities; one ISIN of two types) → DEC-110
 * **FIF-035** (whether posting a file again creates a batch) → DEC-111
 * **FIF-085** (whether a batch stores the auto-created count too) → DEC-112
+* **FIF-070** (how a refusal on several grounds carries each ground to the caller) → DEC-113

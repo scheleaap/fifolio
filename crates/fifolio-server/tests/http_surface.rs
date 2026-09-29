@@ -977,6 +977,109 @@ async fn a_file_with_failed_rows_is_refused_naming_every_one() {
     }
 }
 
+/// A Trade Republic cash row of `kind` traded on `date`, which is also its timestamp's day.
+fn cash_row_on<'a>(
+    kind: &'a str,
+    transaction_id: &'a str,
+    datetime: &'a str,
+    date: &'a str,
+) -> Vec<(&'a str, &'a str)> {
+    let mut row = cash_row(kind, transaction_id);
+    row[0] = ("datetime", datetime);
+    row[1] = ("date", date);
+    row
+}
+
+/// A file whose trade dates span two calendar years is refused at the endpoint with the years'
+/// own problem type, naming both years, and not as an unreadable file; nothing is stored
+/// [SRV-051], [ARC-021], [TST-005].
+#[tokio::test]
+async fn a_file_spanning_two_calendar_years_is_refused_with_its_own_type() {
+    let harness = with_trade_republic_account().await;
+    let file = trade_republic_export(&[
+        &cash_row_on(
+            "CUSTOMER_INBOUND",
+            "a",
+            "2023-12-31T06:01:14.891Z",
+            "2023-12-31",
+        ),
+        &cash_row_on(
+            "CUSTOMER_INBOUND",
+            "b",
+            "2024-01-02T06:01:14.891Z",
+            "2024-01-02",
+        ),
+    ]);
+
+    let reply = harness
+        .post_file(
+            &format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv&filename=a.csv"),
+            file,
+        )
+        .await;
+
+    let detail = reply
+        .assert_problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:fifolio:problem:multiple-calendar-years",
+        )
+        .expect("a detail");
+    assert!(detail.contains("2023, 2024"), "{detail}");
+    for table in ["import_batch", "source_record", "security"] {
+        assert_eq!(harness.count(table).await, 0, "{table}");
+    }
+}
+
+/// A file spanning two years that also has a failed row is refused once, naming both grounds:
+/// the years and the failed row, so the years do not hide the row nor the row the years
+/// (DEC-113, provisional) [SRV-051], [SRV-059], [ARC-021], [TST-005].
+#[tokio::test]
+async fn a_multi_year_file_with_a_failed_row_is_refused_naming_every_ground() {
+    let harness = with_trade_republic_account().await;
+    let file = trade_republic_export(&[
+        &cash_row_on(
+            "CUSTOMER_INBOUND",
+            "a",
+            "2023-12-31T06:01:14.891Z",
+            "2023-12-31",
+        ),
+        // An unreadable trade date is a failed row [SRV-058], and contributes no year.
+        &cash_row_on("CUSTOMER_INBOUND", "b", "not-a-date", "not-a-date"),
+        &cash_row_on(
+            "CUSTOMER_INBOUND",
+            "c",
+            "2024-01-02T06:01:14.891Z",
+            "2024-01-02",
+        ),
+    ]);
+
+    let reply = harness
+        .post_file(
+            &format!("{TRADE_REPUBLIC}&format=trade_republic_de_csv&filename=a.csv"),
+            file,
+        )
+        .await;
+
+    let detail = reply
+        .assert_problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "urn:fifolio:problem:several-grounds",
+        )
+        .expect("a detail");
+    assert!(
+        detail.contains("more than one calendar year: 2023, 2024"),
+        "{detail}"
+    );
+    // Positions index the data rows from zero, so the middle row is row 1.
+    assert!(
+        detail.contains("1 rows could not be read: row 1: the column date holds \"not-a-date\""),
+        "{detail}"
+    );
+    for table in ["import_batch", "source_record", "security"] {
+        assert_eq!(harness.count(table).await, 0, "{table}");
+    }
+}
+
 /// A Saxo file is refused as a format not supported yet, naming the item that makes it
 /// importable, until the Saxo importer can classify its rows [SRV-013], [ARC-020]. This is an
 /// interim refusal: SRV-013's Saxo half is deferred to FIF-023 and is not covered here.

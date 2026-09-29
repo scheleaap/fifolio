@@ -308,8 +308,7 @@ impl From<&ImportError> for ProblemType {
         match error {
             ImportError::Read(_) => Self::UnreadableFile,
             // A refusal on one ground keeps that ground's own type; one on several takes a type
-            // of its own, and the detail names every ground [SRV-059]. How the grounds reach
-            // the caller beyond that is the endpoint items' (FIF-070, FIF-090).
+            // of its own, and the detail names every ground [SRV-059] (DEC-113, provisional).
             ImportError::Refused { grounds } => match grounds.as_slice() {
                 [ground] => Self::from(ground),
                 _ => Self::SeveralGrounds,
