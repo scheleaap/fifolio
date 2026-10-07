@@ -18,6 +18,7 @@ pub mod income_tax;
 pub mod manual_entry;
 pub mod ordering;
 pub mod precision;
+pub mod proposal;
 pub mod quotation;
 pub mod storage;
 pub mod transaction;

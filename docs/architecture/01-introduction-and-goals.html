@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Introduction and Goals</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" aria-label="Sections">
+  <a class="brand" href="index.html">Fifolio</a>
+  <p class="brand-sub">Architecture documentation (arc42)</p>
+  <ol>
+    <li><a href="01-introduction-and-goals.html" aria-current="page"><span class="num">1</span>Introduction and goals</a></li>
+    <li><a href="02-constraints.html"><span class="num">2</span>Constraints</a></li>
+    <li><a href="03-context-and-scope.html"><span class="num">3</span>Context and scope</a></li>
+    <li><a href="04-solution-strategy.html"><span class="num">4</span>Solution strategy</a></li>
+    <li><a href="05-building-block-view.html"><span class="num">5</span>Building block view</a></li>
+    <li><span class="todo"><span class="num">6</span>Runtime view</span></li>
+    <li><span class="todo"><span class="num">7</span>Deployment view</span></li>
+    <li><span class="todo"><span class="num">8</span>Crosscutting concepts</span></li>
+    <li><span class="todo"><span class="num">9</span>Architecture decisions</span></li>
+    <li><span class="todo"><span class="num">10</span>Quality requirements</span></li>
+    <li><span class="todo"><span class="num">11</span>Risks and technical debt</span></li>
+    <li><span class="todo"><span class="num">12</span>Glossary</span></li>
+  </ol>
+  <p class="legend">Greyed sections are not yet written.</p>
+</nav>
+<main>
+  <h1>1 · Introduction and goals</h1>
+  <p class="lead">Why Fifolio exists, the three to five qualities it must not compromise on, and who has a stake in it.</p>
+
+  <h2 id="requirements">1.1 Requirements overview</h2>
+
+  <h3>The problem</h3>
+  <p>German income tax computes gains and losses on securities under the FIFO principle, <strong>per account</strong> (Depot). German brokers do this for their customers; brokers outside Germany do not, so the taxpayer must. Fifolio does it for accounts at Saxo Bank NL, and also for Trade Republic accounts, which serves as an independent check on figures a German broker already reported. <a class="ref" href="../../design/domain.md">domain.md › Background</a></p>
+
+  <h3>What the system does</h3>
+  <p>For each account, it determines which acquisitions a disposal consumes under FIFO, and the resulting <strong>raw</strong> gain or loss in EUR. Applying tax law to those figures is the user's job. <a class="ref" href="../../design/domain.md">DOM-001</a> <a class="ref" href="../../design/decisions.md">DEC-001</a></p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Essential use case</th><th>What happens</th><th>Specified in</th></tr></thead>
+    <tbody>
+      <tr><td>Import a broker export</td><td>One file, one account, one calendar year. Rows become source records, each classified as derived automatically, pending, or not a position event. Importing the same file again changes nothing.</td><td><a class="ref" href="../../design/domain.md">DOM-043</a> <a class="ref" href="../../design/domain.md">DOM-022</a> <a class="ref" href="../../design/importers.md">IMP-001</a> <a class="ref" href="../../design/server.md">SRV-012</a></td></tr>
+      <tr><td>Complete what the export lacks</td><td>The completion queue asks only for what no file contains, such as a split ratio. The answer is stored as a manual entry.</td><td><a class="ref" href="../../design/domain.md">DOM-045</a> <a class="ref" href="../../design/domain.md">DOM-097</a> <a class="ref" href="../../design/cli.md">CLI-020</a></td></tr>
+      <tr><td>Approve a FIFO attribution</td><td>The system proposes which openings a closing consumes. The user approves or declines, nothing else.</td><td><a class="ref" href="../../design/domain.md">DOM-054</a> <a class="ref" href="../../design/domain.md">DOM-056</a> <a class="ref" href="../../design/server.md">SRV-036</a></td></tr>
+      <tr><td>Run a report</td><td>The income tax overview (gain or loss per year and account) and the acquisition report, as <code>human</code>, <code>csv</code> or <code>json</code>.</td><td><a class="ref" href="../../design/domain.md">DOM-073</a> <a class="ref" href="../../design/cli.md">CLI-002</a></td></tr>
+      <tr><td>Undo an import</td><td>Deleting a batch removes the records it owns and everything derived from them, and never removes a manual entry.</td><td><a class="ref" href="../../design/domain.md">DOM-017</a> <a class="ref" href="../../design/domain.md">DOM-108</a> <a class="ref" href="../../design/server.md">SRV-021</a></td></tr>
+      <tr><td>Keep the manual work</td><td>Export every manual entry to a versioned JSON file, and replay it into a rebuilt database.</td><td><a class="ref" href="../../design/cli.md">CLI-005</a> <a class="ref" href="../../design/cli.md">CLI-037</a> <a class="ref" href="../../design/decisions.md">DEC-020</a></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Corporate actions are in scope</h3>
+  <p>Splits, cash mergers, share-class exchanges, bond redemptions and tender offers dominate the real exports rather than sitting at their edges. Ignoring them would make holdings and cost bases wrong. They are modeled as transaction variants, not as a separate entity. <a class="ref" href="../../design/domain.md">domain.md › Scope</a> <a class="ref" href="../../design/decisions.md">DEC-024</a></p>
+
+  <h3>Explicitly out of scope (v1)</h3>
+  <ul>
+    <li>All tax law applied on top of the raw figures: Teilfreistellung, loss pots, Vorabpauschale, Sparer-Pauschbetrag, the taxes themselves. <a class="ref" href="../../design/domain.md">DOM-001</a></li>
+    <li>Income that is not a disposal: cash dividends, interest, deposits, withdrawals, fees. These are recognized at import and deliberately not stored. A dividend paid in shares is the exception. <a class="ref" href="../../design/domain.md">DOM-002</a> <a class="ref" href="../../design/domain.md">DOM-124</a></li>
+    <li>Gains on foreign currency cash balances.</li>
+    <li>Network exposure, multiple users, authentication. <a class="ref" href="../../design/architecture.md">ARC-022</a></li>
+  </ul>
+  <p>Known limitations the design accepts (accrued interest, averaged transferred parcels, lost Altbestand status, and others) are listed in <a href="../../design/domain.md">domain.md › Known limitations</a>.</p>
+
+  <h2 id="quality-goals">1.2 Quality goals</h2>
+  <p>The five qualities with the highest priority, most important first. Each has one scenario that makes it concrete. The full set of quality requirements belongs in section 10.</p>
+
+  <div class="note warn">
+    <p>The specification does not name quality goals explicitly. These are inferred from its stated reasons, most directly from <code>testing.md</code>: <em>"A wrong cost basis produces a plausible number in a tax return and stays wrong for years."</em> They need the owner's confirmation.</p>
+  </div>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>#</th><th>Goal</th><th>ISO 25010</th><th>Scenario</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><strong>Correct figures</strong><br>Every gain, cost and fee is right to the cent, and every total reconciles with its rows.</td>
+        <td>Functional correctness</td>
+        <td>Buy 10 at 100, sell 5, then a 2:1 split, then sell the rest. The first sale's cost basis is 500, not 250, and the allocation shares sum exactly to their parent figures. <a class="ref" href="../../design/domain.md">DOM-103</a> <a class="ref" href="../../design/domain.md">DOM-061</a></td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><strong>Fail safe, never guess</strong><br>When information is missing or unknown, the system stops and names the problem. It never produces a plausible wrong number.</td>
+        <td>Safety (fail safe)</td>
+        <td>A Trade Republic file contains a corporate action type the specification does not know. The whole file is rejected, naming the type, the row and the transaction id, and nothing is imported. <a class="ref" href="../../design/importers.md">IMP-TR-010</a> <a class="ref" href="../../design/decisions.md">DEC-019</a><br>A sale exceeds the known holdings: attribution is blocked and the shortfall is named. <a class="ref" href="../../design/domain.md">DOM-057</a></td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><strong>Auditable</strong><br>Every figure can be traced back to the broker rows and the user input it rests on.</td>
+        <td>Accountability</td>
+        <td>A reviewer picks one row of the income tax report. They can follow it to its allocations, the transactions behind them, the verbatim source rows, and the FX rate and rate date used. <a class="ref" href="../../design/domain.md">DOM-007</a> <a class="ref" href="../../design/domain.md">DOM-016</a> <a class="ref" href="../../design/domain.md">DOM-028</a> <a class="ref" href="../../design/domain.md">DOM-034</a></td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><strong>Reproducible and recoverable</strong><br>The same inputs always give the same state, and the state can be rebuilt.</td>
+        <td>Recoverability</td>
+        <td>The user undoes an import and imports the same file again. The account returns exactly to where it was, including transactions completed by hand. <a class="ref" href="../../design/domain.md">DOM-108</a> <a class="ref" href="../../design/testing.md">TST-010</a><br>After losing the database, the user re-imports the exports and replays the manual-information file, without redoing any research. <a class="ref" href="../../design/cli.md">CLI-037</a></td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><strong>Confidential</strong><br>Personal financial data never leaves the user's machine.</td>
+        <td>Confidentiality</td>
+        <td>The server binds only <code>127.0.0.1</code>. The real exports are gitignored, and CI runs on anonymized fixtures. <a class="ref" href="../../design/architecture.md">ARC-022</a> <a class="ref" href="../../design/decisions.md">DEC-017</a></td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <p>Deliberately <strong>not</strong> among the goals: performance (a few hundred rows a year), availability (a local tool started on demand), and portability beyond a Rust toolchain.</p>
+
+  <h2 id="stakeholders">1.3 Stakeholders</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Role</th><th>Contact</th><th>Expectations</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Owner and user</strong><br>taxpayer, specification owner</td>
+        <td>Repository owner</td>
+        <td>
+          <ul>
+            <li>Raw figures they can put in a German tax declaration with confidence.</li>
+            <li>Every figure traceable to its source.</li>
+            <li>As little manual data entry as the exports allow.</li>
+            <li>Decisions recorded, so a deliberate choice can be told apart from an accident.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Future contributors</strong><br>developers reading or changing the code</td>
+        <td>n/a</td>
+        <td>
+          <ul>
+            <li>An overview of structure and intent before reading the requirements rule by rule (these pages).</li>
+            <li>A specification with stable requirement ids.</li>
+            <li>Tests that name the requirements they cover.</li>
+            <li>A recorded reason for each non-obvious choice (<code>decisions.md</code>).</li>
+          </ul>
+        </td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="pager">
+    <a href="index.html">← Overview</a>
+    <a href="02-constraints.html">2 · Constraints →</a>
+  </div>
+
+  <footer class="page-footer">
+    Structure based on the arc42 template by Gernot Starke and Peter Hruschka, <a href="https://arc42.org/license/">CC BY-SA 4.0</a>. Content describes Fifolio and is maintained with its specification.
+  </footer>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solution Strategy</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" aria-label="Sections">
+  <a class="brand" href="index.html">Fifolio</a>
+  <p class="brand-sub">Architecture documentation (arc42)</p>
+  <ol>
+    <li><a href="01-introduction-and-goals.html"><span class="num">1</span>Introduction and goals</a></li>
+    <li><a href="02-constraints.html"><span class="num">2</span>Constraints</a></li>
+    <li><a href="03-context-and-scope.html"><span class="num">3</span>Context and scope</a></li>
+    <li><a href="04-solution-strategy.html" aria-current="page"><span class="num">4</span>Solution strategy</a></li>
+    <li><a href="05-building-block-view.html"><span class="num">5</span>Building block view</a></li>
+    <li><span class="todo"><span class="num">6</span>Runtime view</span></li>
+    <li><span class="todo"><span class="num">7</span>Deployment view</span></li>
+    <li><span class="todo"><span class="num">8</span>Crosscutting concepts</span></li>
+    <li><span class="todo"><span class="num">9</span>Architecture decisions</span></li>
+    <li><span class="todo"><span class="num">10</span>Quality requirements</span></li>
+    <li><span class="todo"><span class="num">11</span>Risks and technical debt</span></li>
+    <li><span class="todo"><span class="num">12</span>Glossary</span></li>
+  </ol>
+  <p class="legend">Greyed sections are not yet written.</p>
+</nav>
+<main>
+  <h1>4 · Solution strategy</h1>
+  <p class="lead">The handful of fundamental decisions that shape everything else, and how each quality goal from section 1.2 is met.</p>
+
+  <h2 id="core-ideas">4.1 Core ideas</h2>
+  <p>If you remember nothing else about the design, remember these five.</p>
+  <ol>
+    <li><strong>Import is separate from derivation.</strong> A broker row becomes an immutable <em>source record</em>. <em>Transactions</em> are derived from one or more records afterwards, because one real event is often several rows (a merger paid out over three bookings, a tender plus its reversal). <a class="ref" href="../../design/domain.md">DOM-042</a> <a class="ref" href="../../design/decisions.md">DEC-007</a></li>
+    <li><strong>A transaction is a sum type.</strong> There are six variants: <code>buy</code> and <code>transfer_in</code> open parcels, <code>sell</code>, <code>expiration</code> and <code>transfer_out</code> close them, and <code>split</code> rescales them. Each carries only its own fields. Corporate actions are expressed as these variants, not as a separate entity. <a class="ref" href="../../design/domain.md">DOM-010</a> <a class="ref" href="../../design/domain.md">DOM-081</a> <a class="ref" href="../../design/decisions.md">DEC-024</a></li>
+    <li><strong>Attribution stores quantities; money is derived.</strong> An allocation holds an opening, a closing and a quantity, nothing else. Every EUR figure is computed from the parent transactions when it is read, so it can never drift from its sources. Transactions in an attribution are immutable. <a class="ref" href="../../design/domain.md">DOM-058</a> <a class="ref" href="../../design/domain.md">DOM-069</a> <a class="ref" href="../../design/decisions.md">DEC-005</a></li>
+    <li><strong>The system proposes, the human approves.</strong> The server computes the FIFO proposal. The user can only approve or decline it. Approval posts back a fingerprint of exactly what was shown, so figures that changed in between are refused. <a class="ref" href="../../design/domain.md">DOM-054</a> <a class="ref" href="../../design/server.md">SRV-040</a> <a class="ref" href="../../design/server.md">SRV-050</a></li>
+    <li><strong>Refuse rather than guess.</strong> An unknown input rejects the whole file. Missing history blocks attribution with a named shortfall. A missing FX rate is an error. Every open point in the specification blocks the work that depends on it. <a class="ref" href="../../design/decisions.md">DEC-019</a> <a class="ref" href="../../design/domain.md">DOM-057</a> <a class="ref" href="../../design/architecture.md">ARC-019</a></li>
+  </ol>
+
+  <h2 id="technology">4.2 Technology decisions</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Concern</th><th>Choice</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Language</td><td>Rust</td><td>Sum types and exhaustive matching carry domain rules in the type system. Lints can forbid floating-point arithmetic outright.</td></tr>
+      <tr><td>Numbers</td><td><code>rust_decimal</code></td><td>Exact decimal arithmetic with fixed scales per kind of figure <a class="ref" href="../../design/architecture.md">ARC-006</a>. Split and transfer ratios are exact integer pairs, computed as rationals <a class="ref" href="../../design/decisions.md">DEC-047</a>.</td></tr>
+      <tr><td>Storage</td><td>SQLite via <code>sqlx</code>, versioned migrations</td><td>One local file, zero administration. Invariants are enforced in the schema as well as in code.</td></tr>
+      <tr><td>HTTP server</td><td><code>axum</code>, <code>utoipa</code></td><td>Typed routing, and an OpenAPI document generated from the code <a class="ref" href="../../design/server.md">SRV-005</a>.</td></tr>
+      <tr><td>Client</td><td><code>ratatui</code> + <code>crossterm</code>, <code>reqwest</code>, <code>clap</code></td><td>A terminal UI on top of a UI-agnostic client layer that is testable without a terminal <a class="ref" href="../../design/architecture.md">ARC-025</a>.</td></tr>
+      <tr><td>File formats</td><td><code>calamine</code> (XLSX), <code>csv</code>, <code>quick-xml</code> (ECB)</td><td>Libraries rather than hand-written parsers <a class="ref" href="../../design/architecture.md">ARC-023</a>.</td></tr>
+      <tr><td>Localization</td><td>Project Fluent</td><td>Message catalogs keyed by identifier, so a change to the English wording cannot silently invalidate the Dutch translation.</td></tr>
+      <tr><td>Testing</td><td><code>proptest</code>, <code>insta</code>, <code>cargo llvm-cov</code> + <code>diff-cover</code></td><td>Property tests for the arithmetic invariants, snapshot tests per report format, and coverage gated on changed lines <a class="ref" href="../../design/testing.md">TST-010</a> <a class="ref" href="../../design/testing.md">TST-018</a> <a class="ref" href="../../design/testing.md">TST-025</a>.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="decomposition">4.3 Top-level decomposition</h2>
+  <ul>
+    <li><strong>A local client and server.</strong> The server is the single writer of the database and the single implementation of the FIFO rules. The client is a thin HTTP client with no domain logic, and it does not even link <code>fifolio-core</code>. <a class="ref" href="../../design/architecture.md">ARC-003</a> <a class="ref" href="../../design/architecture.md">ARC-005</a> <a class="ref" href="../../design/decisions.md">DEC-018</a></li>
+    <li><strong>A pure domain library.</strong> <code>fifolio-core</code> holds the domain model, the FIFO engine, the importers, FX resolution and storage. It has no HTTP and no terminal. External services enter through injected ports (<code>RateFeed</code>, <code>RateTable</code>), so the core is tested without a network. <a class="ref" href="../../design/architecture.md">ARC-002</a> <a class="ref" href="../../design/testing.md">TST-020</a></li>
+    <li><strong>Reports are subcommands, not screens.</strong> This way they can be piped, redirected and diffed. <a class="ref" href="../../design/cli.md">CLI-008</a></li>
+  </ul>
+  <p>See section 5 for the building blocks.</p>
+
+  <h2 id="quality-approaches">4.4 Approaches to the quality goals</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Quality goal</th><th>Approach</th><th>Refs</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="nowrap"><strong>1 · Correct figures</strong></td>
+        <td>
+          <ul>
+            <li>Decimals only, with fixed scales. Rounding is done before a boundary, and storage <em>refuses</em> an unrounded value instead of rounding it silently.</li>
+            <li>One allocation formula for every closing variant. Drift is absorbed by the last share, so shares always sum exactly to their parent.</li>
+            <li>A gain is computed from the rounded shares, so every row reconciles with its columns.</li>
+            <li>The booked EUR total governs every calculation. The unit price is only displayed.</li>
+            <li>Effective quantity after splits is measured at the closing's position, as an exact rational.</li>
+            <li>Property tests over generated input. Arithmetic is tested on synthetic cases that can be derived by hand.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/architecture.md">ARC-010</a> <a class="ref" href="../../design/domain.md">DOM-059</a> <a class="ref" href="../../design/domain.md">DOM-061</a> <a class="ref" href="../../design/domain.md">DOM-125</a> <a class="ref" href="../../design/domain.md">DOM-085</a> <a class="ref" href="../../design/domain.md">DOM-089</a> <a class="ref" href="../../design/domain.md">DOM-113</a> <a class="ref" href="../../design/testing.md">TST-010</a> <a class="ref" href="../../design/testing.md">TST-015</a></td>
+      </tr>
+      <tr>
+        <td class="nowrap"><strong>2 · Fail safe</strong></td>
+        <td>
+          <ul>
+            <li>An unrecognized row type that names a security rejects the file. An unrecognized type that names none is counted and named in the import summary.</li>
+            <li>A file spanning more than one calendar year, or naming the wrong account, is refused.</li>
+            <li>A pending record blocks attribution for that security in that account.</li>
+            <li>Closings are attributed in canonical order. A shortfall is reported, never approximated.</li>
+            <li>The FX fallback is bounded to seven days. After that it is an error.</li>
+            <li>Invariants are enforced by storage as well as by the domain.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/decisions.md">DEC-022</a> <a class="ref" href="../../design/importers.md">IMP-001</a> <a class="ref" href="../../design/importers.md">IMP-003</a> <a class="ref" href="../../design/domain.md">DOM-049</a> <a class="ref" href="../../design/domain.md">DOM-066</a> <a class="ref" href="../../design/domain.md">DOM-057</a> <a class="ref" href="../../design/architecture.md">ARC-027</a> <a class="ref" href="../../design/testing.md">TST-004</a></td>
+      </tr>
+      <tr>
+        <td class="nowrap"><strong>3 · Auditable</strong></td>
+        <td>
+          <ul>
+            <li>Source records keep the raw row (a verbatim CSV line, or a canonical JSON rendering of a spreadsheet row) and are never edited.</li>
+            <li>A transaction <em>consumes</em> the records it answers and <em>cites</em> any others it rests on.</li>
+            <li>Native figures, EUR figures, the rate, its source and its own date are all stored.</li>
+            <li>User input is a first-class manual entry, cited next to the imported rows.</li>
+            <li>No endpoint edits a transaction, and none creates one from nothing.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/domain.md">DOM-007</a> <a class="ref" href="../../design/domain.md">DOM-008</a> <a class="ref" href="../../design/domain.md">DOM-120</a> <a class="ref" href="../../design/domain.md">DOM-101</a> <a class="ref" href="../../design/domain.md">DOM-028</a> <a class="ref" href="../../design/domain.md">DOM-048</a> <a class="ref" href="../../design/server.md">SRV-034</a> <a class="ref" href="../../design/server.md">SRV-054</a></td>
+      </tr>
+      <tr>
+        <td class="nowrap"><strong>4 · Reproducible</strong></td>
+        <td>
+          <ul>
+            <li>Record identity is the broker's own reference, or else a hash of the business fields, scoped to the account. This makes import idempotent.</li>
+            <li>Order is computed from file content when the file is read, and stored. Canonical order is (trade date, order, batch age).</li>
+            <li>An import batch is the unit of undo.</li>
+            <li>Manual entries are a separate entity that references records by broker identity. They survive an undo and reconnect when the rows return.</li>
+            <li>The ECB cache is insert-only and never rewrites a day it holds.</li>
+            <li>Manual entries export to and replay from a versioned JSON file.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/domain.md">DOM-023</a> <a class="ref" href="../../design/domain.md">DOM-040</a> <a class="ref" href="../../design/domain.md">DOM-111</a> <a class="ref" href="../../design/domain.md">DOM-017</a> <a class="ref" href="../../design/domain.md">DOM-099</a> <a class="ref" href="../../design/decisions.md">DEC-038</a> <a class="ref" href="../../design/architecture.md">ARC-028</a> <a class="ref" href="../../design/decisions.md">DEC-020</a></td>
+      </tr>
+      <tr>
+        <td class="nowrap"><strong>5 · Confidential</strong></td>
+        <td>
+          <ul>
+            <li>Bound to loopback only, and single user.</li>
+            <li>The real exports are gitignored. An anonymizer (<code>tools/anonymize-exports</code>) perturbs amounts and keeps structure, so CI runs on committed fixtures.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/architecture.md">ARC-022</a> <a class="ref" href="../../design/testing.md">TST-012</a> <a class="ref" href="../../design/testing.md">TST-028</a></td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="organizational">4.5 Organizational approach</h2>
+  <p>The specification is executable as a process. Stable requirement ids connect the specification, the plan (<code>PLAN.md</code>, <code>FIF-nnn</code> items) and the tests. A fixed cycle of agents turns decided requirements into code; see the organizational constraints in <a href="02-constraints.html#organizational">section 2.3</a>. Undecided points are kept visible in <code>open-questions.md</code> and block only the work that depends on them.</p>
+
+  <div class="pager">
+    <a href="03-context-and-scope.html">← 3 · Context and scope</a>
+    <a href="05-building-block-view.html">5 · Building block view →</a>
+  </div>
+
+  <footer class="page-footer">
+    Structure based on the arc42 template by Gernot Starke and Peter Hruschka, <a href="https://arc42.org/license/">CC BY-SA 4.0</a>. Content describes Fifolio and is maintained with its specification.
+  </footer>
+</main>
+</div>
+</body>
+</html>

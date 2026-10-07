@@ -719,9 +719,16 @@ impl<'a> TransactionRepository<'a> {
     /// The transaction `id` with its placement [SRV-028], or `None` if no such transaction is
     /// stored.
     pub async fn read(&self, id: TransactionId) -> Result<Option<StoredTransaction>, StorageError> {
-        let mut connection = self.pool.acquire().await?;
+        Self::read_in(&mut *self.pool.acquire().await?, id).await
+    }
+
+    /// [`Self::read`] on `connection`, so a caller can read inside its own SQLite transaction.
+    pub(crate) async fn read_in(
+        connection: &mut SqliteConnection,
+        id: TransactionId,
+    ) -> Result<Option<StoredTransaction>, StorageError> {
         Ok(
-            stored_transactions(&mut connection, &TransactionFilter::default(), Some(id))
+            stored_transactions(connection, &TransactionFilter::default(), Some(id))
                 .await?
                 .into_iter()
                 .next(),
@@ -739,9 +746,19 @@ impl<'a> TransactionRepository<'a> {
         &self,
         filter: &TransactionFilter,
     ) -> Result<Vec<StoredTransaction>, StorageError> {
-        let mut tx = self.pool.begin().await?;
+        // Read in one transaction, so nothing is removed between the checks and the read;
+        // nothing is written, so it is dropped rather than committed.
+        Self::list_in(&mut *self.pool.begin().await?, filter).await
+    }
+
+    /// [`Self::list`] on `connection`, so the proposal reads its queue in the same snapshot as
+    /// the figures it derives.
+    pub(crate) async fn list_in(
+        connection: &mut SqliteConnection,
+        filter: &TransactionFilter,
+    ) -> Result<Vec<StoredTransaction>, StorageError> {
         if let Some(account) = &filter.account
-            && AccountRepository::find_in(&mut tx, account.broker(), account.id())
+            && AccountRepository::find_in(&mut *connection, account.broker(), account.id())
                 .await?
                 .is_none()
         {
@@ -753,7 +770,7 @@ impl<'a> TransactionRepository<'a> {
         if let Some(isin) = &filter.security
             && query("select 1 from security where isin = ?")
                 .bind(isin.as_str())
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut *connection)
                 .await?
                 .is_none()
         {
@@ -761,9 +778,7 @@ impl<'a> TransactionRepository<'a> {
                 isin: isin.as_str().to_owned(),
             });
         }
-        // Read in the same transaction as the checks, so nothing is removed in between; nothing
-        // is written, so it is dropped rather than committed.
-        stored_transactions(&mut tx, filter, None).await
+        stored_transactions(connection, filter, None).await
     }
 
     /// Records that `transfer_out` emitted `transfer_in` on approval, one such record per parcel

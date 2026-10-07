@@ -691,9 +691,19 @@ impl<'a> SourceRecordRepository<'a> {
         &self,
         filter: &RecordFilter,
     ) -> Result<Vec<StoredSourceRecord>, StorageError> {
-        let mut tx = self.pool.begin().await?;
+        // Read in one transaction, so nothing is removed between the checks and the read;
+        // nothing is written, so it is dropped rather than committed.
+        Self::list_in(&mut *self.pool.begin().await?, filter).await
+    }
+
+    /// [`Self::list`] on `connection`, so the proposal reads what is pending in the same
+    /// snapshot as what it proposes.
+    pub(crate) async fn list_in(
+        connection: &mut SqliteConnection,
+        filter: &RecordFilter,
+    ) -> Result<Vec<StoredSourceRecord>, StorageError> {
         if let Some(account) = &filter.account
-            && AccountRepository::find_in(&mut tx, account.broker(), account.id())
+            && AccountRepository::find_in(&mut *connection, account.broker(), account.id())
                 .await?
                 .is_none()
         {
@@ -703,18 +713,16 @@ impl<'a> SourceRecordRepository<'a> {
             });
         }
         if let Some(batch) = filter.batch {
-            refuse_unknown(&mut tx, batch).await?;
+            refuse_unknown(&mut *connection, batch).await?;
         }
         if let Some(isin) = &filter.security {
             query("select 1 from security where isin = ?")
                 .bind(isin.as_str())
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut *connection)
                 .await?
                 .ok_or_else(|| unknown_security(isin))?;
         }
-        // Read in the same transaction as the checks, so nothing is removed in between; nothing
-        // is written, so it is dropped rather than committed.
-        stored_records(&mut tx, filter, None).await
+        stored_records(connection, filter, None).await
     }
 }
 

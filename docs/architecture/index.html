@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fifolio Architecture</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" aria-label="Sections">
+  <a class="brand" href="index.html">Fifolio</a>
+  <p class="brand-sub">Architecture documentation (arc42)</p>
+  <ol>
+    <li><a href="01-introduction-and-goals.html"><span class="num">1</span>Introduction and goals</a></li>
+    <li><a href="02-constraints.html"><span class="num">2</span>Constraints</a></li>
+    <li><a href="03-context-and-scope.html"><span class="num">3</span>Context and scope</a></li>
+    <li><a href="04-solution-strategy.html"><span class="num">4</span>Solution strategy</a></li>
+    <li><a href="05-building-block-view.html"><span class="num">5</span>Building block view</a></li>
+    <li><span class="todo"><span class="num">6</span>Runtime view</span></li>
+    <li><span class="todo"><span class="num">7</span>Deployment view</span></li>
+    <li><span class="todo"><span class="num">8</span>Crosscutting concepts</span></li>
+    <li><span class="todo"><span class="num">9</span>Architecture decisions</span></li>
+    <li><span class="todo"><span class="num">10</span>Quality requirements</span></li>
+    <li><span class="todo"><span class="num">11</span>Risks and technical debt</span></li>
+    <li><span class="todo"><span class="num">12</span>Glossary</span></li>
+  </ol>
+  <p class="legend">Greyed sections are not yet written.</p>
+</nav>
+<main>
+  <h1>Fifolio architecture</h1>
+  <p class="lead">A local tool that attributes securities disposals to acquisitions under the German FIFO rule, per account, and reports the raw gain or loss in EUR.</p>
+
+  <p>These pages follow the <a href="https://arc42.org/">arc42</a> template. They give a structural overview of the system: its goals, constraints, boundary, strategy and building blocks. They do <strong>not</strong> restate the rules.</p>
+
+  <div class="note">
+    <p><strong>The specification in <code>design/</code> is the only source of truth.</strong> These pages summarize it and cite its identifiers (<span class="ref">DOM-058</span>, <span class="ref">DEC-024</span>, …), which link to the document that declares them. Where a page and <code>design/</code> disagree, <code>design/</code> wins and the page is out of date.</p>
+  </div>
+
+  <h2>How to read these pages</h2>
+  <ul>
+    <li><strong>Built and planned.</strong> Much of the system is specified but not yet built. Where it matters, a block carries a status:
+      <span class="badge built">built</span> exists and is tested,
+      <span class="badge partial">partial</span> exists in part,
+      <span class="badge planned">planned</span> is specified and not yet started.
+      Status is taken from the code and <code>PLAN.md</code> at commit <code>c04362c</code> (2026-09-24).</li>
+    <li><strong>Identifier prefixes.</strong> <code>DOM</code> domain, <code>ARC</code> architecture, <code>SRV</code> server, <code>CLI</code> client, <code>IMP</code> importers, <code>TST</code> testing, <code>DEC</code> decisions, <code>OQ</code> open questions, <code>FIF</code> work items in <code>PLAN.md</code>.</li>
+    <li><strong>Links into <code>design/</code></strong> open Markdown source files. Most browsers show them as plain text; search the page for the identifier.</li>
+  </ul>
+
+  <h2>Sections</h2>
+  <div class="cards">
+    <a class="card" href="01-introduction-and-goals.html"><strong>1 · Introduction and goals</strong><span>What the system is for, its top quality goals, and who cares about it.</span></a>
+    <a class="card" href="02-constraints.html"><strong>2 · Constraints</strong><span>What limits design freedom: technical, legal, organizational.</span></a>
+    <a class="card" href="03-context-and-scope.html"><strong>3 · Context and scope</strong><span>The system boundary, its partners, and the channels between them.</span></a>
+    <a class="card" href="04-solution-strategy.html"><strong>4 · Solution strategy</strong><span>The fundamental decisions, and how each quality goal is met.</span></a>
+    <a class="card" href="05-building-block-view.html"><strong>5 · Building block view</strong><span>The crates, and the modules inside <code>fifolio-core</code>.</span></a>
+    <div class="card todo"><strong>6 – 12</strong><span>Runtime, deployment, crosscutting concepts, decisions, quality requirements, risks, glossary. Not yet written.</span></div>
+  </div>
+
+  <footer class="page-footer">
+    Structure based on the arc42 template by Gernot Starke and Peter Hruschka, <a href="https://arc42.org/license/">CC BY-SA 4.0</a>. Content describes Fifolio and is maintained with its specification.
+  </footer>
+</main>
+</div>
+</body>
+</html>

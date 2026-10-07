@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture Constraints</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" aria-label="Sections">
+  <a class="brand" href="index.html">Fifolio</a>
+  <p class="brand-sub">Architecture documentation (arc42)</p>
+  <ol>
+    <li><a href="01-introduction-and-goals.html"><span class="num">1</span>Introduction and goals</a></li>
+    <li><a href="02-constraints.html" aria-current="page"><span class="num">2</span>Constraints</a></li>
+    <li><a href="03-context-and-scope.html"><span class="num">3</span>Context and scope</a></li>
+    <li><a href="04-solution-strategy.html"><span class="num">4</span>Solution strategy</a></li>
+    <li><a href="05-building-block-view.html"><span class="num">5</span>Building block view</a></li>
+    <li><span class="todo"><span class="num">6</span>Runtime view</span></li>
+    <li><span class="todo"><span class="num">7</span>Deployment view</span></li>
+    <li><span class="todo"><span class="num">8</span>Crosscutting concepts</span></li>
+    <li><span class="todo"><span class="num">9</span>Architecture decisions</span></li>
+    <li><span class="todo"><span class="num">10</span>Quality requirements</span></li>
+    <li><span class="todo"><span class="num">11</span>Risks and technical debt</span></li>
+    <li><span class="todo"><span class="num">12</span>Glossary</span></li>
+  </ol>
+  <p class="legend">Greyed sections are not yet written.</p>
+</nav>
+<main>
+  <h1>2 · Constraints</h1>
+  <p class="lead">Anything that limits design freedom. Some constraints are imposed from outside (the law, the brokers' file formats); others are the owner's standing choices, which are negotiable but not casually.</p>
+
+  <h2 id="external">2.1 External constraints</h2>
+  <p>Imposed by the domain. The design cannot negotiate these.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Constraint</th><th>Consequence</th><th>Refs</th></tr></thead>
+    <tbody>
+      <tr><td><strong>FIFO per Depot</strong> (German income tax)</td><td>Attribution never crosses accounts. A broker's per-currency sub-accounts are merged onto one account.</td><td><a class="ref" href="../../design/domain.md">DOM-003</a> <a class="ref" href="../../design/importers.md">IMP-SAXO-005</a></td></tr>
+      <tr><td><strong>Each leg valued in EUR on its own trade date</strong></td><td>Every transaction stores native figures, EUR figures and the rate. Currency movement falls inside the securities gain.</td><td><a class="ref" href="../../design/domain.md">DOM-025</a> <a class="ref" href="../../design/domain.md">DOM-026</a> <a class="ref" href="../../design/domain.md">DOM-027</a></td></tr>
+      <tr><td><strong>Broker export formats are given</strong></td><td>Saxo NL: a three-sheet XLSX with Dutch headers, Dutch exports only. Trade Republic: a 23-column CSV. Neither can be changed, and both change without notice.</td><td><a class="ref" href="../../design/importers.md">IMP-SAXO-001</a> <a class="ref" href="../../design/importers.md">IMP-SAXO-004</a> <a class="ref" href="../../design/importers.md">IMP-TR-001</a></td></tr>
+      <tr><td><strong>Exports are incomplete</strong></td><td>Some events lack information that only the user knows. A completion queue and manual entries are unavoidable.</td><td><a class="ref" href="../../design/domain.md">DOM-045</a> <a class="ref" href="../../design/domain.md">DOM-097</a></td></tr>
+      <tr><td><strong>ECB reference rates</strong> are the customary fallback for FX</td><td>The published series starts in 1999 and has gaps on weekends and holidays, so a bounded fallback is needed.</td><td><a class="ref" href="../../design/domain.md">DOM-030</a> <a class="ref" href="../../design/domain.md">DOM-034</a> <a class="ref" href="../../design/architecture.md">ARC-027</a></td></tr>
+      <tr><td><strong>Real exports are personal financial records</strong></td><td>They stay out of the repository. Tests run on anonymized fixtures.</td><td><a class="ref" href="../../design/testing.md">TST-011</a> <a class="ref" href="../../design/decisions.md">DEC-017</a></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="technical">2.2 Technical constraints</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Constraint</th><th>Background</th><th>Refs</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Rust</strong>, one Cargo workspace, edition 2024, stable toolchain</td><td>Sum types make a transaction variant impossible to misread as another. <code>unsafe_code</code> is forbidden workspace-wide.</td><td><a class="ref" href="../../design/architecture.md">ARC-001</a></td></tr>
+      <tr><td><strong>No floating point for money or quantities</strong></td><td>Arbitrary-precision decimals (<code>rust_decimal</code>) with fixed scales per kind. Enforced by the <code>clippy::float_arithmetic = "deny"</code> lint, not by review.</td><td><a class="ref" href="../../design/architecture.md">ARC-006</a> <a class="ref" href="../../design/architecture.md">ARC-007</a></td></tr>
+      <tr><td><strong>Local SQLite, one file</strong></td><td><code>./fifolio.db</code> by default, with versioned migrations applied on startup.</td><td><a class="ref" href="../../design/architecture.md">ARC-011</a> <a class="ref" href="../../design/architecture.md">ARC-012</a> <a class="ref" href="../../design/architecture.md">ARC-013</a></td></tr>
+      <tr><td><strong>Local, single user, no authentication</strong></td><td>The server binds only <code>127.0.0.1</code>. Exposing it to a network is an explicit non-goal.</td><td><a class="ref" href="../../design/architecture.md">ARC-022</a></td></tr>
+      <tr><td><strong>The client reaches data only over HTTP</strong></td><td><code>fifolio-cli</code> does not depend on <code>fifolio-core</code>. The cost is that response types are defined twice.</td><td><a class="ref" href="../../design/architecture.md">ARC-005</a> <a class="ref" href="../../design/decisions.md">DEC-018</a></td></tr>
+      <tr><td><strong>HTTP conventions</strong></td><td>RFC 9457 <code>problem+json</code> for every error, with a stable <code>type</code> per error class. The server publishes its OpenAPI document.</td><td><a class="ref" href="../../design/architecture.md">ARC-020</a> <a class="ref" href="../../design/architecture.md">ARC-021</a> <a class="ref" href="../../design/server.md">SRV-006</a></td></tr>
+      <tr><td><strong>Tests never touch the network</strong></td><td>External services (the ECB feed) are injected ports with fakes and recorded fragments.</td><td><a class="ref" href="../../design/testing.md">TST-019</a> <a class="ref" href="../../design/testing.md">TST-020</a></td></tr>
+      <tr><td><strong>Localization only in the client</strong></td><td>Dutch and English in the interactive UI. Core and server carry no locale concerns, and report output is never translated.</td><td><a class="ref" href="../../design/architecture.md">ARC-026</a> <a class="ref" href="../../design/cli.md">CLI-035</a></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="organizational">2.3 Organizational constraints</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Constraint</th><th>Background</th><th>Refs</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Specification first</strong></td><td>Behavior is decided in <code>design/</code> before it is built. A new broker type is specified first and imported afterwards. It is never inferred from data.</td><td><a class="ref" href="../../design/decisions.md">DEC-019</a></td></tr>
+      <tr><td><strong>Requirement identifiers</strong></td><td>Every testable statement carries a stable id that is never reused. Tests name the ids they cover, so coverage of the specification can be checked.</td><td><a href="../../design/README.md">design/README.md</a></td></tr>
+      <tr><td><strong>Undecided means blocked</strong></td><td><code>open-questions.md</code> is the authoritative, hand-maintained list of what is undecided. Work items touching a listed requirement are not implemented until it is answered.</td><td><a href="../../design/open-questions.md">open-questions.md</a></td></tr>
+      <tr><td><strong>Decisions are append-only</strong></td><td>A decision entry is never edited. A reversal is a new entry that cites the old one.</td><td><a href="../../design/decisions.md">decisions.md</a></td></tr>
+      <tr><td><strong>Agent-driven development cycle</strong></td><td>Specialized agents run the cycle: spec-auditor, planner, implementer, conformance-reviewer, test-reviewer. Reviewers never write code, fix loops are bounded to three rounds, and commits happen only after a clean pass.</td><td><a href="../../.claude/agents/README.md">.claude/agents/README.md</a></td></tr>
+      <tr><td><strong>CI gates</strong></td><td>fmt, clippy with <code>-D warnings</code>, and tests. Coverage thresholds of 95 / 90 / 75 per crate (core / server / cli) apply to <em>changed lines</em>.</td><td><a class="ref" href="../../design/testing.md">TST-024</a> <a class="ref" href="../../design/testing.md">TST-025</a> <a class="ref" href="../../design/decisions.md">DEC-023</a></td></tr>
+      <tr><td><strong>Every change ships with tests</strong></td><td>Unit tests for logic, integration tests for storage and HTTP, end-to-end tests for user paths. A bug fix starts with a failing test.</td><td><a href="../../CLAUDE.md">CLAUDE.md</a> <a href="../../design/testing.md">testing.md</a></td></tr>
+      <tr><td><strong>License</strong></td><td>MIT. The crates are not published.</td><td><a href="../../LICENSE">LICENSE</a></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="conventions">2.4 Conventions</h2>
+  <ul>
+    <li><strong>Rounding</strong> is half away from zero. It is done by the caller <em>before</em> a storage or presentation boundary, and storage refuses a value that is not at its scale. <a class="ref" href="../../design/architecture.md">ARC-010</a> <a class="ref" href="../../design/decisions.md">DEC-067</a></li>
+    <li><strong>Machine-readable output</strong> uses ISO 8601 dates and dot decimals, whatever the interface language. <a class="ref" href="../../design/cli.md">CLI-028</a></li>
+    <li><strong>Declare once, cite elsewhere.</strong> A bracketed id declares a requirement exactly once. Prose elsewhere cites it without brackets. <a href="../../design/README.md">design/README.md</a></li>
+  </ul>
+
+  <div class="pager">
+    <a href="01-introduction-and-goals.html">← 1 · Introduction and goals</a>
+    <a href="03-context-and-scope.html">3 · Context and scope →</a>
+  </div>
+
+  <footer class="page-footer">
+    Structure based on the arc42 template by Gernot Starke and Peter Hruschka, <a href="https://arc42.org/license/">CC BY-SA 4.0</a>. Content describes Fifolio and is maintained with its specification.
+  </footer>
+</main>
+</div>
+</body>
+</html>

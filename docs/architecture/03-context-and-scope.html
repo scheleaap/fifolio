@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Context and Scope</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" aria-label="Sections">
+  <a class="brand" href="index.html">Fifolio</a>
+  <p class="brand-sub">Architecture documentation (arc42)</p>
+  <ol>
+    <li><a href="01-introduction-and-goals.html"><span class="num">1</span>Introduction and goals</a></li>
+    <li><a href="02-constraints.html"><span class="num">2</span>Constraints</a></li>
+    <li><a href="03-context-and-scope.html" aria-current="page"><span class="num">3</span>Context and scope</a></li>
+    <li><a href="04-solution-strategy.html"><span class="num">4</span>Solution strategy</a></li>
+    <li><a href="05-building-block-view.html"><span class="num">5</span>Building block view</a></li>
+    <li><span class="todo"><span class="num">6</span>Runtime view</span></li>
+    <li><span class="todo"><span class="num">7</span>Deployment view</span></li>
+    <li><span class="todo"><span class="num">8</span>Crosscutting concepts</span></li>
+    <li><span class="todo"><span class="num">9</span>Architecture decisions</span></li>
+    <li><span class="todo"><span class="num">10</span>Quality requirements</span></li>
+    <li><span class="todo"><span class="num">11</span>Risks and technical debt</span></li>
+    <li><span class="todo"><span class="num">12</span>Glossary</span></li>
+  </ol>
+  <p class="legend">Greyed sections are not yet written.</p>
+</nav>
+<main>
+  <h1>3 · Context and scope</h1>
+  <p class="lead">Where Fifolio ends and the world begins. It is a closed, offline system: it talks to no broker, and its only outbound connection is to the ECB rate feed.</p>
+
+  <h2 id="business">3.1 Business context</h2>
+  <p>Fifolio treated as a black box. The arrows show data flows, not dependencies.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 900 470" role="img" aria-labelledby="bc-title">
+      <title id="bc-title">Business context: the user, two brokers' exports, the ECB, the manual-information file and the tax return around Fifolio</title>
+      <defs>
+        <marker id="bc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+
+      <!-- Fifolio -->
+      <rect class="focus" x="340" y="175" width="220" height="110" rx="10"/>
+      <text class="title" x="450" y="220" text-anchor="middle">Fifolio</text>
+      <text class="small" x="450" y="240" text-anchor="middle">FIFO attribution and</text>
+      <text class="small" x="450" y="255" text-anchor="middle">raw gain/loss per Depot</text>
+
+      <!-- User -->
+      <rect class="box" x="20" y="180" width="170" height="100" rx="10"/>
+      <text class="title" x="105" y="220" text-anchor="middle">User</text>
+      <text class="small" x="105" y="240" text-anchor="middle">taxpayer, the only</text>
+      <text class="small" x="105" y="255" text-anchor="middle">operator</text>
+
+      <!-- Saxo -->
+      <rect class="ext" x="20" y="20" width="200" height="70" rx="8"/>
+      <text class="title" x="120" y="50" text-anchor="middle">Saxo Bank NL</text>
+      <text class="small" x="120" y="70" text-anchor="middle">broker, non-German</text>
+
+      <!-- Trade Republic -->
+      <rect class="ext" x="20" y="380" width="200" height="70" rx="8"/>
+      <text class="title" x="120" y="410" text-anchor="middle">Trade Republic</text>
+      <text class="small" x="120" y="430" text-anchor="middle">broker, German</text>
+
+      <!-- ECB -->
+      <rect class="ext" x="680" y="20" width="200" height="70" rx="8"/>
+      <text class="title" x="780" y="50" text-anchor="middle">European Central Bank</text>
+      <text class="small" x="780" y="70" text-anchor="middle">euro reference rates</text>
+
+      <!-- Tax return -->
+      <rect class="ext" x="680" y="195" width="200" height="70" rx="8"/>
+      <text class="title" x="780" y="225" text-anchor="middle">German tax return</text>
+      <text class="small" x="780" y="245" text-anchor="middle">prepared by the user</text>
+
+      <!-- Manual info file -->
+      <rect class="ext" x="680" y="380" width="200" height="70" rx="8"/>
+      <text class="title" x="780" y="410" text-anchor="middle">Manual-information file</text>
+      <text class="small" x="780" y="430" text-anchor="middle">user-kept backup</text>
+
+      <!-- Saxo -> Fifolio -->
+      <path class="edge" d="M220,70 L360,175" marker-end="url(#bc-arrow)"/>
+      <rect class="label-bg" x="222" y="110" width="138" height="18" rx="3"/>
+      <text class="small" x="291" y="123" text-anchor="middle">yearly export (XLSX)</text>
+
+      <!-- TR -> Fifolio -->
+      <path class="edge" d="M220,400 L360,285" marker-end="url(#bc-arrow)"/>
+      <rect class="label-bg" x="222" y="332" width="138" height="18" rx="3"/>
+      <text class="small" x="291" y="345" text-anchor="middle">yearly export (CSV)</text>
+
+      <!-- User <-> Fifolio -->
+      <path class="edge" d="M190,215 L340,215" marker-end="url(#bc-arrow)"/>
+      <text class="small" x="265" y="207" text-anchor="middle">completions, approvals</text>
+      <path class="edge" d="M340,250 L190,250" marker-end="url(#bc-arrow)"/>
+      <text class="small" x="265" y="268" text-anchor="middle">queue, proposals, reports</text>
+
+      <!-- ECB -> Fifolio -->
+      <path class="edge" d="M680,70 L540,175" marker-end="url(#bc-arrow)"/>
+      <rect class="label-bg" x="545" y="110" width="130" height="18" rx="3"/>
+      <text class="small" x="610" y="123" text-anchor="middle">daily rates (XML)</text>
+
+      <!-- Fifolio -> Tax return -->
+      <path class="edge dashed" d="M560,230 L680,230" marker-end="url(#bc-arrow)"/>
+      <text class="small" x="620" y="222" text-anchor="middle">raw figures</text>
+
+      <!-- Fifolio <-> manual file -->
+      <path class="edge" d="M540,285 L690,380" marker-start="url(#bc-arrow)" marker-end="url(#bc-arrow)"/>
+      <rect class="label-bg" x="560" y="328" width="120" height="18" rx="3"/>
+      <text class="small" x="620" y="341" text-anchor="middle">manual entries (JSON)</text>
+    </svg>
+    <figcaption>Brokers are not connected online: the user downloads each year's export and hands it to Fifolio. The dashed arrow means the user carries the figures into the tax return and applies tax law to them, outside the system.</figcaption>
+  </figure>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Partner</th><th>Into Fifolio</th><th>Out of Fifolio</th><th>Refs</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>User</strong></td>
+        <td>
+          <ul>
+            <li>Broker files, each with an explicit target account.</li>
+            <li>Answers to the completion queue (manual entries).</li>
+            <li>Approve or decline for each attribution proposal.</li>
+            <li>Corrections to auto-created securities (type, quotation).</li>
+            <li>Import undo.</li>
+          </ul>
+        </td>
+        <td>
+          <ul>
+            <li>Import summaries.</li>
+            <li>The completion queue.</li>
+            <li>Proposals with their derived figures, or a named shortfall.</li>
+            <li>Reports.</li>
+            <li>Refusals that name their cause.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/server.md">SRV-012</a> <a class="ref" href="../../design/server.md">SRV-017</a> <a class="ref" href="../../design/server.md">SRV-011</a> <a class="ref" href="../../design/cli.md">CLI-017</a></td>
+      </tr>
+      <tr>
+        <td><strong>Saxo Bank NL</strong><br>(via the user)</td>
+        <td>A transactions export in XLSX: one calendar year, three sheets (<code>Transacties</code>, <code>_Transacties</code>, <code>Bookings</code>), Dutch headers. States the EUR amounts that were actually booked.</td>
+        <td>nothing</td>
+        <td><a class="ref" href="../../design/importers.md">IMP-SAXO-001</a> <a class="ref" href="../../design/importers.md">IMP-SAXO-037</a> <a class="ref" href="../../design/decisions.md">DEC-070</a></td>
+      </tr>
+      <tr>
+        <td><strong>Trade Republic</strong><br>(via the user)</td>
+        <td>A transactions export in CSV: one calendar year, 23 columns, UUID transaction ids. Carries no account identifier.</td>
+        <td>nothing</td>
+        <td><a class="ref" href="../../design/importers.md">IMP-TR-001</a> <a class="ref" href="../../design/importers.md">IMP-TR-003</a> <a class="ref" href="../../design/open-questions.md">OQ-015</a></td>
+      </tr>
+      <tr>
+        <td><strong>European Central Bank</strong></td>
+        <td>Daily euro reference rates: the full historical series once (back to 1999, a few MB), then the rolling 90-day window. Used only when a file states no EUR figure.</td>
+        <td>nothing</td>
+        <td><a class="ref" href="../../design/architecture.md">ARC-017</a> <a class="ref" href="../../design/architecture.md">ARC-018</a> <a class="ref" href="../../design/domain.md">DOM-032</a></td>
+      </tr>
+      <tr>
+        <td><strong>Manual-information file</strong></td>
+        <td>A replay of the manual entries into a rebuilt database. Idempotent; an entry whose source records are absent is reported and skipped.</td>
+        <td>Every manual entry, as one JSON document with a schema version.</td>
+        <td><a class="ref" href="../../design/cli.md">CLI-009</a> <a class="ref" href="../../design/cli.md">CLI-038</a> <a class="ref" href="../../design/cli.md">CLI-039</a> <a class="ref" href="../../design/cli.md">CLI-040</a></td>
+      </tr>
+      <tr>
+        <td><strong>German tax return</strong><br>(outside, via the user)</td>
+        <td>nothing</td>
+        <td>Raw gain or loss per year and account, and every acquisition with its disposals. The user applies tax law to them.</td>
+        <td><a class="ref" href="../../design/domain.md">DOM-074</a> <a class="ref" href="../../design/domain.md">DOM-076</a> <a class="ref" href="../../design/domain.md">DOM-001</a></td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="technical">3.2 Technical context</h2>
+  <p>Everything runs on the user's machine, as two processes and one database file.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 900 400" role="img" aria-labelledby="tc-title">
+      <title id="tc-title">Technical context: terminal, fifolio-cli, fifolio-server and fifolio.db on the user's machine; the ECB over HTTPS</title>
+      <defs>
+        <marker id="tc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+
+      <rect class="boundary" x="10" y="10" width="660" height="380" rx="12"/>
+      <text class="small" x="26" y="32">User's machine</text>
+
+      <!-- Files -->
+      <rect class="ext" x="30" y="50" width="170" height="60" rx="6"/>
+      <text x="115" y="76" text-anchor="middle">Broker export files</text>
+      <text class="small" x="115" y="94" text-anchor="middle">.xlsx / .csv</text>
+
+      <rect class="ext" x="30" y="170" width="170" height="60" rx="6"/>
+      <text x="115" y="196" text-anchor="middle">Terminal</text>
+      <text class="small" x="115" y="214" text-anchor="middle">TUI · stdout reports</text>
+
+      <rect class="ext" x="30" y="300" width="170" height="60" rx="6"/>
+      <text x="115" y="326" text-anchor="middle">Manual-information</text>
+      <text class="small" x="115" y="344" text-anchor="middle">.json</text>
+
+      <!-- CLI -->
+      <rect class="focus" x="250" y="160" width="150" height="80" rx="8"/>
+      <text class="title mono" x="325" y="196" text-anchor="middle">fifolio-cli</text>
+      <text class="small" x="325" y="216" text-anchor="middle">process</text>
+
+      <!-- Server -->
+      <rect class="focus" x="480" y="160" width="160" height="80" rx="8"/>
+      <text class="title mono" x="560" y="196" text-anchor="middle">fifolio-server</text>
+      <text class="small" x="560" y="216" text-anchor="middle">process · 127.0.0.1:8000</text>
+
+      <!-- DB -->
+      <path class="box" d="M500,305 a60,12 0 0,0 120,0 v45 a60,12 0 0,1 -120,0 z"/>
+      <ellipse class="box" cx="560" cy="305" rx="60" ry="12"/>
+      <text class="mono" x="560" y="340" text-anchor="middle">fifolio.db</text>
+
+      <!-- ECB -->
+      <rect class="ext" x="720" y="160" width="165" height="80" rx="8"/>
+      <text class="title" x="802" y="196" text-anchor="middle">ECB</text>
+      <text class="small" x="802" y="216" text-anchor="middle">ecb.europa.eu</text>
+
+      <!-- Edges -->
+      <path class="edge" d="M200,80 L270,160" marker-end="url(#tc-arrow)"/>
+      <text class="small" x="248" y="112">read</text>
+
+      <path class="edge" d="M200,200 L250,200" marker-start="url(#tc-arrow)" marker-end="url(#tc-arrow)"/>
+
+      <path class="edge" d="M200,330 L270,240" marker-start="url(#tc-arrow)" marker-end="url(#tc-arrow)"/>
+      <text class="small" x="248" y="300">read / write</text>
+
+      <path class="edge" d="M400,200 L480,200" marker-end="url(#tc-arrow)"/>
+      <text class="small" x="440" y="190" text-anchor="middle">HTTP/JSON</text>
+      <text class="small" x="440" y="222" text-anchor="middle">loopback</text>
+
+      <path class="edge" d="M560,240 L560,292" marker-end="url(#tc-arrow)"/>
+      <text class="small" x="570" y="272">SQLite</text>
+
+      <path class="edge dashed" d="M640,200 L720,200" marker-end="url(#tc-arrow)"/>
+      <text class="small" x="680" y="190" text-anchor="middle">HTTPS</text>
+    </svg>
+    <figcaption>Only <code>fifolio-server</code> opens the database <a class="ref" href="../../design/architecture.md">ARC-003</a>. The client holds no domain logic and reaches data only over HTTP <a class="ref" href="../../design/architecture.md">ARC-005</a>. The ECB connection is dashed because the code that makes it is not built yet: <code>fifolio-core</code> defines the feed as an injected port and carries no HTTP.</figcaption>
+  </figure>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Channel</th><th>Between</th><th>Carries</th><th>Status</th><th>Refs</th></tr></thead>
+    <tbody>
+      <tr><td>HTTP/JSON on <code>127.0.0.1:8000</code> (port configurable)</td><td>cli → server</td><td>All domain operations. Errors as RFC 9457 <code>problem+json</code>. OpenAPI at <code>/openapi.json</code>.</td><td><span class="badge planned">planned</span></td><td><a class="ref" href="../../design/server.md">SRV-002</a> <a class="ref" href="../../design/server.md">SRV-003</a> <a class="ref" href="../../design/architecture.md">ARC-020</a> <a class="ref" href="../../design/server.md">SRV-006</a></td></tr>
+      <tr><td>Import request</td><td>cli → server</td><td>The broker file, its format and the explicit target account. The server parses it.</td><td><span class="badge planned">planned</span></td><td><a class="ref" href="../../design/server.md">SRV-012</a> <a class="ref" href="../../design/server.md">SRV-013</a></td></tr>
+      <tr><td>SQLite file</td><td>server → <code>fifolio.db</code></td><td>All persistent state. Migrations run when the database is opened.</td><td><span class="badge built">built</span> (in core)</td><td><a class="ref" href="../../design/architecture.md">ARC-011</a> <a class="ref" href="../../design/architecture.md">ARC-012</a> <a class="ref" href="../../design/server.md">SRV-004</a></td></tr>
+      <tr><td>HTTPS</td><td>server → ECB</td><td>Reference rate XML: the historical series and the 90-day window.</td><td><span class="badge partial">partial</span> parsing and caching built; fetch not built</td><td><a class="ref" href="../../design/architecture.md">ARC-017</a> <a class="ref" href="../../design/architecture.md">ARC-018</a> <a class="ref" href="../../design/server.md">SRV-046</a> <a class="ref" href="../../design/open-questions.md">OQ-019</a></td></tr>
+      <tr><td>Terminal</td><td>user ↔ cli</td><td>The interactive TUI (Dutch or English). Report subcommands write <code>human</code>, <code>csv</code> or <code>json</code> to stdout.</td><td><span class="badge planned">planned</span></td><td><a class="ref" href="../../design/cli.md">CLI-001</a> <a class="ref" href="../../design/cli.md">CLI-002</a> <a class="ref" href="../../design/cli.md">CLI-007</a></td></tr>
+      <tr><td>Local files</td><td>cli ↔ file system</td><td>Broker exports (read). The manual-information JSON (written by export, read by import).</td><td><span class="badge planned">planned</span></td><td><a class="ref" href="../../design/cli.md">CLI-005</a> <a class="ref" href="../../design/cli.md">CLI-037</a></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note warn">
+    <p><strong>Open:</strong> whether an import may fetch a missing rate from the network itself, or only use the cache. This decides whether an import can fail for lack of a connection. <a class="ref" href="../../design/open-questions.md">OQ-019</a></p>
+  </div>
+
+  <div class="pager">
+    <a href="02-constraints.html">← 2 · Constraints</a>
+    <a href="04-solution-strategy.html">4 · Solution strategy →</a>
+  </div>
+
+  <footer class="page-footer">
+    Structure based on the arc42 template by Gernot Starke and Peter Hruschka, <a href="https://arc42.org/license/">CC BY-SA 4.0</a>. Content describes Fifolio and is maintained with its specification.
+  </footer>
+</main>
+</div>
+</body>
+</html>

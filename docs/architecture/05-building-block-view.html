@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Building Block View</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" aria-label="Sections">
+  <a class="brand" href="index.html">Fifolio</a>
+  <p class="brand-sub">Architecture documentation (arc42)</p>
+  <ol>
+    <li><a href="01-introduction-and-goals.html"><span class="num">1</span>Introduction and goals</a></li>
+    <li><a href="02-constraints.html"><span class="num">2</span>Constraints</a></li>
+    <li><a href="03-context-and-scope.html"><span class="num">3</span>Context and scope</a></li>
+    <li><a href="04-solution-strategy.html"><span class="num">4</span>Solution strategy</a></li>
+    <li><a href="05-building-block-view.html" aria-current="page"><span class="num">5</span>Building block view</a></li>
+    <li><span class="todo"><span class="num">6</span>Runtime view</span></li>
+    <li><span class="todo"><span class="num">7</span>Deployment view</span></li>
+    <li><span class="todo"><span class="num">8</span>Crosscutting concepts</span></li>
+    <li><span class="todo"><span class="num">9</span>Architecture decisions</span></li>
+    <li><span class="todo"><span class="num">10</span>Quality requirements</span></li>
+    <li><span class="todo"><span class="num">11</span>Risks and technical debt</span></li>
+    <li><span class="todo"><span class="num">12</span>Glossary</span></li>
+  </ol>
+  <p class="legend">Greyed sections are not yet written.</p>
+</nav>
+<main>
+  <h1>5 · Building block view</h1>
+  <p class="lead">The static decomposition. Level 1 is the crates of the workspace. Level 2 opens <code>fifolio-core</code>, where all the domain logic lives.</p>
+
+  <div class="note">
+    <p>Status is taken from the code and <code>PLAN.md</code> at commit <code>c04362c</code>. The two binaries are still stubs that exit with "not implemented yet". Most of the built code is the domain model, storage, and the shared import framework. Dependencies at level 2 are read from the <code>use crate::…</code> statements, not from intent.</p>
+  </div>
+
+  <h2 id="level-1">5.1 Level 1: the workspace</h2>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 900 420" role="img" aria-labelledby="l1-title">
+      <title id="l1-title">Level 1: fifolio-cli calls fifolio-server over HTTP; the server uses fifolio-core, which owns the SQLite database; the CLI does not depend on core</title>
+      <defs>
+        <marker id="l1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+
+      <!-- User -->
+      <rect class="ext" x="10" y="70" width="110" height="60" rx="8"/>
+      <text class="title" x="65" y="105" text-anchor="middle">User</text>
+
+      <!-- Boundary -->
+      <rect class="boundary" x="150" y="15" width="540" height="395" rx="12"/>
+      <text class="small" x="166" y="37">Fifolio · Cargo workspace</text>
+
+      <!-- cli -->
+      <rect class="focus" x="180" y="60" width="180" height="80" rx="8"/>
+      <text class="title mono" x="270" y="92" text-anchor="middle">fifolio-cli</text>
+      <text class="small" x="270" y="112" text-anchor="middle">TUI + report subcommands</text>
+
+      <!-- server -->
+      <rect class="focus" x="450" y="60" width="200" height="80" rx="8"/>
+      <text class="title mono" x="550" y="92" text-anchor="middle">fifolio-server</text>
+      <text class="small" x="550" y="112" text-anchor="middle">HTTP API</text>
+
+      <!-- core -->
+      <rect class="focus" x="450" y="200" width="200" height="80" rx="8"/>
+      <text class="title mono" x="550" y="232" text-anchor="middle">fifolio-core</text>
+      <text class="small" x="550" y="252" text-anchor="middle">domain, FIFO, import, FX, storage</text>
+
+      <!-- dev-time -->
+      <rect class="planned-box" x="180" y="330" width="200" height="60" rx="8"/>
+      <text class="mono" x="280" y="357" text-anchor="middle">fifolio-test-support</text>
+      <text class="small" x="280" y="375" text-anchor="middle">dev-time: test harness</text>
+      <rect class="planned-box" x="450" y="330" width="200" height="60" rx="8"/>
+      <text class="mono" x="550" y="357" text-anchor="middle">anonymize-exports</text>
+      <text class="small" x="550" y="375" text-anchor="middle">dev-time: fixture generator</text>
+
+      <!-- externals -->
+      <rect class="ext" x="720" y="60" width="160" height="80" rx="8"/>
+      <text class="title" x="800" y="96" text-anchor="middle">ECB</text>
+      <text class="small" x="800" y="116" text-anchor="middle">rate feed</text>
+      <path class="box" d="M740,215 a60,12 0 0,0 120,0 v45 a60,12 0 0,1 -120,0 z"/>
+      <ellipse class="box" cx="800" cy="215" rx="60" ry="12"/>
+      <text class="mono" x="800" y="250" text-anchor="middle">fifolio.db</text>
+
+      <!-- edges -->
+      <path class="edge" d="M120,100 L180,100" marker-end="url(#l1-arrow)"/>
+      <path class="edge" d="M360,100 L450,100" marker-end="url(#l1-arrow)"/>
+      <text class="small" x="405" y="90" text-anchor="middle">HTTP/JSON</text>
+      <path class="edge" d="M550,140 L550,200" marker-end="url(#l1-arrow)"/>
+      <text class="small" x="560" y="175">Rust crate dependency</text>
+      <path class="edge" d="M650,240 L740,240" marker-end="url(#l1-arrow)"/>
+      <text class="small" x="715" y="230" text-anchor="middle">sqlx</text>
+      <path class="edge dashed" d="M650,100 L720,100" marker-end="url(#l1-arrow)"/>
+      <text class="small" x="705" y="90" text-anchor="middle">HTTPS</text>
+
+      <!-- forbidden dependency -->
+      <path class="forbidden" d="M270,140 L450,235"/>
+      <text class="small" x="300" y="210">no dependency</text>
+      <text class="small" x="300" y="225">(DEC-018)</text>
+    </svg>
+    <figcaption>Solid boxes ship as binaries or libraries. Dashed boxes are used only at development time. The dotted line marks a dependency that is deliberately absent: the client does not link the core.</figcaption>
+  </figure>
+
+  <h3>Why this decomposition</h3>
+  <ul>
+    <li><strong>One writer, one implementation of FIFO.</strong> Only the server opens the database, and only the core computes. Two clients could never disagree about a figure. <a class="ref" href="../../design/architecture.md">ARC-003</a> <a class="ref" href="../../design/architecture.md">ARC-005</a></li>
+    <li><strong>The core has no HTTP and no terminal.</strong> Every rule is testable in process, without a server. A test checks this mechanically against <code>Cargo.lock</code>. <a class="ref" href="../../design/architecture.md">ARC-002</a> <a class="ref" href="../../design/architecture.md">ARC-024</a></li>
+    <li><strong>The client does not link the core.</strong> Linking it would pull SQLite into the client binary. The cost is that response types are defined twice. <a class="ref" href="../../design/decisions.md">DEC-018</a></li>
+  </ul>
+
+  <h3>Black boxes</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Block</th><th>Responsibility</th><th>Interfaces</th><th>Location</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="nowrap"><code>fifolio-core</code></td>
+        <td>
+          <ul>
+            <li>Domain model.</li>
+            <li>FIFO proposal engine and allocation figures.</li>
+            <li>Broker importers.</li>
+            <li>FX rate resolution and the ECB cache.</li>
+            <li>SQLite storage with migrations and invariants.</li>
+            <li>Reports.</li>
+          </ul>
+        </td>
+        <td>
+          <ul>
+            <li>Rust library API, for example <code>Database::open</code> and its repositories, <code>import::import</code>, <code>fx::resolve</code>, <code>ecb::seed</code> / <code>top_up</code>.</li>
+            <li>Ports injected by the caller: <code>RateFeed</code>, <code>RateTable</code>, <code>Importer</code>.</li>
+          </ul>
+        </td>
+        <td><code>crates/fifolio-core</code></td>
+        <td><span class="badge partial">partial</span></td>
+      </tr>
+      <tr>
+        <td class="nowrap"><code>fifolio-server</code></td>
+        <td>
+          <ul>
+            <li>The HTTP API over the core: accounts and securities, import and batches, source records and manual entries, transactions, attributions, reports, FX rates.</li>
+            <li>Owns the database file.</li>
+            <li>Publishes its OpenAPI document.</li>
+          </ul>
+        </td>
+        <td>
+          <ul>
+            <li>HTTP/JSON on <code>127.0.0.1:8000</code>, errors as <code>problem+json</code>.</li>
+            <li>Command line: <code>--port</code>, <code>--database</code>, and the <code>openapi</code> subcommand.</li>
+          </ul>
+          <a class="ref" href="../../design/server.md">SRV-002…056</a>
+        </td>
+        <td><code>crates/fifolio-server</code></td>
+        <td><span class="badge planned">planned</span> stub binary</td>
+      </tr>
+      <tr>
+        <td class="nowrap"><code>fifolio-cli</code></td>
+        <td>
+          <ul>
+            <li>The interactive TUI: browsing, import, the completion queue, attribution.</li>
+            <li>The <code>report</code>, <code>export-manual-information</code> and <code>import-manual-information</code> subcommands.</li>
+            <li>Localization (nl, en).</li>
+          </ul>
+          <p>It holds no domain logic. A UI-agnostic client layer sits under a thin render layer.</p>
+        </td>
+        <td>
+          <ul>
+            <li>Command line: <code>--server-url</code>, <code>--lang</code>, and the subcommands.</li>
+            <li>Consumes the server's HTTP API.</li>
+          </ul>
+          <a class="ref" href="../../design/cli.md">CLI-001…042</a>
+        </td>
+        <td><code>crates/fifolio-cli</code></td>
+        <td><span class="badge planned">planned</span> stub binary</td>
+      </tr>
+      <tr>
+        <td class="nowrap"><code>fifolio-test-support</code></td>
+        <td>Shared test helpers (temporary database, free port), and the written convention for the three test layers.</td>
+        <td>A dev-dependency of the other crates: <code>TempDb</code>, <code>free_port</code>.</td>
+        <td><code>crates/fifolio-test-support</code></td>
+        <td><span class="badge built">built</span></td>
+      </tr>
+      <tr>
+        <td class="nowrap"><code>anonymize-exports</code></td>
+        <td>Derives the committed test fixtures from the real, gitignored exports. It perturbs amounts and keeps structure.</td>
+        <td>Command line: <code>--source</code> (default <code>design/example_exports</code>) and an output directory.</td>
+        <td><code>tools/anonymize-exports</code></td>
+        <td><span class="badge partial">partial</span> Saxo: extending to all three sheets (FIF-093)</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="level-2-core">5.2 Level 2: inside <code>fifolio-core</code></h2>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 900 530" role="img" aria-labelledby="l2-title">
+      <title id="l2-title">Level 2: planned importers, FIFO engine and reports above the built import framework, storage, domain model, FX and numbers groups</title>
+      <defs>
+        <marker id="l2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+
+      <!-- planned row -->
+      <rect class="planned-box" x="20" y="20" width="190" height="60" rx="8"/>
+      <text x="115" y="46" text-anchor="middle">Saxo NL importer</text>
+      <text class="small" x="115" y="64" text-anchor="middle">planned</text>
+      <rect class="planned-box" x="230" y="20" width="190" height="60" rx="8"/>
+      <text x="325" y="46" text-anchor="middle">Trade Republic importer</text>
+      <text class="small" x="325" y="64" text-anchor="middle">planned</text>
+      <rect class="planned-box" x="450" y="20" width="200" height="60" rx="8"/>
+      <text x="550" y="46" text-anchor="middle">FIFO engine + attribution</text>
+      <text class="small" x="550" y="64" text-anchor="middle">planned</text>
+      <rect class="planned-box" x="690" y="20" width="190" height="60" rx="8"/>
+      <text x="785" y="46" text-anchor="middle">Reports</text>
+      <text class="small" x="785" y="64" text-anchor="middle">planned</text>
+
+      <!-- import framework -->
+      <rect class="box" x="20" y="130" width="400" height="110" rx="8"/>
+      <text class="title" x="36" y="154">Import framework</text>
+      <text class="mono" x="36" y="180">import</text>
+      <text class="mono" x="36" y="200">import::reader</text>
+      <text class="mono" x="36" y="220">ordering</text>
+      <text class="small" x="200" y="180">Importer trait, classification,</text>
+      <text class="small" x="200" y="198">completion · XLSX/CSV readers ·</text>
+      <text class="small" x="200" y="216">per-file order</text>
+
+      <!-- storage -->
+      <rect class="box" x="450" y="130" width="430" height="110" rx="8"/>
+      <text class="title" x="466" y="154">Storage</text>
+      <text class="mono" x="466" y="180">storage · storage::codec</text>
+      <text class="mono" x="466" y="200">storage::{entities, transactions,</text>
+      <text class="mono" x="466" y="220">  attributions, manual_entries, rates}</text>
+      <text class="small" x="790" y="154" text-anchor="middle">+ migrations/</text>
+
+      <!-- domain model -->
+      <rect class="box" x="20" y="290" width="540" height="90" rx="8"/>
+      <text class="title" x="36" y="314">Domain model</text>
+      <text class="mono" x="36" y="340">entities · transaction · manual_entry</text>
+      <text class="mono" x="36" y="360">identity · quotation</text>
+
+      <!-- fx -->
+      <rect class="box" x="620" y="290" width="260" height="90" rx="8"/>
+      <text class="title" x="636" y="314">FX</text>
+      <text class="mono" x="636" y="340">fx</text>
+      <text class="small" x="666" y="340">resolution, fallback</text>
+      <text class="mono" x="636" y="360">ecb</text>
+      <text class="small" x="666" y="360">feed, seed, top-up</text>
+
+      <!-- numbers -->
+      <rect class="box" x="170" y="440" width="560" height="70" rx="8"/>
+      <text class="title" x="186" y="464">Numbers and valuation</text>
+      <text class="mono" x="186" y="490">decimal · precision · valuation</text>
+
+      <!-- edges: planned -->
+      <path class="edge dashed" d="M115,80 L115,130" marker-end="url(#l2-arrow)"/>
+      <path class="edge dashed" d="M325,80 L325,130" marker-end="url(#l2-arrow)"/>
+      <path class="edge dashed" d="M600,80 L650,130" marker-end="url(#l2-arrow)"/>
+      <path class="edge dashed" d="M690,50 L650,50" marker-end="url(#l2-arrow)"/>
+
+      <!-- edges: built -->
+      <path class="edge" d="M220,240 L220,290" marker-end="url(#l2-arrow)"/>
+      <path class="edge" d="M600,240 L540,290" marker-end="url(#l2-arrow)"/>
+      <path class="edge" d="M750,240 L750,290" marker-start="url(#l2-arrow)" marker-end="url(#l2-arrow)"/>
+      <text class="small" x="760" y="270">ecb ⇄ storage</text>
+      <path class="edge" d="M290,380 L290,440" marker-end="url(#l2-arrow)"/>
+      <path class="edge" d="M750,380 L680,440" marker-end="url(#l2-arrow)"/>
+    </svg>
+    <figcaption>Solid boxes are built, dashed boxes are planned. Arrows point from user to used. Import framework and Storage also use Numbers directly; those arrows are left out for readability. The planned blocks will all use the domain model.</figcaption>
+  </figure>
+
+  <h3>Why this decomposition</h3>
+  <ul>
+    <li><strong>Types are kept apart from behavior.</strong> The domain model modules are "types only": they define shapes (the transaction sum type, the manual entry shapes, the entities) and nothing persists or computes there. The rules live with the modules that own them.</li>
+    <li><strong>What every format shares is written once.</strong> The import framework scopes identity to the account, assigns order across the file, drops non-position rows and counts. An <code>Importer</code> implementation only answers per-format questions, so no format can forget a shared step. <a class="ref" href="../../design/domain.md">DOM-042</a> <a class="ref" href="../../design/domain.md">DOM-043</a></li>
+    <li><strong>Storage is a boundary with teeth.</strong> <code>storage::codec</code> is the only path from a decimal into a column, and it refuses a value that is not at its scale. Each transaction variant gets its own table, so no nullable column stands for "not applicable here". <a class="ref" href="../../design/architecture.md">ARC-010</a> <a class="ref" href="../../design/domain.md">DOM-010</a></li>
+    <li><strong>External services are ports.</strong> <code>RateFeed</code> hands over the ECB document and <code>RateTable</code> answers rate lookups, so FX is tested against fakes and recorded fragments. <a class="ref" href="../../design/testing.md">TST-020</a> <a class="ref" href="../../design/testing.md">TST-021</a></li>
+  </ul>
+
+  <h3>Black boxes</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Group</th><th>Modules</th><th>Responsibility</th><th>Refs</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Numbers and valuation</strong></td>
+        <td><code>decimal</code> <code>precision</code> <code>valuation</code></td>
+        <td>
+          <ul>
+            <li>Decimal kinds, their scales, and the one rounding rule.</li>
+            <li>What "exact" is worth in practice.</li>
+            <li>The native/EUR figure pairs, and the rate relating them.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/architecture.md">ARC-006…010</a> <a class="ref" href="../../design/domain.md">DOM-028</a></td>
+        <td><span class="badge built">built</span></td>
+      </tr>
+      <tr>
+        <td><strong>Domain model</strong></td>
+        <td><code>entities</code> <code>transaction</code> <code>manual_entry</code> <code>identity</code> <code>quotation</code></td>
+        <td>
+          <ul>
+            <li>Account, security, source record and import batch.</li>
+            <li>The six-variant transaction.</li>
+            <li>The five manual entry shapes.</li>
+            <li>Record identity: the broker's reference or a hash, scoped to the account.</li>
+            <li>Quotation defaulting from the instrument type.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/domain.md">DOM-010</a> <a class="ref" href="../../design/domain.md">DOM-097</a> <a class="ref" href="../../design/domain.md">DOM-023</a> <a class="ref" href="../../design/domain.md">DOM-036</a></td>
+        <td><span class="badge built">built</span></td>
+      </tr>
+      <tr>
+        <td><strong>Import framework</strong></td>
+        <td><code>import</code> <code>import::reader</code> <code>ordering</code></td>
+        <td>
+          <ul>
+            <li>The <code>Importer</code> trait and <code>import()</code>.</li>
+            <li>Row classification: derived, pending, or not a position event.</li>
+            <li>Completion of pending records.</li>
+            <li>XLSX and CSV readers behind one row type.</li>
+            <li>Per-file order.</li>
+            <li>The one-calendar-year guard.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/domain.md">DOM-040</a> <a class="ref" href="../../design/domain.md">DOM-043</a> <a class="ref" href="../../design/architecture.md">ARC-023</a> <a class="ref" href="../../design/importers.md">IMP-001</a></td>
+        <td><span class="badge built">built</span> (the canonical order across files, FIF-076, is blocked)</td>
+      </tr>
+      <tr>
+        <td><strong>FX</strong></td>
+        <td><code>fx</code> <code>ecb</code></td>
+        <td>
+          <ul>
+            <li>Rate precedence: broker, then ECB, then native.</li>
+            <li>The previous-publication fallback and its seven-day bound.</li>
+            <li>Parsing the ECB XML.</li>
+            <li>Seeding the cache and topping it up, insert-only.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/domain.md">DOM-030…035</a> <a class="ref" href="../../design/architecture.md">ARC-015…019</a> <a class="ref" href="../../design/architecture.md">ARC-027</a> <a class="ref" href="../../design/architecture.md">ARC-028</a></td>
+        <td><span class="badge built">built</span> (fetching a rate during an import, FIF-095, is blocked)</td>
+      </tr>
+      <tr>
+        <td><strong>Storage</strong></td>
+        <td><code>storage</code> and <code>storage::*</code>, <code>migrations/0001…0003</code></td>
+        <td>
+          <ul>
+            <li>Opening the database and running migrations.</li>
+            <li>Repositories for entities, transactions, attributions (quantities only), manual entries and rates.</li>
+            <li>Invariants enforced by storage.</li>
+          </ul>
+        </td>
+        <td><a class="ref" href="../../design/architecture.md">ARC-011…014</a> <a class="ref" href="../../design/domain.md">DOM-058</a> <a class="ref" href="../../design/domain.md">DOM-099</a> <a class="ref" href="../../design/testing.md">TST-004</a></td>
+        <td><span class="badge built">built</span></td>
+      </tr>
+      <tr>
+        <td><strong>FIFO engine and attribution</strong></td>
+        <td><em>none yet</em></td>
+        <td>
+          <ul>
+            <li>The proposal: oldest openings first, or a named shortfall.</li>
+            <li>Effective quantity across splits.</li>
+            <li>Allocation figures and the drift rule.</li>
+            <li>Approving an attribution, with transfer-out emission.</li>
+          </ul>
+        </td>
+        <td>FIF-013, 014, 015, 016, 061, 063</td>
+        <td><span class="badge planned">planned</span> (several blocked)</td>
+      </tr>
+      <tr>
+        <td><strong>Saxo NL importer</strong></td>
+        <td><em>none yet</em></td>
+        <td>
+          <ul>
+            <li>Joining the three sheets.</li>
+            <li>Header normalization.</li>
+            <li>Identity and per-date ordering.</li>
+            <li>Money derivation, classification.</li>
+            <li>Dividends, corporate actions.</li>
+          </ul>
+        </td>
+        <td>FIF-019…026, 066, 067, 083, 084, 088, 093, 094</td>
+        <td><span class="badge planned">planned</span></td>
+      </tr>
+      <tr>
+        <td><strong>Trade Republic importer</strong></td>
+        <td><em>none yet</em></td>
+        <td>
+          <ul>
+            <li>CSV mapping, identity by UUID.</li>
+            <li>Money mapping, classification.</li>
+            <li><code>TAX_EXCHANGE</code> pairing.</li>
+            <li>Security type mapping.</li>
+          </ul>
+        </td>
+        <td>FIF-027…029, 068, 069</td>
+        <td><span class="badge planned">planned</span></td>
+      </tr>
+      <tr>
+        <td><strong>Reports</strong></td>
+        <td><em>none yet</em></td>
+        <td>
+          <ul>
+            <li>The income tax overview, including the count of outstanding disposals.</li>
+            <li>The acquisition report.</li>
+            <li>Read-only projections.</li>
+          </ul>
+        </td>
+        <td>FIF-030, 031, 082</td>
+        <td><span class="badge planned">planned</span></td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="note warn">
+    <p><strong>Observed coupling:</strong> <code>ecb</code> and <code>storage::rates</code> depend on each other. <code>ecb::seed</code> writes through the <code>Database</code>, and the rate repository reads <code>ecb::Observation</code>. Every other dependency points one way. This may be intended; it is recorded here as a candidate for section 11 rather than as a verdict.</p>
+  </div>
+
+  <div class="pager">
+    <a href="04-solution-strategy.html">← 4 · Solution strategy</a>
+    <a href="index.html">Overview →</a>
+  </div>
+
+  <footer class="page-footer">
+    Structure based on the arc42 template by Gernot Starke and Peter Hruschka, <a href="https://arc42.org/license/">CC BY-SA 4.0</a>. Content describes Fifolio and is maintained with its specification.
+  </footer>
+</main>
+</div>
+</body>
+</html>

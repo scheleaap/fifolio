@@ -1293,25 +1293,34 @@ Unblocked in revision 47 (OQ-002 closed by DEC-079), with FIF-081.
 Revision 87: named next to build. Both dependencies, FIF-038 and FIF-081, are `done`; SRV-034 is on no `Blocks:` line. FIF-038's `no_route_edits_a_transaction` (`crates/fifolio-server/tests/http_surface.rs`) pins only `/transactions` (GET, and GET/DELETE by id; POST there is a 405). What remains is the workspace-wide half: walk every path and method in `fifolio_server::openapi()` and assert, against an explicit allow-list, that each route able to insert a transaction does so only by derivation from source records (today the import endpoint; FIF-105's derive endpoint and FIF-073's `transfer_out` approval join the list when built, each with its source records as input). A new POST anywhere must fail the test until it is classified. Manual entries (FIF-072) create no transaction and must stay off the list.
 Done in revision 87's build: `no_route_creates_a_transaction_from_nothing` (`crates/fifolio-server/tests/http_surface.rs`) classifies every path and method in `fifolio_server::openapi()` by its transaction effect and asserts the classification names exactly the routes served, in both directions, so a new or removed route fails until classified. Only `POST /imports` derives transactions from source records; creating a manual entry is checked to leave the transaction table empty (SRV-034). No provisional decision.
 
+## FIF-039 Attribution proposal endpoints
+Status: todo
+Requirements: SRV-036, SRV-037, SRV-038, SRV-039, SRV-050
+Depends on: FIF-038, FIF-015
+Acceptance: a proposal endpoint returns the closing, the proposed allocations with derived figures and a fingerprint, and is also addressable as "the next closing awaiting attribution" for an account and security; the fingerprint covers the closing, every allocation's opening id and quantity **and every derived money figure displayed**, as a hash of a canonical serialization stable across processes, so a re-rating between display and approval changes it (asserted: same inputs give the same fingerprint in two server instances; changing one displayed figure changes it); an uncoverable closing returns the named shortfall instead; a security with pending records in that account is refused, naming what is outstanding. Read-only: nothing is written.
+Notes: Revision 88: split. SRV-035, 040, 041, 042 and 043 (create, read, list, delete, and no decline call) moved to **FIF-106**. As cut, the item held ten requirements across two distinct surfaces, a read-only proposal with a new fingerprint scheme and a write path with its refusals; its acceptance ran to a paragraph, over this plan's "a few lines" bound. The proposal half is reviewable alone against SRV-036 to 039 and SRV-050; the create half needs the fingerprint to exist first. Named next to build. Both dependencies are `done`; none of SRV-036, 037, 038, 039, 050 is on a `Blocks:` line. `fifo.rs` `propose` and `allocation.rs` supply the proposal and its figures; no fingerprint exists yet (`identity.rs` already hashes source record identities, so a hashing crate is in the workspace). SRV-039's pending refusal is an endpoint-level check here; DOM-067's storage-level block is FIF-060's, outside this run's scope, so do not add it to storage. Each refusal (shortfall, pending records, not a closing, nothing awaiting) maps to a `ProblemType` in `fifolio-server/src/problem.rs`. Classify the new GET routes in FIF-087's routing-table test as creating no transaction.
+
+## FIF-106 Attribution create, read, list and delete endpoints
+Status: todo
+Requirements: SRV-035, SRV-040, SRV-041, SRV-042, SRV-043
+Depends on: FIF-039
+Acceptance: creating an attribution requires the closing, the allocations and the fingerprint the client was shown; the server recomputes the proposal and refuses a differing fingerprint or allocation set as a conflict, including a valid non-FIFO set (skipping the oldest opening); attributions can be read, listed and deleted but never updated (no PUT/PATCH, asserted over the routing table); deletion is refused when a later attribution exists for that account and security; declining is not an API call.
+Notes: Split out of FIF-039 in revision 88; see there. Not on this run's scope list by id; it inherits FIF-039's place in the server scope, as FIF-105 inherited FIF-038's. DEC-104 (provisional) places DOM-054's "proposal written unchanged" here, not in core's `attribution::approve`, which stores any allocations passing DOM-018/019/020/065 and DEC-103; this item carries the refusal test above. `AttributionRepository` (`fifolio-core/src/storage/attributions.rs`) has `approve`, `find` and `delete` (already refusing with `StorageError::LaterAttributionExists`, and `problem.rs` already names `later-attribution-exists`); missing is a list. Classify `POST /attributions` in FIF-087's routing-table test; FIF-073 then asserts its transfer-in emission.
+
 ## FIF-073 Transfer out approval emits its transfer ins
 Status: todo
 Requirements: SRV-030
-Depends on: FIF-038, FIF-063
+Depends on: FIF-106, FIF-063
 Acceptance: approving a `transfer_out` also creates the `transfer_in` records it implies, in the same operation.
 Notes: Unblocked in revision 47 (OQ-002 closed by DEC-079). It still waits on FIF-063 and FIF-038.
-
-## FIF-039 Attribution endpoints
-Status: todo
-Requirements: SRV-035, SRV-036, SRV-037, SRV-038, SRV-039, SRV-040, SRV-041, SRV-042, SRV-043, SRV-050
-Depends on: FIF-038, FIF-015
-Acceptance: a proposal endpoint returns the closing, the proposed allocations with derived figures and a fingerprint, and is also addressable as "the next closing awaiting attribution" for an account and security; the fingerprint covers the closing, every allocation's opening id and quantity **and every derived money figure displayed**, as a hash of a canonical serialization stable across processes, so a re-rating between display and approval changes it; an uncoverable closing returns the named shortfall instead; a security with pending records is refused, naming what is outstanding; creating an attribution requires the fingerprint the client was shown, and a mismatch is a conflict; attributions can be read, listed and deleted but never updated; deletion is refused when a later attribution exists for that account and security; declining is not an API call.
-Notes: DEC-104 (provisional) places DOM-054's "proposal written unchanged" here, not in core's `attribution::approve`, which stores any allocations passing DOM-018/019/020/065 and DEC-103. Creation must recompute the proposal and its fingerprint and refuse a differing fingerprint or allocation set as a conflict; this item carries the test that a valid non-FIFO allocation set (for example, skipping the oldest opening) is refused.
+Revision 88: dependency moved from FIF-038 to FIF-106 and the item moved below it. DOM-090 and DOM-054 make "approving" a `transfer_out` the same act as creating its attribution, and core's `attribution::approve` already emits the `transfer_in` records in that SQLite transaction (FIF-063). The only HTTP surface that approves is FIF-106's create endpoint, so this item could not be built or judged before it; as ordered it looked ready (FIF-038 and FIF-063 `done`) while having nothing to expose through. What remains: an HTTP test that posting a `transfer_out`'s attribution leaves one `transfer_in` per consumed parcel readable through FIF-038's list (source `emitted`, date provenance `inherited`), that a refused emission (DOM-107 own fee, `ApproveError` emission grounds) stores neither the attribution nor any `transfer_in`, each mapped to a `ProblemType`; and `POST /attributions` classified in FIF-087's `no_route_creates_a_transaction_from_nothing` as deriving from the closing's source records.
 
 ## FIF-040 Report endpoints
 Status: todo
 Requirements: SRV-044, SRV-045
-Depends on: FIF-039, FIF-030, FIF-031
+Depends on: FIF-106, FIF-030, FIF-031
 Acceptance: read-only endpoints for the income tax overview and the acquisition report, both accepting optional account and year filters, returning exactly the figures the CLI formats with no additional computation client-side.
+Notes: Revision 88: dependency moved from FIF-039 to FIF-106, where attributions become creatable over HTTP, which an end-to-end report test needs.
 
 ## FIF-041 FX rate endpoints
 Status: todo
@@ -1414,6 +1423,29 @@ Ids are never reused.
 * **FIF-097 — The stored rate convention against Trade Republic's changed `fx_rate`.** Retired in revision 47. It existed only to re-check FIF-008's DOM-086 once OQ-021 was answered. DEC-073 answered it without changing DOM-086's rule: no Trade Republic `fx_rate` is ever stored. The check therefore has nothing left to find, and DOM-086 returns to FIF-008, which implemented it. Recorded on FIF-008.
 
 # Revision history
+
+**Revision 88.** A status reconciliation after an interrupted session (laptop crash). `design/`
+unchanged since revision 87 (last touched at `80fd3b2`); no requirement id added or removed.
+`open-questions.md` names the same **7** ids on `Blocks:` lines, and the 5 items carrying one are
+exactly the 5 `blocked`. Working tree clean apart from the untracked `docs/`, so no partial build
+was lost.
+
+* **Completed: FIF-087** (`128ac0f`). Its status already read `done`.
+* **Split: FIF-039** into FIF-039 (proposal endpoints: SRV-036, 037, 038, 039, 050) and the new
+  **FIF-106** (create, read, list, delete: SRV-035, 040, 041, 042, 043). Ten requirements over a
+  read-only proposal with a new fingerprint scheme and a write path with its refusals was more than
+  one review sitting; the write half needs the fingerprint first.
+* **Re-cut dependency: FIF-073** now depends on FIF-106 (was FIF-038) and moved below it. Approving
+  a `transfer_out` is creating its attribution (DOM-054, DOM-090); core already emits in that
+  operation (FIF-063), and FIF-106's create endpoint is the only surface that approves. As ordered,
+  FIF-073 looked ready with nothing to expose through.
+* **FIF-040** now depends on FIF-106 (was FIF-039).
+* 104 items: **68 `done`, 31 `todo`, 5 `blocked`**. Coverage: **352** live ids, each on exactly one
+  item; uncovered only the retired DOM-009, 014, 015, 021, 041 and 050 to 053.
+* Server scope: FIF-039, 106, 073, 040, 041 remain `todo`. FIF-105 and FIF-104 (not on this run's
+  scope list) wait on FIF-100.
+* **Next to build: FIF-039.** FIF-041 is also ready; FIF-106 waits on FIF-039, FIF-073 and FIF-040
+  on FIF-106.
 
 **Revision 87.** A status reconciliation after an interrupted session (laptop crash). `design/`
 changed since revision 86 only by the provisional DEC-126 recorded with FIF-038 (`80fd3b2`); no
@@ -2946,6 +2978,10 @@ D1 and D2, raised in revision 1, are closed; see the revision history. The twent
 in revision 2 and decided in revision 3 are listed there too.
 
 # Requirement coverage
+
+Revision 88: **352** live ids, each exactly once, re-verified by script against `design/` at
+`128ac0f`; SRV-035, 040, 041, 042, 043 moved from FIF-039 to FIF-106. One hundred and four items: 68
+`done`, 31 `todo`, 5 `blocked`.
 
 Revision 87: unchanged. **352** live ids, each exactly once, re-verified by script against `design/`
 at `80fd3b2`. One hundred and three items: 67 `done`, 31 `todo`, 5 `blocked`.
